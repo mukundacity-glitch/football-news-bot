@@ -3,6 +3,7 @@ import os
 import re
 import json
 import asyncio
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
@@ -428,78 +429,97 @@ def move_to_posted(item: dict):
 
 # ── SCRAPE ─────────────────────────────────────────────────────────────────────
 async def scrape(data: dict, club_hashtags: dict) -> list:
-    client = Client("en-US")
-    await client.login(
-        auth_info_1=X_USERNAME,
-        auth_info_2=X_USERNAME,
-        password=X_PASSWORD,
-    )
+    # Get guest token for public API access
+    bearer = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cV-J"
+    headers = {"Authorization": f"Bearer {bearer}"}
+
+    try:
+        r = requests.post(
+            "https://api.twitter.com/1.1/guest/activate.json",
+            headers=headers,
+            timeout=10,
+        )
+        guest_token = r.json().get("guest_token", "")
+        headers["x-guest-token"] = guest_token
+        print(f"[BOT] Guest token obtained: {bool(guest_token)}")
+    except Exception as e:
+        print(f"[BOT] Failed to get guest token: {e}")
+        return []
+
     story_map: dict[str, dict] = {}
 
     for username in JOURNALISTS:
         try:
-            user   = await client.get_user_by_screen_name(username)
-            tweets = await client.get_user_tweets(user.id, "Tweets", count=8)
+            url = (
+                f"https://api.twitter.com/1.1/statuses/user_timeline.json"
+                f"?screen_name={username}&count=8&tweet_mode=extended"
+            )
+            r = requests.get(url, headers=headers, timeout=10)
+            tweets = r.json()
+
+            if not isinstance(tweets, list):
+                print(f"  [WARN] @{username}: {tweets}")
+                continue
+
+            for tweet in tweets:
+                tid  = str(tweet["id"])
+                text = tweet.get("full_text", tweet.get("text", ""))
+
+                if tid in data["posted_ids"]:
+                    continue
+
+                tl = text.lower()
+                has_signal = (
+                    any(k in tl for k in TRANSFER_KW) or
+                    any(k in tl for k in INJURY_KW)   or
+                    any(k in tl for k in MANAGER_KW)
+                )
+                if not has_signal:
+                    continue
+
+                collapsed = is_collapse(text)
+                stype     = classify_type(text)
+                stage     = 0 if collapsed else get_stage(text, stype)
+                player    = extract_player(text)
+                clubs     = extract_clubs(text, club_hashtags)
+                fee       = extract_fee(text)
+                contract  = extract_contract(text)
+                key       = build_story_key(player, clubs[0] if clubs else None, stype)
+
+                ok, reason = should_post(data, key, stage, collapsed)
+                if not ok:
+                    continue
+
+                if key in story_map:
+                    existing = story_map[key]
+                    if username not in existing["sources"]:
+                        existing["sources"].append(username)
+                    if fee and not existing["fee"]:
+                        existing["fee"] = fee
+                    if contract and not existing["contract"]:
+                        existing["contract"] = contract
+                    if stage > existing["stage"]:
+                        existing["stage"] = stage
+                else:
+                    story_map[key] = {
+                        "id":        tid,
+                        "key":       key,
+                        "text":      text,
+                        "sources":   [username],
+                        "stype":     stype,
+                        "stage":     stage,
+                        "collapsed": collapsed,
+                        "player":    player,
+                        "clubs":     clubs,
+                        "fee":       fee,
+                        "contract":  contract,
+                        "reason":    reason,
+                    }
+
         except Exception as e:
             print(f"  [WARN] @{username}: {e}")
-            continue
 
-        for tweet in tweets:
-            tid = str(tweet.id)
-            if tid in data["posted_ids"]:
-                continue
-
-            text = tweet.text
-            tl   = text.lower()
-
-            has_signal = (
-                any(k in tl for k in TRANSFER_KW) or
-                any(k in tl for k in INJURY_KW)   or
-                any(k in tl for k in MANAGER_KW)
-            )
-            if not has_signal:
-                continue
-
-            collapsed = is_collapse(text)
-            stype     = classify_type(text)
-            stage     = 0 if collapsed else get_stage(text, stype)
-            player    = extract_player(text)
-            clubs     = extract_clubs(text, club_hashtags)
-            fee       = extract_fee(text)
-            contract  = extract_contract(text)
-            key       = build_story_key(player, clubs[0] if clubs else None, stype)
-
-            ok, reason = should_post(data, key, stage, collapsed)
-            if not ok:
-                continue
-
-            if key in story_map:
-                existing = story_map[key]
-                if username not in existing["sources"]:
-                    existing["sources"].append(username)
-                if fee and not existing["fee"]:
-                    existing["fee"] = fee
-                if contract and not existing["contract"]:
-                    existing["contract"] = contract
-                if stage > existing["stage"]:
-                    existing["stage"] = stage
-            else:
-                story_map[key] = {
-                    "id":        tid,
-                    "key":       key,
-                    "text":      text,
-                    "sources":   [username],
-                    "stype":     stype,
-                    "stage":     stage,
-                    "collapsed": collapsed,
-                    "player":    player,
-                    "clubs":     clubs,
-                    "fee":       fee,
-                    "contract":  contract,
-                    "reason":    reason,
-                }
-
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
 
     return sorted(
         story_map.values(),
@@ -583,8 +603,10 @@ async def main():
         save_pending(item)
 
     post_client = Client("en-US")
-    post_client.http.cookies.set("auth_token", X_POST_AUTH_TOKEN, domain=".X.com")
-    post_client.http.cookies.set("ct0", X_POST_CT0_TOKEN, domain=".X.com")
+    post_client.set_cookies({
+        "auth_token": X_POST_AUTH_TOKEN,
+        "ct0":        X_POST_CT0_TOKEN,
+    })
 
     remaining = data["daily"]["limit"] - data["daily"]["count"]
     to_post   = queue[:min(3, remaining)]
