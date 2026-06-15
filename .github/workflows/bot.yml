@@ -31,9 +31,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Bypass Broken Pip Package
         run: |
-          pip uninstall -y twikit
-          pip install --no-cache-dir -r requirements.txt
+          git clone https://github.com/PawiX25/twifork.git
+          mv twifork/twikit ./twikit
+          rm -rf twifork
 
       - name: Run Bot
         env:
