@@ -12,7 +12,7 @@ X_AUTH_TOKEN      = os.getenv("X_AUTH_TOKEN")
 X_CT0_TOKEN       = os.getenv("X_CT0_TOKEN")
 X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
 X_POST_CT0_TOKEN  = os.getenv("X_POST_CT0_TOKEN")
-
+FOOTBALL_API_KEY  = os.getenv(35a1abffbef440cdae461a5fea29d8a4)
 # ── PATHS ──────────────────────────────────────────────────────────────────────
 POSTED_FILE   = Path("posted_news.json")
 PENDING_DIR   = Path("queue/pending")
