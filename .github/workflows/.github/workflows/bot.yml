@@ -2,24 +2,31 @@ name: Run Transfer Bot
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Runs every 15 minutes
-  workflow_dispatch:        # Allows you to run it manually for testing
+    - cron: '*/30 * * * *'   # Runs every 30 minutes
+  workflow_dispatch:          # Allows manual run for testing
+
+permissions:
+  contents: write            # required for the commit-back step
+
+concurrency:
+  group: transfer-bot
+  cancel-in-progress: false  # let an in-flight run finish rather than collide
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          persist-credentials: true
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
       - name: Install Dependencies
         run: |
@@ -27,12 +34,12 @@ jobs:
 
       - name: Run Bot
         env:
+          # Burner account cookies (reading)
           X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
           X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
-          X_API_KEY: ${{ secrets.X_API_KEY }}
-          X_API_SECRET: ${{ secrets.X_API_SECRET }}
-          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
-          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          # @FPLVortex's own cookies (posting)
+          X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
+          X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
         run: python main.py
 
       - name: Save Posted News (Commit changes back to repo)
@@ -41,4 +48,5 @@ jobs:
           git config --local user.name "GitHub Action"
           git add posted_news.json
           git commit -m "Update posted news list" || echo "No changes to commit"
-          git push   
+          git pull --rebase
+          git push
