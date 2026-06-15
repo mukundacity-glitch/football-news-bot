@@ -427,8 +427,8 @@ def move_to_posted(item: dict):
 # ── SCRAPE ─────────────────────────────────────────────────────────────────────
 async def scrape(data: dict, club_hashtags: dict) -> list:
     client = Client("en-US")
-    client.http.cookies.set("auth_token", X_AUTH_TOKEN, domain=".twitter.com")
-    client.http.cookies.set("ct0", X_CT0_TOKEN, domain=".twitter.com")
+    client.http.cookies.set("auth_token", X_AUTH_TOKEN, domain=".X.com")
+    client.http.cookies.set("ct0", X_CT0_TOKEN, domain=".X.com")
 
     story_map: dict[str, dict] = {}
 
@@ -579,8 +579,8 @@ async def main():
         save_pending(item)
 
     post_client = Client("en-US")
-    post_client.http.cookies.set("auth_token", X_POST_AUTH_TOKEN, domain=".twitter.com")
-    post_client.http.cookies.set("ct0", X_POST_CT0_TOKEN, domain=".twitter.com")
+    post_client.http.cookies.set("auth_token", X_POST_AUTH_TOKEN, domain=".X.com")
+    post_client.http.cookies.set("ct0", X_POST_CT0_TOKEN, domain=".X.com")
 
     remaining = data["daily"]["limit"] - data["daily"]["count"]
     to_post   = queue[:min(3, remaining)]
