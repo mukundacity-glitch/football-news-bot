@@ -168,6 +168,10 @@ SKIP_WORDS = {
     "Europa", "Transfer", "Breaking", "Done", "Deal", "Here", "Medical",
     "Exclusive", "Source", "Official", "Update", "News", "Today", "More",
     "Just", "Now", "Final", "After", "Club", "Move", "This", "That",
+    # Added common club words to prevent "Real Madrid" or "Aston Villa" from being detected as players
+    "Real", "Madrid", "Bayern", "Munich", "Inter", "Milan", "Juventus",
+    "Paris", "Saint", "Germain", "Sporting", "Porto", "Benfica", "Ajax",
+    "Villa", "City", "United", "Spurs", "Forest", "Athletic", "Atletico"
 }
 
 def extract_player(text: str) -> str:
@@ -185,7 +189,11 @@ def extract_fee(text: str) -> str:
     m = re.search(
         r'[€£\$][\d\.]+[Mm]?|[\d\.]+\s*[Mm]illion|[\d\.]+[Mm]\s*[€£\$]',
         text)
-    return m.group(0).strip() if m else None
+    if m:
+        # This forces the fee to uppercase (e.g. $60m becomes $60M) 
+        # and cleans up the word "million" to a sleek "M"
+        return m.group(0).strip().upper().replace("MILLION", "M")
+    return None
 
 def extract_contract(text: str) -> str:
     m = re.search(r'(\d)[- ]year|until\s+20(\d\d)|\b(\d)\s+years\b', text, re.I)
@@ -265,39 +273,48 @@ def should_post(data: dict, key: str, new_stage: int,
 # ── HEADLINE BUILDER ───────────────────────────────────────────────────────────
 def build_headline(player: str, clubs: list, stage: int, stype: str,
                    fee: str, contract: str, collapsed: bool) -> tuple[str, str]:
-    p       = player or "Player"
-    to_club = clubs[1].title() if len(clubs) > 1 else clubs[0].title() if clubs else "Club"
+    
+    FULL_NAMES = {
+        "Che": "Chelsea", "Not": "Nott'm Forest", "Ful": "Fulham", 
+        "Mci": "Man City", "Mun": "Man Utd", "Ars": "Arsenal", 
+        "Liv": "Liverpool", "Tot": "Spurs", "New": "Newcastle",
+        "Ast": "Aston Villa", "Bha": "Brighton", "Bre": "Brentford"
+    }
+    
+    p = player or "Player"
+    raw_club = clubs[1].title() if len(clubs) > 1 else clubs[0].title() if clubs else "Club"
+    to_club = FULL_NAMES.get(raw_club, raw_club)
 
     details = []
     if fee:
-        details.append(f"Fee: {fee}")
+        details.append(f"💰 {fee}")
     if contract:
-        details.append(contract)
+        details.append(f"⏱️ {contract}")
     detail_line = " | ".join(details) if details else ""
 
     if collapsed:
-        return f"{p} — {to_club} deal collapsed ❌", detail_line
+        return f"{p} ❌ Deal to {to_club} collapsed", detail_line
 
     if stype == "transfer":
         texts = {
-            1: f"{p} in talks with {to_club}",
-            2: f"{p} reaches agreement with {to_club}",
-            3: f"{p} signs contract with {to_club}",
-            4: f"{p} officially joins {to_club} ✅",
+            1: f"👀 {p} in talks with {to_club}",
+            2: f"🤝 {p} reaches agreement with {to_club}",
+            3: f"📝 {p} signs contract with {to_club}",
+            4: f"🚨 {p} officially joins {to_club} ✅",
         }
     elif stype == "manager":
         texts = {
-            1: f"{p} emerging as {to_club} managerial target",
-            2: f"{p} in talks to become {to_club} manager",
-            3: f"{p} agrees terms with {to_club}",
-            4: f"{p} officially appointed as {to_club} manager ✅",
+            1: f"👔 {p} emerging as {to_club} target",
+            2: f"🗣️ {p} in talks to become {to_club} manager",
+            3: f"✍️ {p} agrees terms with {to_club}",
+            4: f"🚨 {p} officially appointed at {to_club} ✅",
         }
     else:
         texts = {
-            1: f"{p} injury concern — fitness in doubt",
-            2: f"{p} undergoes scan — diagnosis awaited",
-            3: f"{p} ruled out — return date unknown",
-            4: f"{p} fit again — available for selection ✅",
+            1: f"⚠️ {p} injury concern — fitness in doubt",
+            2: f"🏥 {p} undergoes scan — diagnosis awaited",
+            3: f"🤕 {p} ruled out — return date unknown",
+            4: f"💪 {p} fit again — available for selection ✅",
         }
     return texts.get(stage, f"{p} update"), detail_line
 
@@ -335,83 +352,76 @@ def build_hashtags(stype: str, clubs: list, text: str,
     return " ".join(tags[:6])
 
 # ── IMAGE ──────────────────────────────────────────────────────────────────────
-def load_font(size: int):
-    for path in [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]:
-        try:
-            return ImageFont.truetype(path, size)
-        except OSError:
-            pass
-    return ImageFont.load_default()
+# ── IMAGE ──────────────────────────────────────────────────────────────────────
+def get_premium_font(size: int, weight="Bold"):
+    font_path = f"Montserrat-{weight}.ttf"
+    if not os.path.exists(font_path):
+        font_url = f"https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-{weight}.ttf"
+        urllib.request.urlretrieve(font_url, font_path)
+    return ImageFont.truetype(font_path, size)
 
 def create_image(headline: str, detail_line: str, source_users: list,
                  stage: int, stype: str, collapsed: bool, filename: str):
-    W, H      = 1200, 675
+    
+    W, H = 1200, 675
     stage_key = 0 if collapsed else stage
-    accent    = STAGE_COLORS[stage_key]
-    BG        = (10, 10, 22)
 
-    img  = Image.new("RGB", (W, H), BG)
+    if stype == "transfer":
+        accent = (255, 90, 0)   
+        tag = "TRANSFER NEWS"
+    elif stype == "manager":
+        accent = (0, 163, 255)  
+        tag = "MANAGER NEWS"
+    else:
+        accent = (255, 0, 77)   
+        tag = "INJURY UPDATE"
+
+    if collapsed:
+        accent = (107, 114, 128)
+
+    img = Image.new("RGB", (W, H), (14, 16, 21))
     draw = ImageDraw.Draw(img)
 
-    for i in range(H):
-        r = int(BG[0] + (20 - BG[0]) * i / H)
-        g = int(BG[1] + (22 - BG[1]) * i / H)
-        b = int(BG[2] + (38 - BG[2]) * i / H)
-        draw.line([(0, i), (W, i)], fill=(r, g, b))
+    draw.rectangle([0, 0, W, 12], fill=accent)
+    draw.rectangle([0, H - 12, W, H], fill=accent)
 
-    draw.rectangle([(0, 0),     (W, 7)],     fill=accent)
-    draw.rectangle([(0, H - 7), (W, H)],     fill=accent)
+    title_font = get_premium_font(70, "Black")
+    sub_font   = get_premium_font(40, "Bold")
+    small_font = get_premium_font(28, "Bold")
 
-    badge_font  = load_font(26)
-    badge_label = STAGE_LABELS.get(stype, {}).get(stage_key, "UPDATE")
-    bw = int(draw.textlength(badge_label, font=badge_font)) + 44
-    draw.rounded_rectangle([48, 28, 48 + bw, 76], radius=8, fill=accent)
-    draw.text((68, 38), badge_label, font=badge_font, fill=(255, 255, 255))
+    draw.text((60, 50), "FPL", font=title_font, fill=(255, 255, 255))
+    draw.text((215, 50), "VORTEX", font=title_font, fill=accent)
 
-    if stype != "injury" and not collapsed:
-        dot_font = load_font(30)
-        dots = " ".join("●" if i <= stage else "○" for i in range(1, 5))
-        dw   = int(draw.textlength(dots, font=dot_font))
-        draw.text((W - dw - 50, 36), dots, font=dot_font, fill=accent)
+    tag_w = int(draw.textlength(tag, font=small_font)) + 40
+    draw.rounded_rectangle([W - tag_w - 60, 60, W - 60, 110], radius=8, fill=accent)
+    draw.text((W - tag_w - 40, 68), tag, font=small_font, fill=(255, 255, 255))
 
-    h_font = load_font(56)
-    max_w  = W - 100
-    words  = headline.split()
+    status_label = STAGE_LABELS.get(stype, {}).get(stage_key, "UPDATE").upper()
+    draw.rounded_rectangle([60, 170, W - 60, 240], radius=12, fill=(25, 28, 38))
+    draw.text((90, 185), f"STATUS: {status_label}", font=sub_font, fill=accent)
+
+    words = headline.split()
     lines, ln = [], ""
     for word in words:
         trial = f"{ln} {word}".strip()
-        if draw.textlength(trial, font=h_font) <= max_w:
+        if draw.textlength(trial, font=title_font) <= W - 140:
             ln = trial
         else:
-            if ln:
-                lines.append(ln)
+            lines.append(ln)
             ln = word
-    if ln:
-        lines.append(ln)
+    if ln: lines.append(ln)
 
-    total_h = len(lines) * 74
-    y = (H - total_h) // 2 - 30
-    for line in lines:
-        tw = int(draw.textlength(line, font=h_font))
-        draw.text(((W - tw) // 2, y), line, font=h_font, fill=(255, 255, 255))
-        y += 74
+    y_offset = 280
+    with Pilmoji(img) as pilmoji:
+        for line in lines:
+            pilmoji.text((60, y_offset), line, font=title_font, fill=(255, 255, 255))
+            y_offset += 85
 
-    if detail_line:
-        d_font = load_font(32)
-        dw     = int(draw.textlength(detail_line, font=d_font))
-        draw.text(((W - dw) // 2, y + 10), detail_line,
-                  font=d_font, fill=accent)
+        if detail_line:
+            pilmoji.text((60, y_offset + 20), detail_line, font=sub_font, fill=(160, 255, 120)) 
 
-    src_font = load_font(24)
-    sources  = "  ·  ".join(f"@{s}" for s in source_users[:2])
-    src_text = f"Source: {sources}  |  @FPLVortex"
-    draw.text((50, H - 52), src_text, font=src_font, fill=(140, 140, 160))
-    ts  = datetime.now(timezone.utc).strftime("%d %b %Y · %H:%M UTC")
-    tsw = int(draw.textlength(ts, font=src_font))
-    draw.text((W - tsw - 50, H - 52), ts, font=src_font, fill=(140, 140, 160))
+    sources = "  ·  ".join(f"@{s}" for s in source_users[:2])
+    draw.text((60, H - 60), f"Source: {sources}", font=small_font, fill=(100, 110, 130))
 
     img.save(filename)
 
