@@ -579,10 +579,8 @@ async def main():
         save_pending(item)
 
     post_client = Client("en-US")
-    post_client.set_cookies({
-        "auth_token": X_POST_AUTH_TOKEN,
-        "ct0":        X_POST_CT0_TOKEN,
-    })
+    post_client.http.cookies.set("auth_token", X_POST_AUTH_TOKEN, domain=".twitter.com")
+    post_client.http.cookies.set("ct0", X_POST_CT0_TOKEN, domain=".twitter.com")
 
     remaining = data["daily"]["limit"] - data["daily"]["count"]
     to_post   = queue[:min(3, remaining)]
