@@ -1,3 +1,4 @@
+from clubs_cache import get_club_data
 import os
 import re
 import json
@@ -12,11 +13,12 @@ X_AUTH_TOKEN      = os.getenv("X_AUTH_TOKEN")
 X_CT0_TOKEN       = os.getenv("X_CT0_TOKEN")
 X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
 X_POST_CT0_TOKEN  = os.getenv("X_POST_CT0_TOKEN")
-FOOTBALL_API_KEY  = os.getenv(35a1abffbef440cdae461a5fea29d8a4)
+FOOTBALL_API_KEY  = os.getenv("FOOTBALL_API_KEY")
+
 # ── PATHS ──────────────────────────────────────────────────────────────────────
-POSTED_FILE   = Path("posted_news.json")
-PENDING_DIR   = Path("queue/pending")
-POSTED_DIR    = Path("queue/posted")
+POSTED_FILE = Path("posted_news.json")
+PENDING_DIR = Path("queue/pending")
+POSTED_DIR  = Path("queue/posted")
 PENDING_DIR.mkdir(parents=True, exist_ok=True)
 POSTED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -28,22 +30,22 @@ JOURNALISTS = [
 ]
 
 # ── KEYWORDS ───────────────────────────────────────────────────────────────────
-TRANSFER_KW  = ["transfer", "sign", "deal", "fee", "bid", "move", "loan",
-                 "contract", "agree", "confirm", "medical", "official", "close",
-                 "interest", "talks", "negotiat", "personal terms", "done",
-                 "approach", "target", "want", "keen", "pursuit", "swap"]
+TRANSFER_KW = ["transfer", "sign", "deal", "fee", "bid", "move", "loan",
+                "contract", "agree", "confirm", "medical", "official", "close",
+                "interest", "talks", "negotiat", "personal terms", "done",
+                "approach", "target", "want", "keen", "pursuit", "swap"]
 
-INJURY_KW    = ["injury", "injured", "ruled out", "scan", "hamstring", "knee",
-                 "muscle", "fracture", "surgery", "sidelined", "doubt",
-                 "concern", "knock", "fitness", "unavailable", "recovery"]
+INJURY_KW   = ["injury", "injured", "ruled out", "scan", "hamstring", "knee",
+                "muscle", "fracture", "surgery", "sidelined", "doubt",
+                "concern", "knock", "fitness", "unavailable", "recovery"]
 
-MANAGER_KW   = ["sack", "appoint", "manager", "coach", "resign", "dismiss",
-                 "interim", "replace", "head coach", "taking over", "departure",
-                 "leave", "new manager", "managerial"]
+MANAGER_KW  = ["sack", "appoint", "manager", "coach", "resign", "dismiss",
+                "interim", "replace", "head coach", "taking over", "departure",
+                "leave", "new manager", "managerial"]
 
-COLLAPSE_KW  = ["collapse", "collapsed", "fell through", "breaks down",
-                 "no deal", "deal off", "pulled out", "rejected", "refused",
-                 "failed", "cancelled", "called off", "walks away"]
+COLLAPSE_KW = ["collapse", "collapsed", "fell through", "breaks down",
+                "no deal", "deal off", "pulled out", "rejected", "refused",
+                "failed", "cancelled", "called off", "walks away"]
 
 # ── STAGE KEYWORDS ─────────────────────────────────────────────────────────────
 STAGE_KW = {
@@ -74,77 +76,40 @@ STAGE_KW = {
     },
 }
 
+# ── STAGE LABELS + COLORS ──────────────────────────────────────────────────────
 STAGE_LABELS = {
     "transfer": {
+        0: "DEAL COLLAPSED",
         1: "TRANSFER TALKS",
         2: "AGREEMENT REACHED",
         3: "CONTRACT SIGNED",
         4: "TRANSFER CONFIRMED",
-        0: "DEAL COLLAPSED",
     },
     "manager": {
+        0: "DEAL COLLAPSED",
         1: "MANAGERIAL CHANGE",
         2: "MANAGER TALKS",
         3: "TERMS AGREED",
         4: "OFFICIALLY APPOINTED",
-        0: "DEAL COLLAPSED",
     },
     "injury": {
+        0: "INJURY UPDATE",
         1: "INJURY CONCERN",
         2: "SCAN AWAITED",
         3: "RULED OUT",
         4: "FIT TO RETURN",
-        0: "INJURY UPDATE",
     },
 }
 
 STAGE_COLORS = {
-    0: (107, 114, 128),  # grey  — collapsed
-    1: (59,  130, 246),  # blue  — talks
-    2: (245, 158,  11),  # amber — agreement
-    3: (239,  68,  68),  # red   — signed
-    4: (34,  197,  94),  # green — confirmed
+    0: (107, 114, 128),
+    1: (59,  130, 246),
+    2: (245, 158,  11),
+    3: (239,  68,  68),
+    4: (34,  197,  94),
 }
 
-# ── CLUB / COUNTRY HASHTAGS ────────────────────────────────────────────────────
-CLUB_HASHTAGS = {
-    "manchester united": "#MUFC",      "man utd":  "#MUFC",
-    "arsenal":           "#AFC",
-    "chelsea":           "#CFC",
-    "liverpool":         "#LFC",
-    "manchester city":   "#MCFC",      "man city": "#MCFC",
-    "tottenham":         "#THFC",      "spurs":    "#THFC",
-    "newcastle":         "#NUFC",
-    "aston villa":       "#AVFC",
-    "west ham":          "#WHUFC",
-    "everton":           "#EFC",
-    "brighton":          "#BHAFC",
-    "wolves":            "#WWFC",
-    "barcelona":         "#FCBarcelona",
-    "real madrid":       "#RealMadrid",
-    "atletico madrid":   "#Atletico",
-    "juventus":          "#Juve",
-    "ac milan":          "#ACMilan",
-    "inter milan":       "#Inter",
-    "napoli":            "#Napoli",
-    "psg":               "#PSG",       "paris saint-germain": "#PSG",
-    "bayern":            "#FCBayern",  "bayern munich": "#FCBayern",
-    "borussia dortmund": "#BVB",       "bvb": "#BVB",
-    "celtic":            "#CelticFC",
-    "rangers":           "#RangersFC",
-    "porto":             "#FCPorto",
-    "benfica":           "#SLBenfica",
-    "ajax":              "#Ajax",
-    "sevilla":           "#Sevilla",
-    "roma":              "#ASRoma",
-    "lazio":             "#Lazio",
-    "leicester":         "#LCFC",
-    "nottingham forest": "#NFFC",
-    "brentford":         "#BrentfordFC",
-    "fulham":            "#FFC",
-    "crystal palace":    "#CPFC",
-}
-
+# ── COUNTRY + LEAGUE HASHTAGS ──────────────────────────────────────────────────
 COUNTRY_HASHTAGS = {
     "england":     "#England",
     "france":      "#France",
@@ -159,20 +124,13 @@ COUNTRY_HASHTAGS = {
 }
 
 LEAGUE_HASHTAGS = {
-    "premier league":    ["#PremierLeague", "#PL"],
-    "la liga":           ["#LaLiga"],
-    "serie a":           ["#SerieA"],
-    "bundesliga":        ["#Bundesliga"],
-    "ligue 1":           ["#Ligue1"],
-    "champions league":  ["#UCL"],
-    "europa league":     ["#UEL"],
-}
-
-PL_CLUBS = {
-    "manchester united", "man utd", "arsenal", "chelsea", "liverpool",
-    "manchester city", "man city", "tottenham", "spurs", "newcastle",
-    "aston villa", "west ham", "everton", "brighton", "wolves",
-    "leicester", "nottingham forest", "brentford", "fulham", "crystal palace",
+    "premier league":   ["#PremierLeague", "#PL"],
+    "la liga":          ["#LaLiga"],
+    "serie a":          ["#SerieA"],
+    "bundesliga":       ["#Bundesliga"],
+    "ligue 1":          ["#Ligue1"],
+    "champions league": ["#UCL"],
+    "europa league":    ["#UEL"],
 }
 
 # ── DATA ───────────────────────────────────────────────────────────────────────
@@ -211,9 +169,9 @@ def extract_player(text: str) -> str:
             return m
     return None
 
-def extract_clubs(text: str) -> list:
+def extract_clubs(text: str, club_hashtags: dict) -> list:
     tl = text.lower()
-    return [c for c in CLUB_HASHTAGS if c in tl]
+    return [c for c in club_hashtags if c in tl]
 
 def extract_fee(text: str) -> str:
     m = re.search(
@@ -285,24 +243,22 @@ def should_post(data: dict, key: str, new_stage: int,
         return False, "already_collapsed"
 
     if not existing:
-        return True, "new"                        # brand new story
+        return True, "new"
 
     if existing["status"] == "collapsed":
-        return False, "story_collapsed"           # story is dead
+        return False, "story_collapsed"
 
     current = existing["stage"]
     if new_stage <= current:
-        return False, "no_progression"            # same or older stage
+        return False, "no_progression"
 
     return True, "progression"
 
 # ── HEADLINE BUILDER ───────────────────────────────────────────────────────────
-def build_headline(player: str, clubs: list, stage: int,
-                   stype: str, fee: str, contract: str,
-                   collapsed: bool) -> tuple[str, str]:
-    p         = player or "Player"
-    from_club = clubs[0].title() if clubs else "Club"
-    to_club   = clubs[1].title() if len(clubs) > 1 else clubs[0].title() if clubs else "Club"
+def build_headline(player: str, clubs: list, stage: int, stype: str,
+                   fee: str, contract: str, collapsed: bool) -> tuple[str, str]:
+    p       = player or "Player"
+    to_club = clubs[1].title() if len(clubs) > 1 else clubs[0].title() if clubs else "Club"
 
     details = []
     if fee:
@@ -312,8 +268,7 @@ def build_headline(player: str, clubs: list, stage: int,
     detail_line = " | ".join(details) if details else ""
 
     if collapsed:
-        headline = f"{p} — {from_club} deal collapsed ❌"
-        return headline, detail_line
+        return f"{p} — {to_club} deal collapsed ❌", detail_line
 
     if stype == "transfer":
         texts = {
@@ -329,7 +284,7 @@ def build_headline(player: str, clubs: list, stage: int,
             3: f"{p} agrees terms with {to_club}",
             4: f"{p} officially appointed as {to_club} manager ✅",
         }
-    else:  # injury
+    else:
         texts = {
             1: f"{p} injury concern — fitness in doubt",
             2: f"{p} undergoes scan — diagnosis awaited",
@@ -339,7 +294,8 @@ def build_headline(player: str, clubs: list, stage: int,
     return texts.get(stage, f"{p} update"), detail_line
 
 # ── HASHTAGS ───────────────────────────────────────────────────────────────────
-def build_hashtags(stype: str, clubs: list, text: str) -> str:
+def build_hashtags(stype: str, clubs: list, text: str,
+                   club_hashtags: dict, pl_clubs: set) -> str:
     tags = []
 
     if stype == "transfer":
@@ -352,23 +308,23 @@ def build_hashtags(stype: str, clubs: list, text: str) -> str:
     tags.append("#Football")
 
     for club in clubs[:2]:
-        ht = CLUB_HASHTAGS.get(club)
+        ht = club_hashtags.get(club)
         if ht and ht not in tags:
             tags.append(ht)
 
-    if any(c in PL_CLUBS for c in clubs):
-        tags.append("#PremierLeague")
+    if any(c in pl_clubs for c in clubs):
+        if "#PremierLeague" not in tags:
+            tags.append("#PremierLeague")
 
     country_tag = extract_country(text)
     if country_tag and country_tag not in tags:
         tags.append(country_tag)
 
-    league_tags = extract_league(text)
-    for lt in league_tags:
+    for lt in extract_league(text):
         if lt not in tags:
             tags.append(lt)
 
-    return " ".join(tags[:6])  # max 6 hashtags to stay under 280
+    return " ".join(tags[:6])
 
 # ── IMAGE ──────────────────────────────────────────────────────────────────────
 def load_font(size: int):
@@ -384,7 +340,7 @@ def load_font(size: int):
 
 def create_image(headline: str, detail_line: str, source_users: list,
                  stage: int, stype: str, collapsed: bool, filename: str):
-    W, H   = 1200, 675
+    W, H      = 1200, 675
     stage_key = 0 if collapsed else stage
     accent    = STAGE_COLORS[stage_key]
     BG        = (10, 10, 22)
@@ -392,35 +348,30 @@ def create_image(headline: str, detail_line: str, source_users: list,
     img  = Image.new("RGB", (W, H), BG)
     draw = ImageDraw.Draw(img)
 
-    # gradient background
     for i in range(H):
         r = int(BG[0] + (20 - BG[0]) * i / H)
         g = int(BG[1] + (22 - BG[1]) * i / H)
         b = int(BG[2] + (38 - BG[2]) * i / H)
         draw.line([(0, i), (W, i)], fill=(r, g, b))
 
-    # accent bars
-    draw.rectangle([(0, 0),      (W, 7)], fill=accent)
-    draw.rectangle([(0, H - 7),  (W, H)], fill=accent)
+    draw.rectangle([(0, 0),     (W, 7)],     fill=accent)
+    draw.rectangle([(0, H - 7), (W, H)],     fill=accent)
 
-    # badge
     badge_font  = load_font(26)
     badge_label = STAGE_LABELS.get(stype, {}).get(stage_key, "UPDATE")
     bw = int(draw.textlength(badge_label, font=badge_font)) + 44
     draw.rounded_rectangle([48, 28, 48 + bw, 76], radius=8, fill=accent)
     draw.text((68, 38), badge_label, font=badge_font, fill=(255, 255, 255))
 
-    # stage dots (top right) — not for injury
     if stype != "injury" and not collapsed:
         dot_font = load_font(30)
         dots = " ".join("●" if i <= stage else "○" for i in range(1, 5))
         dw   = int(draw.textlength(dots, font=dot_font))
         draw.text((W - dw - 50, 36), dots, font=dot_font, fill=accent)
 
-    # headline
-    h_font  = load_font(56)
-    max_w   = W - 100
-    words   = headline.split()
+    h_font = load_font(56)
+    max_w  = W - 100
+    words  = headline.split()
     lines, ln = [], ""
     for word in words:
         trial = f"{ln} {word}".strip()
@@ -437,27 +388,22 @@ def create_image(headline: str, detail_line: str, source_users: list,
     y = (H - total_h) // 2 - 30
     for line in lines:
         tw = int(draw.textlength(line, font=h_font))
-        draw.text(((W - tw) // 2, y), line, font=h_font,
-                  fill=(255, 255, 255))
+        draw.text(((W - tw) // 2, y), line, font=h_font, fill=(255, 255, 255))
         y += 74
 
-    # fee / contract line
     if detail_line:
         d_font = load_font(32)
         dw     = int(draw.textlength(detail_line, font=d_font))
         draw.text(((W - dw) // 2, y + 10), detail_line,
                   font=d_font, fill=accent)
 
-    # source + timestamp
     src_font = load_font(24)
     sources  = "  ·  ".join(f"@{s}" for s in source_users[:2])
     src_text = f"Source: {sources}  |  @FPLVortex"
-    draw.text((50, H - 52), src_text, font=src_font,
-              fill=(140, 140, 160))
+    draw.text((50, H - 52), src_text, font=src_font, fill=(140, 140, 160))
     ts  = datetime.now(timezone.utc).strftime("%d %b %Y · %H:%M UTC")
     tsw = int(draw.textlength(ts, font=src_font))
-    draw.text((W - tsw - 50, H - 52), ts, font=src_font,
-              fill=(140, 140, 160))
+    draw.text((W - tsw - 50, H - 52), ts, font=src_font, fill=(140, 140, 160))
 
     img.save(filename)
 
@@ -479,11 +425,10 @@ def move_to_posted(item: dict):
             json.dump(item, f, indent=2)
 
 # ── SCRAPE ─────────────────────────────────────────────────────────────────────
-async def scrape(data: dict) -> list:
+async def scrape(data: dict, club_hashtags: dict) -> list:
     client = Client("en-US")
     client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
 
-    # key → best candidate dict
     story_map: dict[str, dict] = {}
 
     for username in JOURNALISTS:
@@ -514,7 +459,7 @@ async def scrape(data: dict) -> list:
             stype     = classify_type(text)
             stage     = 0 if collapsed else get_stage(text, stype)
             player    = extract_player(text)
-            clubs     = extract_clubs(text)
+            clubs     = extract_clubs(text, club_hashtags)
             fee       = extract_fee(text)
             contract  = extract_contract(text)
             key       = build_story_key(player, clubs[0] if clubs else None, stype)
@@ -523,7 +468,6 @@ async def scrape(data: dict) -> list:
             if not ok:
                 continue
 
-            # merge same story from multiple journalists
             if key in story_map:
                 existing = story_map[key]
                 if username not in existing["sources"]:
@@ -552,34 +496,21 @@ async def scrape(data: dict) -> list:
 
         await asyncio.sleep(2)
 
-    # priority sort: collapsed first, then highest stage, then new stories first
-    queue = sorted(
+    return sorted(
         story_map.values(),
-        key=lambda x: (
-            1 if x["collapsed"] else 0,
-            -x["stage"],
-            1 if x["reason"] == "new" else 0,
-        ),
-        reverse=False,
+        key=lambda x: -(1 if x["collapsed"] else x["stage"]),
     )
-
-    # flip: collapsed + high stage = most urgent
-    queue = sorted(
-        story_map.values(),
-        key=lambda x: (
-            -(1 if x["collapsed"] else x["stage"]),
-        ),
-    )
-
-    return queue
 
 # ── POST ───────────────────────────────────────────────────────────────────────
-async def post_item(client: Client, item: dict, data: dict):
+async def post_item(client: Client, item: dict, data: dict,
+                    club_hashtags: dict, pl_clubs: set):
     headline, detail_line = build_headline(
         item["player"], item["clubs"], item["stage"],
         item["stype"], item["fee"], item["contract"], item["collapsed"],
     )
-    hashtags = build_hashtags(item["stype"], item["clubs"], item["text"])
+    hashtags = build_hashtags(
+        item["stype"], item["clubs"], item["text"], club_hashtags, pl_clubs
+    )
     filename = "news_card.png"
 
     create_image(
@@ -589,7 +520,6 @@ async def post_item(client: Client, item: dict, data: dict):
 
     media_id = await client.upload_media(filename, media_type="image/png")
 
-    # tweet text — headline + detail + hashtags, max 280
     body = headline
     if detail_line:
         body += f"\n{detail_line}"
@@ -602,10 +532,8 @@ async def post_item(client: Client, item: dict, data: dict):
     if os.path.exists(filename):
         os.remove(filename)
 
-    # update data
     data["posted_ids"].append(item["id"])
-    status = "collapsed" if item["collapsed"] else "active"
-
+    status   = "collapsed" if item["collapsed"] else "active"
     existing = data["stories"].get(item["key"], {})
     data["stories"][item["key"]] = {
         "stage":        item["stage"],
@@ -629,19 +557,23 @@ async def post_item(client: Client, item: dict, data: dict):
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 async def main():
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()}")
+
+    club_data     = get_club_data()
+    CLUB_HASHTAGS = club_data["club_hashtags"]
+    PL_CLUBS      = set(club_data["pl_clubs"])
+
     data = load_data()
 
     if not check_daily_limit(data):
         print(f"[BOT] Daily limit reached ({data['daily']['limit']}). Stopping.")
         return
 
-    queue = await scrape(data)
+    queue = await scrape(data, CLUB_HASHTAGS)
 
     if not queue:
         print("[BOT] Nothing to post this run.")
         return
 
-    # save all pending first so manual posting is possible
     for item in queue:
         save_pending(item)
 
@@ -656,7 +588,7 @@ async def main():
 
     for i, item in enumerate(to_post):
         try:
-            await post_item(post_client, item, data)
+            await post_item(post_client, item, data, CLUB_HASHTAGS, PL_CLUBS)
         except Exception as e:
             print(f"  [ERROR] {item['key']}: {e}")
         if i < len(to_post) - 1:
@@ -665,9 +597,10 @@ async def main():
 
     left = [x for x in queue if x not in to_post]
     if left:
-        print(f"[BOT] {len(left)} item(s) saved to queue/pending for next run or manual post.")
+        print(f"[BOT] {len(left)} pending for next run or manual post.")
 
     print(f"[BOT] Done. Daily count: {data['daily']['count']}/{data['daily']['limit']}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
