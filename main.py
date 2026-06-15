@@ -5,9 +5,11 @@ import json
 import asyncio
 import requests
 import xml.etree.ElementTree as ET
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+from pilmoji import Pilmoji
 from twikit import Client
 
 # ── SECRETS ────────────────────────────────────────────────────────────────────
@@ -84,7 +86,7 @@ STAGE_KW = {
     },
 }
 
-# ── STAGE LABELS + COLORS ──────────────────────────────────────────────────────
+# ── STAGE LABELS ──────────────────────────────────────────────────────
 STAGE_LABELS = {
     "transfer": {
         0: "DEAL COLLAPSED",
@@ -107,14 +109,6 @@ STAGE_LABELS = {
         3: "RULED OUT",
         4: "FIT TO RETURN",
     },
-}
-
-STAGE_COLORS = {
-    0: (107, 114, 128),
-    1: (59,  130, 246),
-    2: (245, 158,  11),
-    3: (239,  68,  68),
-    4: (34,  197,  94),
 }
 
 # ── COUNTRY + LEAGUE HASHTAGS ──────────────────────────────────────────────────
@@ -168,7 +162,6 @@ SKIP_WORDS = {
     "Europa", "Transfer", "Breaking", "Done", "Deal", "Here", "Medical",
     "Exclusive", "Source", "Official", "Update", "News", "Today", "More",
     "Just", "Now", "Final", "After", "Club", "Move", "This", "That",
-    # Added common club words to prevent "Real Madrid" or "Aston Villa" from being detected as players
     "Real", "Madrid", "Bayern", "Munich", "Inter", "Milan", "Juventus",
     "Paris", "Saint", "Germain", "Sporting", "Porto", "Benfica", "Ajax",
     "Villa", "City", "United", "Spurs", "Forest", "Athletic", "Atletico"
@@ -190,8 +183,6 @@ def extract_fee(text: str) -> str:
         r'[€£\$][\d\.]+[Mm]?|[\d\.]+\s*[Mm]illion|[\d\.]+[Mm]\s*[€£\$]',
         text)
     if m:
-        # This forces the fee to uppercase (e.g. $60m becomes $60M) 
-        # and cleans up the word "million" to a sleek "M"
         return m.group(0).strip().upper().replace("MILLION", "M")
     return None
 
@@ -351,7 +342,6 @@ def build_hashtags(stype: str, clubs: list, text: str,
 
     return " ".join(tags[:6])
 
-# ── IMAGE ──────────────────────────────────────────────────────────────────────
 # ── IMAGE ──────────────────────────────────────────────────────────────────────
 def get_premium_font(size: int, weight="Bold"):
     font_path = f"Montserrat-{weight}.ttf"
