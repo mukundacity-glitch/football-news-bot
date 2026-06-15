@@ -431,7 +431,8 @@ async def scrape(data: dict, club_hashtags: dict) -> list:
     client = Client("en-US")
     await client.login(
         auth_info_1=X_USERNAME,
-        auth_info_2=X_PASSWORD,
+        auth_info_2=X_USERNAME,
+        password=X_PASSWORD,
     )
     story_map: dict[str, dict] = {}
 
