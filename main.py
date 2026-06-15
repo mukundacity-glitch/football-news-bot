@@ -1,179 +1,200 @@
 import os
 import json
 import asyncio
+
 from PIL import Image, ImageDraw, ImageFont
-import tweepy
 from twikit import Client
 
-# --- CONFIGURATION ---
-# These will be loaded from GitHub Secrets
-X_AUTH_TOKEN = os.getenv('X_AUTH_TOKEN')
-X_CT0_TOKEN = os.getenv('X_CT0_TOKEN')
-X_API_KEY = os.getenv('X_API_KEY')
-X_API_SECRET = os.getenv('X_API_SECRET')
-X_ACCESS_TOKEN = os.getenv('X_ACCESS_TOKEN')
-X_ACCESS_SECRET = os.getenv('X_ACCESS_SECRET')
+# --- CONFIGURATION (loaded from GitHub Secrets) ---
+# BURNER account cookies — used only for reading/scraping
+X_AUTH_TOKEN = os.getenv("X_AUTH_TOKEN")
+X_CT0_TOKEN  = os.getenv("X_CT0_TOKEN")
 
-# Journalists to monitor (Fastest sources)
+# @FPLVortex's OWN cookies — used only for posting
+X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
+X_POST_CT0_TOKEN  = os.getenv("X_POST_CT0_TOKEN")
+
 JOURNALISTS = [
-    "FabrizioRomano", "Plettigoal", "Santi_J_M", "David_Ornstein", 
-    "sistoney67", "PaulJoyce_", "MatteoMoretto_", "AlfredoPedulla", 
-    "cfalk_news", "FabrizioHawkins"
+    "FabrizioRomano", "Plettigoal", "Santi_J_M", "David_Ornstein",
+    "sistoney67", "PaulJoyce_", "MatteoMoretto_", "AlfredoPedulla",
+    "cfalk_news", "FabrizioHawkins",
 ]
 
-# Keywords to detect news
-KEYWORDS = ["here we go", "agreement reached", "signed", "medical", "appointed", "sacked", "confirmed", "done deal"]
+KEYWORDS = ["here we go", "agreement reached", "signed", "medical",
+            "appointed", "sacked", "confirmed", "done deal"]
 
-# File to track posted news (stored in GitHub repo)
 POSTED_NEWS_FILE = "posted_news.json"
+MAX_POSTS_PER_RUN = 3
 
-# --- 1. SCRAPE LATEST NEWS (Using Twikit for Free Reading) ---
-async def get_latest_transfer():
-    print("🔍 Scraping journalists via Twikit...")
-    client = Client('en-US')
-    
-    # Login using cookies (No API key needed for reading)
-    await client.login(
-        auth_token=X_AUTH_TOKEN,
-        ct0=X_CT0_TOKEN
-    )
-    
-    latest_tweet = None
-    
-    # Check each journalist
+# club name (lowercase) -> hashtag
+CLUB_HASHTAGS = {
+    "manchester united": "#MUFC", "man utd": "#MUFC", "man united": "#MUFC",
+    "arsenal": "#AFC",
+    "chelsea": "#CFC",
+    "liverpool": "#LFC",
+    "manchester city": "#MCFC", "man city": "#MCFC",
+    "tottenham": "#THFC", "spurs": "#THFC",
+    "newcastle": "#NUFC",
+    "aston villa": "#AVFC",
+    "west ham": "#WHUFC",
+    "everton": "#EFC",
+    "brighton": "#BHAFC",
+    "wolves": "#WWFC",
+    "barcelona": "#FCBarcelona",
+    "real madrid": "#RealMadrid",
+    "atletico madrid": "#Atleti",
+    "juventus": "#Juve",
+    "ac milan": "#ACMilan",
+    "inter milan": "#Inter",
+    "napoli": "#Napoli",
+    "psg": "#PSG",
+    "bayern": "#FCBayern",
+    "borussia dortmund": "#BVB",
+}
+
+PL_CLUBS = {
+    "manchester united", "man utd", "man united", "arsenal", "chelsea",
+    "liverpool", "manchester city", "man city", "tottenham", "spurs",
+    "newcastle", "aston villa", "west ham", "everton", "brighton", "wolves",
+}
+
+
+# --- dedup helpers ---
+def load_posted():
+    if not os.path.exists(POSTED_NEWS_FILE):
+        return []
+    with open(POSTED_NEWS_FILE) as f:
+        return json.load(f)
+
+def save_posted(posted):
+    with open(POSTED_NEWS_FILE, "w") as f:
+        json.dump(posted[-500:], f)
+
+def text_key(text):
+    return " ".join(text.lower().split())[:80]
+
+def already_seen(tweet, posted):
+    tid = str(tweet.id)
+    key = text_key(tweet.text)
+    return any(p["id"] == tid or p["key"] == key for p in posted)
+
+
+# --- hashtags ---
+def build_hashtags(text, max_club_tags=3):
+    text_lower = text.lower()
+    tags, is_pl = [], False
+    for club, tag in CLUB_HASHTAGS.items():
+        if club in text_lower and tag not in tags:
+            tags.append(tag)
+            if club in PL_CLUBS:
+                is_pl = True
+        if len(tags) >= max_club_tags:
+            break
+    base = ["#TransferNews", "#FPL"]
+    if is_pl:
+        base.append("#PremierLeague")
+    return " ".join(base + tags)
+
+
+# --- 1. READ via burner account ---
+async def find_new_items(posted):
+    print("🔍 Scraping journalists via twikit (burner)...")
+    read_client = Client("en-US")
+    read_client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
+
+    found = []
     for username in JOURNALISTS:
         try:
-            # Get last 3 tweets from user
-            tweets = await client.get_user_tweets(username, 'tweets', count=3)
-            for tweet in tweets:
-                text_lower = tweet.text.lower()
-                # Check for keywords
-                if any(word in text_lower for word in KEYWORDS):
-                    # Return the first matching tweet found
-                    return {
-                        "text": tweet.text,
-                        "user": tweet.user_name,
-                        "id": tweet.id
-                    }
+            user = await read_client.get_user_by_screen_name(username)
+            tweets = await read_client.get_user_tweets(user.id, "Tweets", count=3)
         except Exception as e:
-            print(f"Error scraping {username}: {e}")
+            print(f"  error reading {username}: {e}")
             continue
-            
-    return None
 
-# --- 2. CHECK IF NEWS IS NEW ---
-def is_new_news(tweet_id):
-    if not os.path.exists(POSTED_NEWS_FILE):
-        return True
-    with open(POSTED_NEWS_FILE, 'r') as f:
-        posted = json.load(f)
-    return str(tweet_id) not in posted
+        for tweet in tweets:
+            text_lower = tweet.text.lower()
+            if any(word in text_lower for word in KEYWORDS) and not already_seen(tweet, posted):
+                found.append({"text": tweet.text, "user": user.screen_name, "id": str(tweet.id)})
+                # mark as seen immediately so a near-duplicate from another
+                # journalist in this same run isn't queued twice
+                posted.append({"id": str(tweet.id), "key": text_key(tweet.text)})
+            if len(found) >= MAX_POSTS_PER_RUN:
+                return found
+    return found
 
-def save_news(tweet_id):
-    posted = []
-    if os.path.exists(POSTED_NEWS_FILE):
-        with open(POSTED_NEWS_FILE, 'r') as f:
-            posted = json.load(f)
-    
-    posted.append(str(tweet_id))
-    # Keep only last 500 items to save space
-    if len(posted) > 500:
-        posted = posted[-500:]
-        
-    with open(POSTED_NEWS_FILE, 'w') as f:
-        json.dump(posted, f)
 
-# --- 3. GENERATE IMAGE (PNG) ---
-def create_image(news_text, source_user):
-    print("🎨 Creating image...")
-    # Create 1200x675 image (Optimal for X)
-    img = Image.new('RGB', (1200, 675), color=(10, 10, 30)) # Dark Blue
+# --- 2. IMAGE (1200x675 PNG) ---
+def create_image(news_text, source_user, filename):
+    print(f"🎨 Creating image {filename}...")
+    img = Image.new("RGB", (1200, 675), color=(10, 10, 30))
     draw = ImageDraw.Draw(img)
-    
-    # Load Fonts (Linux standard fonts on GitHub Actions)
+
     try:
         font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 50)
-        font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 35)
-    except:
+        font_body  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 35)
+    except OSError:
         font_title = ImageFont.load_default()
-        font_body = ImageFont.load_default()
+        font_body  = ImageFont.load_default()
 
-    # Add Text
-    draw.text((50, 50), "BREAKING NEWS", font=font_title, fill=(255, 215, 0)) # Gold
-    
-    # Simple text wrapping
-    words = news_text.split()
-    lines = []
-    current_line = ""
-    for word in words:
-        if len(current_line + word) < 55:
-            current_line += word + " "
+    draw.text((50, 50), "BREAKING NEWS", font=font_title, fill=(255, 215, 0))
+
+    max_width = 1100
+    lines, line = [], ""
+    for word in news_text.split():
+        trial = f"{line} {word}".strip()
+        if draw.textlength(trial, font=font_body) <= max_width:
+            line = trial
         else:
-            lines.append(current_line)
-            current_line = word + " "
-    lines.append(current_line)
-    
+            if line:
+                lines.append(line)
+            line = word
+    if line:
+        lines.append(line)
+
     y = 150
-    for line in lines[:7]: # Max 7 lines
+    for line in lines[:8]:
         draw.text((50, y), line, font=font_body, fill=(255, 255, 255))
-        y += 45
-        
-    draw.text((50, 550), f"Source: @{source_user}", font=font_body, fill=(200, 200, 200))
-    
-    filename = "news_image.png"
+        y += 50
+
+    draw.text((50, 600), f"Source: @{source_user}", font=font_body, fill=(200, 200, 200))
+
     img.save(filename)
     return filename
 
-# --- 4. POST TO X (Using Tweepy for Free Posting) ---
-def post_to_x(text, image_path):
-    print("🚀 Posting to X via Tweepy...")
-    client = tweepy.Client(
-        consumer_key=X_API_KEY,
-        consumer_secret=X_API_SECRET,
-        access_token=X_ACCESS_TOKEN,
-        access_token_secret=X_ACCESS_SECRET
-    )
-    
-    # Upload Media
-    media = client.media_upload(filename=image_path)
-    
-    # Create Short Post
-    short_text = f"🚨 BREAKING: {text[:180]}...\n\n📸 Source: @{source_user}\n#TransferNews #FPL #Football"
-    
-    # Post Tweet
-    client.create_tweet(text=short_text, media_ids=[media.media_id])
-    print("✅ Posted successfully!")
 
-# --- MAIN EXECUTION ---
+# --- 3. POST via twikit using @FPLVortex's own cookies (free) ---
+async def post_item(post_client, news_text, source_user, image_path):
+    print("🚀 Posting to X (twikit, free)...")
+    media_id = await post_client.upload_media(image_path)
+
+    hashtags = build_hashtags(news_text)
+    body = news_text[:180].strip()
+    status = f"🚨 {body}\n\n📸 Source: @{source_user}\n{hashtags}"
+
+    await post_client.create_tweet(text=status, media_ids=[media_id])
+    print("✅ Posted.")
+
+
+# --- MAIN ---
 async def main():
-    # 1. Scrape
-    news = await get_latest_transfer()
-    
-    if news:
-        # 2. Check Duplicate
-        if is_new_news(news['id']):
-            # 3. Create Image
-            img_file = create_image(news['text'], news['user'])
-            
-            # 4. Post to X
-            # Note: We need to pass 'news' to post_to_x properly
-            # Modifying post_to_x call to include user for text
-            global source_user
-            source_user = news['user']
-            
-            # Re-define short text inside post_to_x or pass variable
-            # For simplicity, let's just call it and handle text inside
-            # Actually, let's just pass the text and user
-            post_to_x(news['text'], img_file)
-            
-            # 5. Save ID
-            save_news(news['id'])
-            
-            # Commit the posted_news.json back to repo is handled by GitHub Action step
-        else:
-            print("ℹ️ News already posted.")
-    else:
+    posted = load_posted()
+    items = await find_new_items(posted)
+
+    if not items:
         print("No new transfer news found.")
+        return
+
+    post_client = Client("en-US")
+    post_client.set_cookies({"auth_token": X_POST_AUTH_TOKEN, "ct0": X_POST_CT0_TOKEN})
+
+    for i, news in enumerate(items):
+        img_file = create_image(news["text"], news["user"], f"news_image_{i}.png")
+        await post_item(post_client, news["text"], news["user"], img_file)
+        if i < len(items) - 1:
+            await asyncio.sleep(5)  # small gap between posts
+
+    save_posted(posted)  # the workflow step commits this back to the repo
+
 
 if __name__ == "__main__":
-    asyncio.run(main())   
+    asyncio.run(main())
