@@ -427,7 +427,8 @@ def move_to_posted(item: dict):
 # ── SCRAPE ─────────────────────────────────────────────────────────────────────
 async def scrape(data: dict, club_hashtags: dict) -> list:
     client = Client("en-US")
-    client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
+    client.http.cookies.set("auth_token", X_AUTH_TOKEN, domain=".twitter.com")
+    client.http.cookies.set("ct0", X_CT0_TOKEN, domain=".twitter.com")
 
     story_map: dict[str, dict] = {}
 
