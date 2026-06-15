@@ -1,13 +1,20 @@
 name: Run Transfer Bot
+
 on:
   schedule:
     - cron: '*/30 * * * *'
   workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: write
+
 concurrency:
   group: transfer-bot
   cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,12 +24,17 @@ jobs:
         with:
           persist-credentials: true
           fetch-depth: 0
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install Dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip uninstall -y twikit
+          pip install --no-cache-dir -r requirements.txt
+
       - name: Run Bot
         env:
           X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
@@ -33,6 +45,7 @@ jobs:
           X_USERNAME: ${{ secrets.X_USERNAME }}
           X_PASSWORD: ${{ secrets.X_PASSWORD }}
         run: python main.py
+
       - name: Save Posted News
         run: |
           git config --local user.email "action@github.com"
