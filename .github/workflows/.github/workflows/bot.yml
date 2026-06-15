@@ -1,21 +1,16 @@
 name: Run Transfer Bot
-
 on:
   schedule:
-    - cron: '*/30 * * * *'   # Runs every 30 minutes
-  workflow_dispatch:          # Allows manual run for testing
-
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 permissions:
-  contents: write            # required for the commit-back step
-
+  contents: write
 concurrency:
   group: transfer-bot
-  cancel-in-progress: false  # let an in-flight run finish rather than collide
-
+  cancel-in-progress: false
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -29,24 +24,21 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Run Bot
         env:
-          # Burner account cookies (reading)
           X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
           X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
-          # @FPLVortex's own cookies (posting)
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
           X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
         run: python main.py
 
-      - name: Save Posted News (Commit changes back to repo)
+      - name: Save Posted News
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add posted_news.json
-          git commit -m "Update posted news list" || echo "No changes to commit"
-          git pull --rebase
+          git diff --staged --quiet || git commit -m "chore: update posted_news"
+          git pull --rebase origin main
           git push
