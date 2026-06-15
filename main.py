@@ -14,6 +14,8 @@ X_CT0_TOKEN       = os.getenv("X_CT0_TOKEN")
 X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
 X_POST_CT0_TOKEN  = os.getenv("X_POST_CT0_TOKEN")
 FOOTBALL_API_KEY  = os.getenv("FOOTBALL_API_KEY")
+X_USERNAME        = os.getenv("X_USERNAME")
+X_PASSWORD        = os.getenv("X_PASSWORD")
 
 # ── PATHS ──────────────────────────────────────────────────────────────────────
 POSTED_FILE = Path("posted_news.json")
@@ -427,9 +429,10 @@ def move_to_posted(item: dict):
 # ── SCRAPE ─────────────────────────────────────────────────────────────────────
 async def scrape(data: dict, club_hashtags: dict) -> list:
     client = Client("en-US")
-    client.http.cookies.set("auth_token", X_AUTH_TOKEN, domain=".X.com")
-    client.http.cookies.set("ct0", X_CT0_TOKEN, domain=".X.com")
-
+    await client.login(
+        auth_info_1=X_USERNAME,
+        auth_info_2=X_PASSWORD,
+    )
     story_map: dict[str, dict] = {}
 
     for username in JOURNALISTS:
