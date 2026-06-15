@@ -4,19 +4,16 @@ import re
 import json
 import asyncio
 import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from twikit import Client
 
 # ── SECRETS ────────────────────────────────────────────────────────────────────
-X_AUTH_TOKEN      = os.getenv("X_AUTH_TOKEN")
-X_CT0_TOKEN       = os.getenv("X_CT0_TOKEN")
 X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
 X_POST_CT0_TOKEN  = os.getenv("X_POST_CT0_TOKEN")
 FOOTBALL_API_KEY  = os.getenv("FOOTBALL_API_KEY")
-X_USERNAME        = os.getenv("X_USERNAME")
-X_PASSWORD        = os.getenv("X_PASSWORD")
 
 # ── PATHS ──────────────────────────────────────────────────────────────────────
 POSTED_FILE = Path("posted_news.json")
@@ -30,6 +27,14 @@ JOURNALISTS = [
     "FabrizioRomano", "David_Ornstein", "Plettigoal", "Santi_J_M",
     "sistoney67", "MatteoMoretto_", "AlfredoPedulla", "cfalk_news",
     "BenJacobs", "GianlucaDiMarzio",
+]
+
+# ── NITTER INSTANCES (fallback list) ──────────────────────────────────────────
+NITTER_INSTANCES = [
+    "https://nitter.net",
+    "https://nitter.privacydev.net",
+    "https://nitter.poast.org",
+    "https://nitter.catsarch.com",
 ]
 
 # ── KEYWORDS ───────────────────────────────────────────────────────────────────
@@ -427,97 +432,101 @@ def move_to_posted(item: dict):
         with open(dst, "w") as f:
             json.dump(item, f, indent=2)
 
-# ── SCRAPE ─────────────────────────────────────────────────────────────────────
+# ── SCRAPE VIA NITTER RSS ──────────────────────────────────────────────────────
+def get_nitter_tweets(username: str) -> list:
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
+    for instance in NITTER_INSTANCES:
+        try:
+            url = f"{instance}/{username}/rss"
+            r   = requests.get(url, headers=headers, timeout=10)
+            if r.status_code != 200:
+                continue
+            root  = ET.fromstring(r.content)
+            items = root.findall(".//item")
+            tweets = []
+            for item in items[:8]:
+                link  = item.find("link")
+                title = item.find("title")
+                desc  = item.find("description")
+                if link is None:
+                    continue
+                tid  = link.text.strip().split("/")[-1].split("#")[0]
+                text = ""
+                if desc is not None and desc.text:
+                    clean = re.sub(r'<[^>]+>', '', desc.text)
+                    text  = clean.strip()
+                if not text and title is not None and title.text:
+                    text = title.text.strip()
+                if tid and text:
+                    tweets.append({"id": tid, "text": text})
+            if tweets:
+                print(f"  ✅ @{username}: {len(tweets)} tweets via {instance}")
+                return tweets
+        except Exception as e:
+            continue
+    print(f"  [WARN] @{username}: all nitter instances failed")
+    return []
+
 async def scrape(data: dict, club_hashtags: dict) -> list:
-    # Get guest token for public API access
-    bearer = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cV-J"
-    headers = {"Authorization": f"Bearer {bearer}"}
-
-    try:
-        r = requests.post(
-            "https://api.twitter.com/1.1/guest/activate.json",
-            headers=headers,
-            timeout=10,
-        )
-        guest_token = r.json().get("guest_token", "")
-        headers["x-guest-token"] = guest_token
-        print(f"[BOT] Guest token obtained: {bool(guest_token)}")
-    except Exception as e:
-        print(f"[BOT] Failed to get guest token: {e}")
-        return []
-
     story_map: dict[str, dict] = {}
 
     for username in JOURNALISTS:
-        try:
-            url = (
-                f"https://api.twitter.com/1.1/statuses/user_timeline.json"
-                f"?screen_name={username}&count=8&tweet_mode=extended"
-            )
-            r = requests.get(url, headers=headers, timeout=10)
-            tweets = r.json()
+        tweets = get_nitter_tweets(username)
 
-            if not isinstance(tweets, list):
-                print(f"  [WARN] @{username}: {tweets}")
+        for tweet in tweets:
+            tid  = tweet["id"]
+            text = tweet["text"]
+
+            if tid in data["posted_ids"]:
                 continue
 
-            for tweet in tweets:
-                tid  = str(tweet["id"])
-                text = tweet.get("full_text", tweet.get("text", ""))
+            tl = text.lower()
+            has_signal = (
+                any(k in tl for k in TRANSFER_KW) or
+                any(k in tl for k in INJURY_KW)   or
+                any(k in tl for k in MANAGER_KW)
+            )
+            if not has_signal:
+                continue
 
-                if tid in data["posted_ids"]:
-                    continue
+            collapsed = is_collapse(text)
+            stype     = classify_type(text)
+            stage     = 0 if collapsed else get_stage(text, stype)
+            player    = extract_player(text)
+            clubs     = extract_clubs(text, club_hashtags)
+            fee       = extract_fee(text)
+            contract  = extract_contract(text)
+            key       = build_story_key(player, clubs[0] if clubs else None, stype)
 
-                tl = text.lower()
-                has_signal = (
-                    any(k in tl for k in TRANSFER_KW) or
-                    any(k in tl for k in INJURY_KW)   or
-                    any(k in tl for k in MANAGER_KW)
-                )
-                if not has_signal:
-                    continue
+            ok, reason = should_post(data, key, stage, collapsed)
+            if not ok:
+                continue
 
-                collapsed = is_collapse(text)
-                stype     = classify_type(text)
-                stage     = 0 if collapsed else get_stage(text, stype)
-                player    = extract_player(text)
-                clubs     = extract_clubs(text, club_hashtags)
-                fee       = extract_fee(text)
-                contract  = extract_contract(text)
-                key       = build_story_key(player, clubs[0] if clubs else None, stype)
-
-                ok, reason = should_post(data, key, stage, collapsed)
-                if not ok:
-                    continue
-
-                if key in story_map:
-                    existing = story_map[key]
-                    if username not in existing["sources"]:
-                        existing["sources"].append(username)
-                    if fee and not existing["fee"]:
-                        existing["fee"] = fee
-                    if contract and not existing["contract"]:
-                        existing["contract"] = contract
-                    if stage > existing["stage"]:
-                        existing["stage"] = stage
-                else:
-                    story_map[key] = {
-                        "id":        tid,
-                        "key":       key,
-                        "text":      text,
-                        "sources":   [username],
-                        "stype":     stype,
-                        "stage":     stage,
-                        "collapsed": collapsed,
-                        "player":    player,
-                        "clubs":     clubs,
-                        "fee":       fee,
-                        "contract":  contract,
-                        "reason":    reason,
-                    }
-
-        except Exception as e:
-            print(f"  [WARN] @{username}: {e}")
+            if key in story_map:
+                existing = story_map[key]
+                if username not in existing["sources"]:
+                    existing["sources"].append(username)
+                if fee and not existing["fee"]:
+                    existing["fee"] = fee
+                if contract and not existing["contract"]:
+                    existing["contract"] = contract
+                if stage > existing["stage"]:
+                    existing["stage"] = stage
+            else:
+                story_map[key] = {
+                    "id":        tid,
+                    "key":       key,
+                    "text":      text,
+                    "sources":   [username],
+                    "stype":     stype,
+                    "stage":     stage,
+                    "collapsed": collapsed,
+                    "player":    player,
+                    "clubs":     clubs,
+                    "fee":       fee,
+                    "contract":  contract,
+                    "reason":    reason,
+                }
 
         await asyncio.sleep(1)
 
