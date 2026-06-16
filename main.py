@@ -243,13 +243,13 @@ def build_tweet_body(player: str, club: str, stage: int, stype: str, fee: str, c
         base = f"🚨 COLLAPSED | {p} ❌ {clean_club}\n\nThe proposed deal taking {p} to {clean_club} has officially collapsed. The move is completely off and the player will explore other options. 🚫"
     elif stype == "transfer":
         if stage == 1:
-            base = f"🚨 EXCLUSIVE | {p} ⏳ {clean_club}\n\n{clean_club} have established concrete interest in signing {p}. Initial contacts have taken place as they monitor the situation closely ahead of a potential move. 👀"
+            base = f"🚨 EXCLUSIVE | {p} ⏳ {clean_club}\n\n{clean_club} have concrete interest in signing {p} and contacts are underway as they monitor the situation. 👀"
         elif stage == 2:
-            base = f"🚨 ADVANCED | {p} 🔜 {clean_club}\n\nNegotiations are moving quickly! {p} is now close to reaching an agreement with {clean_club}. Final details are actively being discussed. ⏳"
+            base = f"🚨 ADVANCED | {p} 🔜 {clean_club}\n\nNegotiations are moving fast! {p} is now close to an agreement with {clean_club} as final details are discussed. ⏳"
         elif stage == 3:
-            base = f"🚨 HERE WE GO | {p} ✍️ {clean_club}\n\n{p} has officially signed the contract with {clean_club}. All documents are completed, approved, and ready to go! 📝"
+            base = f"🚨 HERE WE GO | {p} ✍️ {clean_club}\n\n{p} has signed the contract with {clean_club}. All documents are completed and ready to go! 📝"
         else:
-            base = f"🚨 OFFICIAL | {p} ➡️ {clean_club}\n\n{p} has officially completed a permanent move to {clean_club}. The highly-rated talent arrives with massive expectations and is expected to strengthen the squad significantly this season. ⭐"
+            base = f"🚨 OFFICIAL | {p} ➡️ {clean_club}\n\n{p} has completed a permanent move to {clean_club}, arriving with big expectations to strengthen the squad. ⭐"
     elif stype == "manager":
         if stage == 4:
             base = f"🚨 OFFICIAL | {p} 👔 {clean_club}\n\n{p} has been officially appointed as the new manager of {clean_club}. A new era begins at the club! 📋"
@@ -267,8 +267,57 @@ def build_tweet_body(player: str, club: str, stage: int, stype: str, fee: str, c
     if details:
         base += "\n\n" + "\n".join(details)
 
-    base += f"\n\n{hashtags} #Soccer #Transfers #FPL #BreakingNews #DeadlineDay"
+    base += f"\n\n{hashtags} #FPL"
     return base
+def twitter_len(text: str) -> int:
+    """Twitter's weighted character count (not len()).
+    - Every URL counts as 23 chars regardless of real length.
+    - Emoji / most non-Latin chars count as 2.
+    This matches what the API enforces, so our 280 guard is accurate."""
+    # URLs are flattened to 23 each
+    url_re = re.compile(r'https?://\S+|www\.\S+')
+    urls = url_re.findall(text)
+    stripped = url_re.sub("", text)
+    weight = 23 * len(urls)
+    for ch in stripped:
+        o = ord(ch)
+        # CJK, emoji, symbols, and other wide ranges weigh 2; Latin/punct weigh 1
+        if o <= 0x10FF or (0x2000 <= o <= 0x200D) or (0x2010 <= o <= 0x201F) or (0x2032 <= o <= 0x2037):
+            weight += 1
+        else:
+            weight += 2
+    return weight
+
+
+def trim_for_twitter(body: str, limit: int = 278) -> str:
+    """Ensure a tweet fits Twitter's weighted limit. Strategy:
+    1. If it already fits, return unchanged.
+    2. Drop trailing hashtags one at a time (keeps the headline/story intact).
+    3. If still too long, hard-truncate the remaining text with an ellipsis."""
+    if twitter_len(body) <= limit:
+        return body
+
+    # Split off the trailing hashtag block (last paragraph that is all #tags).
+    parts = body.rsplit("\n\n", 1)
+    if len(parts) == 2 and parts[1].strip().startswith("#"):
+        head, tag_line = parts[0], parts[1]
+        tags = tag_line.split()
+        while tags and twitter_len(head + "\n\n" + " ".join(tags)) > limit:
+            tags.pop()                       # remove least-important (last) tag
+        candidate = head + ("\n\n" + " ".join(tags) if tags else "")
+        if twitter_len(candidate) <= limit:
+            return candidate
+        body = head                          # tags gone, still long → trim head below
+
+    # Hard truncate by weighted length, leaving room for the ellipsis.
+    out = ""
+    for ch in body:
+        if twitter_len(out + ch) > limit - 1:
+            break
+        out += ch
+    return out.rstrip() + "…"
+
+
 def build_hashtags(stype: str, clubs: list, text: str, club_hashtags: dict, pl_clubs: set) -> str:
     tags = ["#TransferNews" if stype == "transfer" else "#ManagerNews" if stype == "manager" else "#InjuryNews", "#Football"]
     for club in clubs[:2]:
@@ -651,7 +700,7 @@ async def post_item(client: Client, item: dict, data: dict, club_hashtags: dict,
     raw_club_name = target_club if target_club else (item["clubs"][0].title() if item["clubs"] else "Club")
     body = build_tweet_body(item["player"], raw_club_name, item["stage"], item["stype"], item["fee"], item["contract"], item["collapsed"], hashtags)
 
-    if len(body) > 280: body = body[:277] + "..."
+    body = trim_for_twitter(body, limit=278)   # weighted trim (URLs=23, emoji=2)
     await client.create_tweet(text=body, media_ids=[media_id])
     if os.path.exists(filename): os.remove(filename)
     data["posted_ids"].append(item["id"])
