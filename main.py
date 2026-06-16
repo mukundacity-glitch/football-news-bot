@@ -86,6 +86,8 @@ STAFF_BLOCK_KW = [
     "technical director", "chief scout", "scouting", "ceo", "chairman",
     "owner", "president", "physio", "kit man", "head of football",
     "transfer chief", "negotiator", "doctor", "club doctor", "team doctor",
+    "physio", "doctor", "medical", "medic", "surgeon", 
+    "physician", "head of medical", "club doctor", "physiotherapist"
 ]
 
 # FIX 2: nationality/descriptor blocklist — never treat these as a player name
