@@ -257,7 +257,7 @@ Return STRICT JSON only, no markdown, no prose:
 "stage": 1,
 "collapsed": true/false,
 "headline": "<=10 word ENGLISH headline true to THIS exact story",
-"body": "1-2 factual ENGLISH sentences summarising THIS tweet, no filler, no hype template, no invented facts",
+"body": "1 short factual ENGLISH sentence (maximum 15 words) summarising THIS tweet, no filler",
 "confidence": 0.0-1.0}}
 
 Tweet:
@@ -336,6 +336,9 @@ def extract_story_fallback(tweet_text: str) -> dict:
             to_key   = clubs[0]
             from_key = clubs[-1] if len(clubs) >= 2 else None
 
+    # Made the fallback text much shorter to prevent X cut-offs
+    short_body = (clean[:130] + '…') if len(clean) > 130 else clean
+
     return {
         "is_football": True, "event": event, "is_real_move": event in ("transfer", "loan", "loan_option"),
         "player": name,
@@ -345,7 +348,7 @@ def extract_story_fallback(tweet_text: str) -> dict:
         "fee": None, "contract": None, "conditional": None,
         "stage": stage, "collapsed": any(w in tl for w in ["collapsed", "off", "called off", "rejected"]),
         "headline": (name + " — update") if name else "Transfer update",
-        "body": clean[:240], "confidence": 0.5,
+        "body": short_body, "confidence": 0.5,
     }
 
 def build_story(tweet_text: str) -> dict:
