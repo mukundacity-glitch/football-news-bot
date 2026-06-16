@@ -89,6 +89,20 @@ STAFF_BLOCK_KW = [
     "doctor", "medical", "medic", "surgeon", "physician", 
     "head of medical", "club doctor", "physiotherapist"
 ]
+DEMONYM_BLOCKLIST = [
+    "irishman", "englishman", "scotsman", "welshman", 
+    "frenchman", "dutchman", "spaniard", "brazilian", "argentinian"
+]
+
+def extract_name_fallback(text):
+    # Your existing extraction logic
+    extracted_name = get_name_from_text(text) 
+    
+    # Check if the extracted name contains blocked terms
+    if extracted_name and any(demonym in extracted_name.lower() for demonym in DEMONYM_BLOCKLIST):
+        return None # Triggers a failure or secondary fallback
+        
+    return extracted_name
 
 # FIX 2: nationality/descriptor blocklist — never treat these as a player name
 NATIONALITY_DESCRIPTORS = {
