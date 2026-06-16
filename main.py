@@ -346,7 +346,8 @@ def build_hashtags(stype: str, clubs: list, text: str,
 def get_premium_font(size: int, weight="Bold"):
     font_path = f"Montserrat-{weight}.ttf"
     if not os.path.exists(font_path):
-        font_url = f"https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat-{weight}.ttf"
+        # Updated URL pointing to Google's new 'static' folder
+        font_url = f"https://github.com/google/fonts/raw/main/ofl/montserrat/static/Montserrat-{weight}.ttf"
         urllib.request.urlretrieve(font_url, font_path)
     return ImageFont.truetype(font_path, size)
 
