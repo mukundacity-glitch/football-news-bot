@@ -48,13 +48,14 @@ jobs:
           FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
           X_USERNAME: ${{ secrets.X_USERNAME }}
           X_PASSWORD: ${{ secrets.X_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python main.py
 
       - name: Save Posted News
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add posted_news.json queue/ clubs_cache.json
+          git add posted_news.json queue/ clubs_cache.json fpl_cache.json
           git diff --staged --quiet || git commit -m "chore: update posted_news"
-          git pull --rebase origin main
-          git push
+          git pull --rebase origin main || true
+          git push || (git pull --rebase origin main && git push)
