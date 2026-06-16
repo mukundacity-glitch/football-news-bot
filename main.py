@@ -80,7 +80,6 @@ FOOTBALL_KW = [
     "sack", "appoint", "manager", "head coach", "stay", "return", "recall",
 ]
 
-# FIX 1: added "doctor", "club doctor", "team doctor"
 STAFF_BLOCK_KW = [
     "head of recruitment", "sporting director", "director of football",
     "technical director", "chief scout", "scouting", "ceo", "chairman",
@@ -89,22 +88,7 @@ STAFF_BLOCK_KW = [
     "doctor", "medical", "medic", "surgeon", "physician", 
     "head of medical", "club doctor", "physiotherapist"
 ]
-DEMONYM_BLOCKLIST = [
-    "irishman", "englishman", "scotsman", "welshman", 
-    "frenchman", "dutchman", "spaniard", "brazilian", "argentinian"
-]
 
-def extract_name_fallback(text):
-    # Your existing extraction logic
-    extracted_name = get_name_from_text(text) 
-    
-    # Check if the extracted name contains blocked terms
-    if extracted_name and any(demonym in extracted_name.lower() for demonym in DEMONYM_BLOCKLIST):
-        return None # Triggers a failure or secondary fallback
-        
-    return extracted_name
-
-# FIX 2: nationality/descriptor blocklist — never treat these as a player name
 NATIONALITY_DESCRIPTORS = {
     "northern irishman", "irishman", "scotsman", "welshman", "englishman",
     "frenchman", "spaniard", "german", "italian", "portuguese", "brazilian",
@@ -112,7 +96,7 @@ NATIONALITY_DESCRIPTORS = {
     "swiss", "austrian", "croatian", "senegalese", "ghanaian", "nigerian",
     "jamaican", "colombian", "uruguayan", "chilean", "mexican", "american",
     "japanese", "south korean", "australian", "canadian", "algerian",
-    "moroccan", "ivorian", "ecuadorian", "paraguayan",
+    "moroccan", "ivorian", "ecuadorian", "paraguayan", "dutchman"
 }
 
 # ── CLUB MAPS ────────────────────────────────────────────────────────────────
@@ -246,7 +230,6 @@ def increment_daily(data: dict):
     data["daily"]["count"] += 1
 
 # ── STORY EXTRACTION ─────────────────────────────────────────────────────────
-# FIX 3: improved prompt with explicit CRITICAL DIRECTION RULE
 _EXTRACT_PROMPT = """You are a football transfer-desk editor. Read this reporter tweet and extract ONLY what it actually states. Do NOT invent, assume, or generalise. If the tweet is conditional (deadlines, options, "if X then Y"), capture that exactly.
 
 CRITICAL DIRECTION RULE — read carefully:
@@ -329,8 +312,7 @@ def extract_story_fallback(tweet_text: str) -> dict:
             continue
         if any(w in FILLER for w in low.split()):
             continue
-        # FIX 4: reject nationality descriptors mistaken for player names
-        if low in NATIONALITY_DESCRIPTORS:
+        if low in NATIONALITY_DESCRIPTORS or any(dem in low for dem in NATIONALITY_DESCRIPTORS):
             continue
         name = m
         break
@@ -372,21 +354,21 @@ def build_story(tweet_text: str) -> dict:
     s["from_key"] = s.get("from_key") or resolve_club_key(s.get("from_club"))
     s["to_key"]   = s.get("to_key")   or resolve_club_key(s.get("to_club"))
 
-    # FIX 5: catch nationality descriptors that slipped through the LLM
-    if s.get("player") and s["player"].lower().strip() in NATIONALITY_DESCRIPTORS:
-        s["player"] = None
+    if s.get("player"):
+        p_low = s["player"].lower().strip()
+        if p_low in NATIONALITY_DESCRIPTORS or any(nd in p_low for nd in ["irishman", "englishman", "scotsman", "welshman", "frenchman", "dutchman", "spaniard"]):
+            s["player"] = None
 
-    # FIX 6: arrow direction sanity check using FPL as ground truth.
-    # Player's CURRENT FPL club must be from_key (the selling side).
-    # If it matches to_key instead, the LLM got them backwards — swap.
     if s.get("from_key") and s.get("to_key") and s.get("player"):
         _fpl = fetch_fpl_data()
         _el  = find_player_in_fpl(s["player"], _fpl)
         if _el:
             cur = fpl_team_key(_el, _fpl)
             if cur and cur == s["to_key"] and cur != s["from_key"]:
-                s["from_key"], s["to_key"]   = s["to_key"],   s["from_key"]
-                s["from_club"], s["to_club"] = s.get("to_club"), s.get("from_club")
+                s["from_key"], s["to_key"] = s["to_key"], s["from_key"]
+                temp_club = s.get("from_club")
+                s["from_club"] = s.get("to_club")
+                s["to_club"] = temp_club
 
     try:
         s["stage"] = max(1, min(4, int(s.get("stage", 1))))
@@ -806,21 +788,33 @@ def create_image(story, sources, filename, rumour=False):
     from_im = _load_crest(from_key, CREST); to_im = _load_crest(to_key, CREST)
     row_y   = name_bottom + 36; cy = row_y + CREST // 2; x = TEXT_X
 
-    if from_im is not None:
+    is_transfer = ev in ("transfer", "loan", "loan_option")
+
+    if is_transfer and from_im is not None and to_im is not None:
+        # Full FROM -> TO layout for transfers
         img.paste(from_im, (x, row_y + (CREST - from_im.height)//2), from_im)
         fn  = (story.get("from_club") or from_key or "").replace("_", " ").upper()
         fnw = draw.textlength(fn, font=crest_font)
         draw.text((x + (CREST - fnw)//2, row_y + CREST + 10), fn, font=crest_font, fill=(235, 235, 235))
         x += CREST + 30
 
-    if (from_im is not None) or (to_im is not None):
         _draw_arrow(draw, x, cy - 14, 150, GREEN, thick=28); x += 180
 
-    if to_im is not None:
         img.paste(to_im, (x, row_y + (CREST - to_im.height)//2), to_im)
         tn  = (story.get("to_club") or to_key or "").replace("_", " ").upper()
         tnw = draw.textlength(tn, font=crest_font)
         draw.text((x + (CREST - tnw)//2, row_y + CREST + 10), tn, font=crest_font, fill=(255, 255, 255))
+    else:
+        # Single logo mode (No arrow) for injuries, managers, or single-club updates
+        single_im = to_im or from_im
+        single_key = to_key if to_im else from_key
+        single_club = story.get("to_club") if to_im else story.get("from_club")
+
+        if single_im is not None:
+            img.paste(single_im, (x, row_y + (CREST - single_im.height)//2), single_im)
+            cn  = (single_club or single_key or "").replace("_", " ").upper()
+            cnw = draw.textlength(cn, font=crest_font)
+            draw.text((x + (CREST - cnw)//2, row_y + CREST + 10), cn, font=crest_font, fill=(255, 255, 255))
 
     detail = build_detail_line(story)
     if detail:
