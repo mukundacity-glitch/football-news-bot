@@ -135,15 +135,122 @@ SKIP_WORDS = {
     "Real", "Madrid", "Bayern", "Munich", "Inter", "Milan", "Juventus",
     "Paris", "Saint", "Germain", "Sporting", "Porto", "Benfica", "Ajax"
 }
-def extract_player(text: str) -> str:
-    matches = re.findall(r'\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\b', text)
+# ── ROBUST CLUB MATCHING ─────────────────────────────────────────────────────
+# Match ONLY full, real club names with word boundaries. This kills the old
+# substring bug where 3-letter keys like "che"/"eve"/"val" matched inside
+# words such as "Valverde", "reached", or "Manchester".
+# Built from CLUB_NAME_MAP (clean full names) plus a few common variants.
+CLUB_ALIASES = {
+    # phrase that may appear in a tweet  ->  official FPL key
+    "arsenal": "Arsenal",
+    "aston villa": "Aston_Villa", "villa": "Aston_Villa",
+    "bournemouth": "Bournemouth",
+    "brentford": "Brentford",
+    "brighton": "Brighton",
+    "chelsea": "Chelsea",
+    "crystal palace": "Crystal_Palace", "palace": "Crystal_Palace",
+    "everton": "Everton",
+    "fulham": "Fulham",
+    "ipswich": "Ipswich", "ipswich town": "Ipswich",
+    "leicester": "Leicester", "leicester city": "Leicester",
+    "liverpool": "Liverpool",
+    "manchester city": "Man_City", "man city": "Man_City",
+    "manchester united": "Man_Utd", "man united": "Man_Utd", "man utd": "Man_Utd",
+    "newcastle": "Newcastle", "newcastle united": "Newcastle",
+    "nottingham forest": "Nottm_Forest", "nott'm forest": "Nottm_Forest", "forest": "Nottm_Forest",
+    "southampton": "Southampton",
+    "tottenham": "Spurs", "spurs": "Spurs", "tottenham hotspur": "Spurs",
+    "west ham": "West_Ham", "west ham united": "West_Ham",
+    "wolves": "Wolves", "wolverhampton": "Wolves",
+}
+# longest aliases first so "manchester united" matches before "man"
+_SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
+
+def extract_clubs(text: str, club_hashtags: dict = None) -> list:
+    """Return official club keys (e.g. 'Man_Utd') found as whole words/phrases,
+    in the order they appear. club_hashtags is accepted but ignored (legacy)."""
+    tl = text.lower()
+    found = []
+    used_spans = []
+    for alias in _SORTED_ALIASES:
+        for m in re.finditer(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl):
+            span = m.span()
+            # skip if this overlaps a longer alias we already matched
+            if any(s[0] <= span[0] < s[1] or s[0] < span[1] <= s[1] for s in used_spans):
+                continue
+            official = CLUB_ALIASES[alias]
+            if official not in found:
+                found.append((span[0], official))
+                used_spans.append(span)
+    found.sort(key=lambda x: x[0])           # preserve appearance order
+    return [c for _, c in found]
+
+def extract_transfer_clubs(text: str) -> tuple:
+    """Work out the (FROM, TO) clubs of a move as official keys.
+    Heuristics, best-effort:
+      - 'from X'            -> X is the FROM (selling) club
+      - 'X sign/signs ...'  -> X is the TO (buying) club
+      - 'joins/to X'        -> X is the TO club
+    Falls back to order of appearance. Returns (from_key_or_None, to_key_or_None)."""
+    tl = text.lower()
+    clubs_in_order = extract_clubs(text)
+    if not clubs_in_order:
+        return None, None
+
+    from_club = None
+    to_club = None
+
+    # FROM: the club that appears right after the word "from"
+    for alias in _SORTED_ALIASES:
+        if re.search(r'\bfrom\b[^.]{0,40}?(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl):
+            from_club = CLUB_ALIASES[alias]
+            break
+
+    # TO: club before "sign/signs/signing" OR after "joins/join/to/move to"
+    for alias in _SORTED_ALIASES:
+        a = re.escape(alias)
+        if re.search(r'(?<![a-z])' + a + r'(?![a-z])[^.]{0,30}?\bsign', tl) or \
+           re.search(r'\b(?:join|joins|joining|move to|moves to|to)\b[^.]{0,25}?(?<![a-z])' + a + r'(?![a-z])', tl):
+            if CLUB_ALIASES[alias] != from_club:
+                to_club = CLUB_ALIASES[alias]
+                break
+
+    # Fallbacks using appearance order
+    remaining = [c for c in clubs_in_order if c not in (from_club, to_club)]
+    if to_club is None:
+        # last distinct club mentioned is usually the destination
+        for c in reversed(clubs_in_order):
+            if c != from_club:
+                to_club = c
+                break
+    if from_club is None and remaining:
+        # first club that isn't the destination
+        for c in clubs_in_order:
+            if c != to_club:
+                from_club = c
+                break
+
+    return from_club, to_club
+
+
+def extract_player(text: str, clubs: list = None) -> str:
+    """First plausible person name that is NOT a club/skip word."""
+    club_words = set()
+    for off in (clubs or []):
+        for w in off.replace("_", " ").lower().split():
+            club_words.add(w)
+    matches = re.findall(r'\b([A-Z][a-zà-ÿ]+(?:[-\' ][A-Z][a-zà-ÿ]+)*)\b', text)
     for m in matches:
-        if m not in SKIP_WORDS and len(m) > 3:
+        words = m.split()
+        if any(w in SKIP_WORDS for w in words):
+            continue
+        if m.lower() in CLUB_ALIASES:                 # it's a club, not a player
+            continue
+        if any(w.lower() in club_words for w in words):
+            continue
+        if len(m) > 3:
             return m
     return None
-def extract_clubs(text: str, club_hashtags: dict) -> list:
-    tl = text.lower()
-    return [c for c in club_hashtags if c in tl]
 def extract_fee(text: str) -> str:
     m = re.search(r'[€£\$][\d\.]+[Mm]?|[\d\.]+\s*[Mm]illion|[\d\.]+[Mm]\s*[€£\$]', text)
     if m: return m.group(0).strip().upper().replace("MILLION", "M")
@@ -221,10 +328,14 @@ def find_player_in_fpl(player_name, data):
 # ── TEXT GENERATORS ────────────────────────────────────────────────────────────
 def build_headline(player: str, clubs: list, stage: int, stype: str, fee: str, contract: str, collapsed: bool) -> tuple[str, str]:
     p = player or "Player"
-    raw_club = clubs[1].title() if len(clubs) > 1 else clubs[0].title() if clubs else "Club"
+    # destination club = last one mentioned; clubs are official keys ("Man_Utd")
+    raw_club = clubs[-1].replace("_", " ") if clubs else "Club"
 
     details = []
-    if fee: details.append(f"💰 {fee}")
+    if stype == "transfer":
+        details.append(f"💰 {fee}" if fee else "💰 Undisclosed")
+    elif fee:
+        details.append(f"💰 {fee}")
     if contract: details.append(f"⏱️ {contract}")
     detail_line = " | ".join(details) if details else ""
     if collapsed: return f"{p} ❌ Deal to {raw_club} collapsed", detail_line
@@ -261,7 +372,7 @@ def build_tweet_body(player: str, club: str, stage: int, stype: str, fee: str, c
         else:
             base = f"⚠️ INJURY ALERT | {p} 🤕\n\n{p} has picked up an injury concern. The medical staff is currently assessing the situation to determine a return timeline. 🏥"
     details = []
-    if fee and stype == "transfer": details.append(f"💰 Fee: {fee}")
+    if stype == "transfer": details.append(f"💰 Fee: {fee if fee else 'Undisclosed'}")
     if contract: details.append(f"📄 Contract: {contract}")
 
     if details:
@@ -318,17 +429,26 @@ def trim_for_twitter(body: str, limit: int = 278) -> str:
     return out.rstrip() + "…"
 
 
-def build_hashtags(stype: str, clubs: list, text: str, club_hashtags: dict, pl_clubs: set) -> str:
+# Clean official-club -> hashtag map (replaces the junky club_hashtags lookup)
+CLUB_HASHTAG_MAP = {
+    "Arsenal": "#Arsenal", "Aston_Villa": "#AVFC", "Bournemouth": "#AFCB",
+    "Brentford": "#Brentford", "Brighton": "#BHAFC", "Chelsea": "#Chelsea",
+    "Crystal_Palace": "#CPFC", "Everton": "#EFC", "Fulham": "#FFC",
+    "Ipswich": "#ITFC", "Leicester": "#LCFC", "Liverpool": "#LFC",
+    "Man_City": "#MCFC", "Man_Utd": "#MUFC", "Newcastle": "#NUFC",
+    "Nottm_Forest": "#NFFC", "Southampton": "#SaintsFC", "Spurs": "#THFC",
+    "West_Ham": "#WHUFC", "Wolves": "#Wolves",
+}
+
+def build_hashtags(stype: str, clubs: list, text: str, club_hashtags: dict = None, pl_clubs: set = None) -> str:
+    """clubs are now official keys (e.g. 'Man_Utd'). Builds clean tags."""
     tags = ["#TransferNews" if stype == "transfer" else "#ManagerNews" if stype == "manager" else "#InjuryNews", "#Football"]
     for club in clubs[:2]:
-        ht = club_hashtags.get(club)
+        ht = CLUB_HASHTAG_MAP.get(club)
         if ht and ht not in tags: tags.append(ht)
-    if any(c in pl_clubs for c in clubs) and "#PremierLeague" not in tags: tags.append("#PremierLeague")
-    c_tag = extract_country(text)
-    if c_tag and c_tag not in tags: tags.append(c_tag)
-    for lt in extract_league(text):
-        if lt not in tags: tags.append(lt)
-    return " ".join(tags[:6])
+    # every club in our map is a Premier League club, so tag the league
+    if clubs and "#PremierLeague" not in tags: tags.append("#PremierLeague")
+    return " ".join(tags[:5])
 # ── PREMIUM GRAPHICS ENGINE ────────────────────────────────────────────────────
 _FONT_CACHE = {}
 
@@ -451,14 +571,33 @@ def _draw_arrow(d, x, y, w, color, direction, thick=24):
         d.polygon([(x + head, cy - thick), (x, cy), (x + head, cy + thick)], fill=color)
 
 
-def create_image(headline: str, detail_line: str, source_users: list, stage: int, stype: str, collapsed: bool, filename: str, target_club: str, player_name: str):
+def _load_crest(club_key: str, box: int = 150):
+    """Download (if needed) and return a club crest as RGBA, aspect-fit to box."""
+    if not club_key:
+        return None
+    safe = club_key.replace(" ", "_").replace("'", "")
+    p = Path(f"logos/{safe}.png")
+    if not p.exists() and FPL_LOGO_IDS.get(safe):
+        _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS.get(safe)}.png", p)
+    if p.exists():
+        src = _safe_open_rgba(p)
+        if src is not None:
+            return _fit_contain(src, box, box)
+    return None
+
+
+def create_image(headline: str, detail_line: str, source_users: list, stage: int, stype: str, collapsed: bool, filename: str, target_club: str, player_name: str, from_club: str = None, to_club: str = None):
     W, H = 1200, 675
     fpl_data = fetch_fpl_data()
     player_el = find_player_in_fpl(player_name, fpl_data)
 
+    # default the move endpoints if not supplied
+    if to_club is None:
+        to_club = target_club
+    GREEN = (40, 210, 90)
+
     stats = None
     player_img_path = Path("players/silhouette.png")
-
     if player_el:
         code = player_el["code"]
         stats = {"cost": f"£{player_el['now_cost']/10.0}m", "pts": str(player_el['total_points']), "goals": str(player_el['goals_scored']), "assists": str(player_el['assists'])}
@@ -467,14 +606,14 @@ def create_image(headline: str, detail_line: str, source_users: list, stage: int
             _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png", player_img_path)
     have_player_img = player_img_path.exists()
 
-    bg_color = CLUB_COLORS.get(target_club, (25, 29, 38)) if target_club else (25, 29, 38)
+    bg_color = CLUB_COLORS.get(to_club, (25, 29, 38)) if to_club else (25, 29, 38)
     accent = (255, 90, 0) if stype == "transfer" else (0, 163, 255) if stype == "manager" else (255, 0, 77)
     if collapsed: accent = (107, 114, 128)
 
     img = Image.new("RGB", (W, H), (14, 16, 21))
     draw = ImageDraw.Draw(img)
 
-    # 1. Right diagonal cutout (dynamic team-colour panel) + subtle vertical shading for depth
+    # 1. Right diagonal cutout (TO-club colour panel) + depth shading
     draw.polygon([(W*0.52, 0), (W, 0), (W, H), (W*0.42, H)], fill=bg_color)
     shade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     sd = ImageDraw.Draw(shade)
@@ -485,117 +624,104 @@ def create_image(headline: str, detail_line: str, source_users: list, stage: int
     grad = grad.resize((W, H))
     img.paste(shade, (0, 0), Image.composite(shade.split()[3], Image.new("L", (W, H), 0), grad))
 
-    # 2. Player headshot FIRST (so the crest sits on top of the player, not hidden) — aspect-correct + soft shadow
+    # 2. Player headshot (bottom-right), aspect-correct + soft shadow.
+    #    If there is no FPL photo, draw a clean "NO PHOTO" placeholder instead
+    #    so the right panel never looks empty/unfinished.
+    photo_ok = False
     if have_player_img:
         p_src = _safe_open_rgba(player_img_path)
         if p_src is not None:
-            p_img = _fit_contain(p_src, 470, 470)
+            p_img = _fit_contain(p_src, 460, 460)
             shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             sh = p_img.split()[3].point(lambda a: int(a * 0.55))
-            shadow.paste((0, 0, 0, 255), (W - 430 + 8, H - p_img.height - 6 + 8), sh)
+            shadow.paste((0, 0, 0, 255), (W - 420 + 8, H - p_img.height - 6 + 8), sh)
             shadow = shadow.filter(ImageFilter.GaussianBlur(8))
             img.paste(shadow, (0, 0), shadow)
-            img.paste(p_img, (W - 430, H - p_img.height - 6), p_img)
-
-    # 3. Automated club crest (top-right), aspect-correct, on top of the headshot
-    if target_club:
-        safe_name = target_club.replace(" ", "_").replace("'", "")
-        logo_path = Path(f"logos/{safe_name}.png")
-        if not logo_path.exists() and FPL_LOGO_IDS.get(safe_name):
-            _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS.get(safe_name)}.png", logo_path)
-        if logo_path.exists():
-            logo_src = _safe_open_rgba(logo_path)
-            if logo_src is not None:
-                logo = _fit_contain(logo_src, 130, 130)
-                img.paste(logo, (W - 40 - logo.width, 40), logo)
+            img.paste(p_img, (W - 420, H - p_img.height - 6), p_img)
+            photo_ok = True
+    if not photo_ok:
+        # silhouette circle + "NO PHOTO" label, centred in the colour panel
+        ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        od = ImageDraw.Draw(ov)
+        cx, cyc, r = int(W * 0.78), int(H * 0.50), 150
+        od.ellipse([cx - r, cyc - r, cx + r, cyc + r], fill=(0, 0, 0, 70))
+        # simple person silhouette (head + shoulders) in a soft tint
+        head_r = 52
+        od.ellipse([cx - head_r, cyc - 78, cx + head_r, cyc - 78 + head_r * 2],
+                   fill=(255, 255, 255, 60))
+        od.pieslice([cx - 95, cyc + 6, cx + 95, cyc + 210], 180, 360, fill=(255, 255, 255, 60))
+        img.paste(ov, (0, 0), ov)
+        ph_font = get_premium_font(34, "Black")
+        label = "NO PHOTO"
+        lw = od.textlength(label, font=ph_font)
+        ImageDraw.Draw(img).text((cx - lw / 2, cyc + r - 6), label,
+                                  font=ph_font, fill=(255, 255, 255))
 
     # ── Left layout: borders, brand, status ─────────────────────────────────────
     TEXT_X = 60
-    TEXT_MAX_W = int(W * 0.60) - TEXT_X      # ~660px usable text width
-
+    TEXT_MAX_W = int(W * 0.62) - TEXT_X
     draw.rectangle([0, 0, W, 12], fill=accent)
-    brand_font = get_premium_font(64, "Black")
-    sub_font = get_premium_font(40, "Bold")
+    brand_font = get_premium_font(60, "Black")
+    sub_font = get_premium_font(38, "Bold")
+    crest_name_font = get_premium_font(34, "Black")
 
-    draw.text((TEXT_X, 46), "FPL", font=brand_font, fill=(255, 255, 255))
+    draw.text((TEXT_X, 44), "FPL", font=brand_font, fill=(255, 255, 255))
     fpl_w = draw.textlength("FPL ", font=brand_font)
-    draw.text((TEXT_X + fpl_w, 46), "VORTEX", font=brand_font, fill=accent)
+    draw.text((TEXT_X + fpl_w, 44), "VORTEX", font=brand_font, fill=accent)
 
     s_label = STAGE_LABELS.get(stype, {}).get(0 if collapsed else stage, "UPDATE").upper()
     badge_txt = f"STATUS: {s_label}"
     badge_w = int(draw.textlength(badge_txt, font=sub_font))
-    draw.rounded_rectangle([TEXT_X, 150, TEXT_X + badge_w + 56, 228], radius=14, fill=(25, 28, 38))
-    draw.text((TEXT_X + 28, 166), badge_txt, font=sub_font, fill=accent)
+    draw.rounded_rectangle([TEXT_X, 138, TEXT_X + badge_w + 52, 206], radius=14, fill=(25, 28, 38))
+    draw.text((TEXT_X + 26, 152), badge_txt, font=sub_font, fill=accent)
 
-    # ── FROM → TO headline: two ALL-CAPS words, thick arrows above each ──────────
-    # Left word = player (FROM, red arrow ◄).  Right word = club (TO, green arrow ►).
-    RED = (235, 30, 40)
-    GREEN = (40, 210, 90)
-
-    from_word = (player_name or "PLAYER").upper()
-    to_word = (target_club.replace("_", " ") if target_club else "CLUB").upper()
-
-    # Auto-size both words so each fits the column.
-    gap = 50
-    name_size = 92
-    while name_size >= 46:
-        nf = get_premium_font(name_size, "Black")
-        wf = draw.textlength(from_word, font=nf)
-        wt = draw.textlength(to_word, font=nf)
-        if max(wf, wt) <= TEXT_MAX_W:
+    # ── Player name (big, ALL CAPS, auto-fit to the left column) ─────────────────
+    name_up = (player_name or "PLAYER").upper()
+    nsize = 78
+    while nsize >= 40:
+        nf = get_premium_font(nsize, "Black")
+        if draw.textlength(name_up, font=nf) <= TEXT_MAX_W:
             break
-        name_size -= 4
-    nf = get_premium_font(name_size, "Black")
-    wf = int(draw.textlength(from_word, font=nf))
-    wt = int(draw.textlength(to_word, font=nf))
-
-    arrow_h = 24
-    arrow_to_word = 14
-    word_pad = 18
-    side_by_side = (wf + gap + wt) <= TEXT_MAX_W
-
-    # Measure ACTUAL glyph metrics so arrows never collide with text.
-    def _measure(word):
-        b = draw.textbbox((0, 0), word, font=nf)
-        return b[1], b[3] - b[1]               # (top offset, visual height)
-    f_off, f_h = _measure(from_word)
-    t_off, t_h = _measure(to_word)
-
-    arr_w_from = max(90, min(wf - 20, 180))
-    arr_w_to = max(90, min(wt - 20, 210))
-
-    unit_from = arrow_h + arrow_to_word + f_h
-    unit_to = arrow_h + arrow_to_word + t_h
-
-    block_top, block_bottom = 244, H - 90 - 16
-    detail_h = (sub_font.size + 16) if detail_line else 0
-    if side_by_side:
-        total_h = max(unit_from, unit_to) + word_pad + detail_h
-    else:
-        total_h = unit_from + word_pad + unit_to + word_pad + detail_h
-    y_top = block_top + max(0, ((block_bottom - block_top) - total_h) // 2)
-
+        nsize -= 3
+    nf = get_premium_font(nsize, "Black")
+    name_y = 236
     with Pilmoji(img) as pilmoji:
-        if side_by_side:
-            x_from, x_to = TEXT_X, TEXT_X + wf + gap
-            _draw_arrow(draw, x_from, y_top, arr_w_from, RED, "left", thick=arrow_h)
-            _draw_arrow(draw, x_to, y_top, arr_w_to, GREEN, "right", thick=arrow_h)
-            wy = y_top + arrow_h + arrow_to_word
-            pilmoji.text((x_from, wy - f_off), from_word, font=nf, fill=(255, 255, 255))
-            pilmoji.text((x_to, wy - t_off), to_word, font=nf, fill=(255, 255, 255))
-            detail_y = wy + max(f_h, t_h) + word_pad
-        else:
-            _draw_arrow(draw, TEXT_X, y_top, arr_w_from, RED, "left", thick=arrow_h)
-            wy1 = y_top + arrow_h + arrow_to_word
-            pilmoji.text((TEXT_X, wy1 - f_off), from_word, font=nf, fill=(255, 255, 255))
-            y2 = wy1 + f_h + word_pad
-            _draw_arrow(draw, TEXT_X, y2, arr_w_to, GREEN, "right", thick=arrow_h)
-            wy2 = y2 + arrow_h + arrow_to_word
-            pilmoji.text((TEXT_X, wy2 - t_off), to_word, font=nf, fill=(255, 255, 255))
-            detail_y = wy2 + t_h + word_pad
+        pilmoji.text((TEXT_X, name_y), name_up, font=nf, fill=(255, 255, 255))
+    nb = draw.textbbox((0, 0), name_up, font=nf)
+    name_bottom = name_y + (nb[3] - nb[1]) + 12
 
-        if detail_line:
-            pilmoji.text((TEXT_X, detail_y), detail_line.upper(), font=sub_font, fill=(160, 255, 120))
+    # ── FROM crest ─► TO crest, with names underneath ───────────────────────────
+    CREST = 132
+    from_im = _load_crest(from_club, CREST)
+    to_im = _load_crest(to_club, CREST)
+    row_y = name_bottom + 36
+    cy = row_y + CREST // 2
+
+    x = TEXT_X
+    from_name = (from_club.replace("_", " ") if from_club else "")
+    to_name = (to_club.replace("_", " ") if to_club else "")
+
+    # FROM crest
+    if from_im is not None:
+        img.paste(from_im, (x, row_y + (CREST - from_im.height)//2), from_im)
+        fnw = draw.textlength(from_name.upper(), font=crest_name_font)
+        draw.text((x + (CREST - fnw)//2, row_y + CREST + 10), from_name.upper(), font=crest_name_font, fill=(235, 235, 235))
+        x += CREST + 30
+    # Green arrow between
+    arrow_w = 150
+    _draw_arrow(draw, x, cy - 14, arrow_w, GREEN, "right", thick=28)
+    x += arrow_w + 30
+    # TO crest
+    if to_im is not None:
+        img.paste(to_im, (x, row_y + (CREST - to_im.height)//2), to_im)
+        tnw = draw.textlength(to_name.upper(), font=crest_name_font)
+        draw.text((x + (CREST - tnw)//2, row_y + CREST + 10), to_name.upper(), font=crest_name_font, fill=(255, 255, 255))
+
+    # ── Detail line (fee / contract) in caps, green, clearly visible ─────────────
+    if detail_line:
+        det_y = row_y + CREST + 56
+        with Pilmoji(img) as pilmoji:
+            pilmoji.text((TEXT_X, det_y), detail_line.upper(), font=sub_font, fill=(160, 255, 120))
 
     # 4. Bottom stats / source bar — auto-fit width so nothing clips off-edge
     draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
@@ -664,9 +790,14 @@ async def scrape(data: dict, club_hashtags: dict) -> list:
             collapsed = is_collapse(text)
             stype = classify_type(text)
             stage = 0 if collapsed else get_stage(text, stype)
-            player = extract_player(text)
-            clubs = extract_clubs(text, club_hashtags)
-            key = build_story_key(player, clubs[0] if clubs else None, stype)
+            clubs = extract_clubs(text)                 # official keys, word-boundary matched
+            player = extract_player(text, clubs)        # skip club words when picking a name
+            from_club, to_club = extract_transfer_clubs(text)   # direction of the move
+            # QUALITY GATE: a transfer/manager story is junk without BOTH a real
+            # PL club and a player name. Skip it instead of posting garbage.
+            if stype in ("transfer", "manager") and (not clubs or not player):
+                continue
+            key = build_story_key(player, to_club or (clubs[0] if clubs else None), stype)
             ok, reason = should_post(data, key, stage, collapsed)
             if not ok: continue
             if key in story_map:
@@ -677,6 +808,7 @@ async def scrape(data: dict, club_hashtags: dict) -> list:
                 story_map[key] = {
                     "id": tid, "key": key, "text": text, "sources": [username], "stype": stype,
                     "stage": stage, "collapsed": collapsed, "player": player, "clubs": clubs,
+                    "from_club": from_club, "to_club": to_club,
                     "fee": extract_fee(text), "contract": extract_contract(text), "reason": reason
                 }
         await asyncio.sleep(1)
@@ -686,18 +818,16 @@ async def post_item(client: Client, item: dict, data: dict, club_hashtags: dict,
     headline, detail_line = build_headline(item["player"], item["clubs"], item["stage"], item["stype"], item["fee"], item["contract"], item["collapsed"])
     hashtags = build_hashtags(item["stype"], item["clubs"], item["text"], club_hashtags, pl_clubs)
 
-    target_club = None
-    for c in item["clubs"]:
-        cleaned = c.replace("#", "").replace("_", " ").lower().strip()
-        if cleaned in CLUB_NAME_MAP:
-            target_club = CLUB_NAME_MAP[cleaned]
-            break
+    # FROM / TO clubs (official keys). TO = destination = the buying club.
+    from_club = item.get("from_club")
+    to_club = item.get("to_club") or (item["clubs"][-1] if item["clubs"] else None)
+    target_club = to_club
     filename = "news_card.png"
-    create_image(headline, detail_line, item["sources"], item["stage"], item["stype"], item["collapsed"], filename, target_club, item["player"])
+    create_image(headline, detail_line, item["sources"], item["stage"], item["stype"], item["collapsed"], filename, target_club, item["player"], from_club, to_club)
     media_id = await client.upload_media(filename, media_type="image/png")
 
-    # Fully integrated dynamic elite text layout formula mapping
-    raw_club_name = target_club if target_club else (item["clubs"][0].title() if item["clubs"] else "Club")
+    # full club name for the tweet body (Man_Utd -> "Man Utd")
+    raw_club_name = to_club if to_club else "Club"
     body = build_tweet_body(item["player"], raw_club_name, item["stage"], item["stype"], item["fee"], item["contract"], item["collapsed"], hashtags)
 
     body = trim_for_twitter(body, limit=278)   # weighted trim (URLs=23, emoji=2)
