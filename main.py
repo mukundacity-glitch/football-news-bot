@@ -880,7 +880,10 @@ async def scrape(data, read_client):
         except Exception as e:
             print(f"  [READ] @{username} error: {e}")
             tweets, src = [], "error"
-        print(f"  [READ] @{username}: {len(tweets)} tweets via {src}")
+        if not tweets and src == "none":
+            print(f"  [WARN] @{username}: ALL sources failed — X tokens may be expired or Nitter is down")
+        else:
+            print(f"  [READ] @{username}: {len(tweets)} tweets via {src}")
         for t in tweets:
             tid, text = t["id"], t["text"]
             if tid in data["posted_ids"]:
@@ -919,6 +922,9 @@ async def scrape(data, read_client):
                 story_map[key] = story
         await asyncio.sleep(1)
 
+    total_fetched = seen + skipped
+    if total_fetched == 0:
+        print("  [WARN] ⚠️  Zero tweets fetched from ALL journalists. X auth tokens likely expired — update X_AUTH_TOKEN and X_CT0_TOKEN secrets.")
     print(f"  [SCRAPE] {seen} football tweets seen, {skipped} skipped, {len(story_map)} candidate stories")
     ready = []
     for key, st in story_map.items():
