@@ -39,6 +39,8 @@ except Exception:
 # ── SECRETS ──────────────────────────────────────────────────────────────────
 X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
 X_POST_CT0_TOKEN  = os.getenv("X_POST_CT0_TOKEN")
+X_AUTH_TOKEN      = os.getenv("X_AUTH_TOKEN")      # read account (twikit reader)
+X_CT0_TOKEN       = os.getenv("X_CT0_TOKEN")
 FOOTBALL_API_KEY  = os.getenv("FOOTBALL_API_KEY")
 
 # ── PATHS ────────────────────────────────────────────────────────────────────
@@ -53,6 +55,9 @@ JOURNALISTS = [
     "FabrizioRomano", "David_Ornstein", "Plettigoal", "Santi_J_M",
     "sistoney67", "MatteoMoretto_", "AlfredoPedulla", "cfalk_news",
     "BenJacobs", "GianlucaDiMarzio",
+    # Premier League beat reporters (improve PL relevance + corroboration)
+    "_pauljoyce", "SamiMokbel1_DM", "JamesPearceLFC", "mcgrathmike",
+    "SkySportsNews",
 ]
 NITTER_INSTANCES = [
     "https://nitter.net",
@@ -182,17 +187,28 @@ def hashtag_for(name_or_key: str):
 
 # ── STATE ────────────────────────────────────────────────────────────────────
 def load_data() -> dict:
+    fresh = {"daily": {"date": "", "count": 0, "limit": 17}, "stories": {}, "posted_ids": []}
     if POSTED_FILE.exists():
-        with open(POSTED_FILE) as f:
-            d = json.load(f)
+        try:
+            with open(POSTED_FILE) as f:
+                d = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[STATE] posted_news.json unreadable ({e}); starting fresh.")
+            d = fresh
     else:
-        d = {"daily": {"date": "", "count": 0, "limit": 17}, "stories": {}, "posted_ids": []}
+        d = fresh
+    d.setdefault("daily", fresh["daily"])
+    d.setdefault("stories", {})
+    d.setdefault("posted_ids", [])
     d.setdefault("pending", {})
     return d
 
 def save_data(data: dict):
-    with open(POSTED_FILE, "w") as f:
+    # atomic write: tmp file + rename, so a crash mid-write never corrupts state
+    tmp = POSTED_FILE.with_suffix(".json.tmp")
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
+    tmp.replace(POSTED_FILE)
 
 def check_daily_limit(data: dict) -> bool:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -206,6 +222,8 @@ def increment_daily(data: dict):
 # ── STORY EXTRACTION (the brain) ─────────────────────────────────────────────
 _EXTRACT_PROMPT = """You are a football transfer-desk editor. Read this reporter tweet and extract ONLY what it actually states. Do NOT invent, assume, or generalise. If the tweet is conditional (deadlines, options, "if X then Y"), capture that exactly.
 
+LANGUAGE: The tweet may be in Spanish, Italian, Portuguese, French or German. ALL output text fields (headline, body, conditional, club and player names) MUST be in natural English. Translate everything. Never output non-English or mixed-language text. Use the player's and club's common English names.
+
 Return STRICT JSON only, no markdown, no prose:
 {{"is_football": true/false,
  "event": "transfer|loan|loan_option|stay|renewal|injury|manager|collapse|other",
@@ -215,11 +233,11 @@ Return STRICT JSON only, no markdown, no prose:
  "to_club": "destination club full name or null",
  "fee": "e.g. £30m or null",
  "contract": "e.g. until 2028 or null",
- "conditional": "one short sentence describing any deadline/condition, else null",
+ "conditional": "one short ENGLISH sentence describing any deadline/condition, else null",
  "stage": 1,            // 1=rumour/talks 2=agreement/advanced 3=signed 4=official/confirmed (or for injury: 1=concern 2=scan 3=ruled out 4=fit again)
  "collapsed": true/false,
- "headline": "<=10 word headline true to THIS exact story",
- "body": "1-2 factual sentences summarising THIS tweet, no filler, no hype template",
+ "headline": "<=10 word ENGLISH headline true to THIS exact story",
+ "body": "1-2 factual ENGLISH sentences summarising THIS tweet, no filler, no hype template, no invented facts",
  "confidence": 0.0-1.0}}
 
 Tweet:
@@ -347,6 +365,15 @@ def is_big_player(player, fpl_data) -> bool:
     if not el:
         return False
     return el.get("now_cost", 0) >= 65 or el.get("total_points", 0) >= 90  # £6.5m or 90+ pts
+
+def fpl_team_key(el, fpl_data):
+    """The PL key (e.g. 'Man_Utd') of an FPL element's current club, or None."""
+    if not el or not fpl_data:
+        return None
+    for t in fpl_data.get("teams", []):
+        if t.get("id") == el.get("team"):
+            return resolve_club_key((t.get("name", "") + " " + t.get("short_name", "")).lower())
+    return None
 
 # ── DEDUP / PROGRESSION ──────────────────────────────────────────────────────
 def build_story_key(player, club_key, event) -> str:
@@ -619,15 +646,30 @@ def create_image(story, sources, filename, rumour=False):
     collapsed = story.get("collapsed")
     GREEN = (40, 210, 90)
 
+    # CLUB-VERIFIED FACE: a strict name match can still be the wrong person.
+    # Trust the photo only when the FPL player's actual club lines up with the
+    # story's clubs. If it contradicts, drop the face (club-only card).
+    face_verified = False
+    if player_el:
+        cur = fpl_team_key(player_el, fpl)
+        if cur is None:
+            face_verified = True                      # can't check → trust strict name match
+        elif cur == from_key or cur == to_key:
+            face_verified = True                      # club agrees → confident
+        elif not from_key and not to_key:
+            face_verified = True                      # no PL club in story to check against
+        # else: cur exists but matches neither club → suspicious, no face
+
     stats = None
     player_img = Path("players/silhouette.png")
     if player_el:
         code = player_el["code"]
         stats = {"cost": f"£{player_el['now_cost']/10.0}m", "pts": str(player_el['total_points']),
                  "goals": str(player_el['goals_scored']), "assists": str(player_el['assists'])}
-        player_img = Path(f"players/{code}.png")
-        if not player_img.exists():
-            _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png", player_img)
+        if face_verified:
+            player_img = Path(f"players/{code}.png")
+            if not player_img.exists():
+                _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png", player_img)
 
     bg_color = CLUB_COLORS.get(to_key, (25, 29, 38))
     accent = (255, 90, 0) if ev in ("transfer", "loan", "loan_option") else \
@@ -648,7 +690,7 @@ def create_image(story, sources, filename, rumour=False):
     img.paste(shade, (0, 0), Image.composite(shade.split()[3], Image.new("L", (W, H), 0), grad))
 
     photo_ok = False
-    if player_el and player_img.exists():   # only with a confident match
+    if player_el and face_verified and player_img.exists():   # strict match + club agrees
         p_src = _safe_open_rgba(player_img)
         if p_src is not None:
             p_img = _fit_contain(p_src, 460, 460)
@@ -777,26 +819,68 @@ def get_nitter_tweets(username):
             continue
     return []
 
-async def scrape(data):
+async def get_twikit_tweets(read_client, username, count=20, retries=2):
+    """Read latest tweets straight from X via twikit (primary source).
+    Returns [] on failure so the caller can fall back to Nitter."""
+    if read_client is None:
+        return []
+    for attempt in range(retries):
+        try:
+            user = await read_client.get_user_by_screen_name(username)
+            tweets = await read_client.get_user_tweets(user.id, "Tweets", count=count)
+            out = []
+            for t in tweets:
+                txt = getattr(t, "full_text", None) or getattr(t, "text", "") or ""
+                tid = str(getattr(t, "id", "") or "")
+                if tid and txt:
+                    out.append({"id": tid, "text": txt})
+            return out
+        except Exception as e:
+            if attempt + 1 < retries:
+                await asyncio.sleep(3 * (attempt + 1))     # backoff then retry
+            else:
+                print(f"  [READ] twikit failed for @{username}: {e}")
+    return []
+
+async def fetch_tweets(read_client, username):
+    """twikit first; Nitter only as a fallback. Never raise — return []."""
+    tweets = await get_twikit_tweets(read_client, username)
+    if tweets:
+        return tweets, "twikit"
+    nit = get_nitter_tweets(username)
+    return nit, ("nitter" if nit else "none")
+
+async def scrape(data, read_client):
     fpl = fetch_fpl_data()
     story_map = {}
+    seen = skipped = 0
     for username in JOURNALISTS:
-        for t in get_nitter_tweets(username):
+        try:
+            tweets, src = await fetch_tweets(read_client, username)
+        except Exception as e:
+            print(f"  [READ] @{username} error: {e}")
+            tweets, src = [], "error"
+        print(f"  [READ] @{username}: {len(tweets)} tweets via {src}")
+        for t in tweets:
             tid, text = t["id"], t["text"]
             if tid in data["posted_ids"]:
                 continue
             if not any(k in text.lower() for k in FOOTBALL_KW):     # cheap pre-filter
                 continue
+            seen += 1
 
             story = build_story(text)                                # READ the story
             safe, why = passes_safety_gate(story, text, fpl)
             if not safe:
+                skipped += 1
+                print(f"    ⏭️  skip ({why}): {text[:70]!r}")
                 continue
 
             anchor = story.get("to_key") or story.get("from_key") or "unknown"
             key = build_story_key(story["player"], anchor, story["event"])
             ok, reason = should_post(data, key, story["stage"], story["collapsed"])
             if not ok:
+                print(f"    ⏭️  skip ({reason}): {key}")
                 continue
 
             if key in story_map:
@@ -815,6 +899,7 @@ async def scrape(data):
                 story_map[key] = story
         await asyncio.sleep(1)
 
+    print(f"  [SCRAPE] {seen} football tweets seen, {skipped} skipped, {len(story_map)} candidate stories")
     ready = []
     for key, st in story_map.items():
         mode = classify_post(st, st["sources"])
@@ -861,12 +946,27 @@ async def main():
     if not check_daily_limit(data):
         print("[BOT] Daily limit reached.")
         return
-    queue = await scrape(data)
+
+    # READ client (twikit) — primary source, replaces Nitter. Falls back to
+    # Nitter automatically if cookies are missing or X reading fails.
+    read_client = None
+    if X_AUTH_TOKEN and X_CT0_TOKEN:
+        try:
+            read_client = Client("en-US")
+            read_client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
+        except Exception as e:
+            print(f"[READ] could not init twikit read client: {e}")
+            read_client = None
+    else:
+        print("[READ] no read cookies set — using Nitter fallback only.")
+
+    queue = await scrape(data, read_client)
     if not queue:
         print("[BOT] Quiet run. No new stories found.")
         return
     for item in queue:
         save_pending(item)
+
     client = Client("en-US")
     client.set_cookies({"auth_token": X_POST_AUTH_TOKEN, "ct0": X_POST_CT0_TOKEN})
     remaining = data["daily"]["limit"] - data["daily"]["count"]
@@ -875,7 +975,12 @@ async def main():
         try:
             await post_item(client, item, data)
         except Exception as e:
-            print(f"  [ERROR] {item['key']}: {e}")
+            print(f"  [ERROR] {item['key']} (attempt 1): {e} — retrying once")
+            try:
+                await asyncio.sleep(10)
+                await post_item(client, item, data)
+            except Exception as e2:
+                print(f"  [ERROR] {item['key']} (attempt 2): {e2} — skipping")
         if i < len(batch) - 1:
             await asyncio.sleep(60)
 
