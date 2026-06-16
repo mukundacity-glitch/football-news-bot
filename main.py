@@ -34,6 +34,12 @@ NITTER_INSTANCES = [
     "https://nitter.privacydev.net",
     "https://nitter.poast.org",
 ]
+# Tier-1 journalists: their "official/here we go" word is trusted to post alone.
+# Anyone else needs a 2nd source to confirm before we post.
+TOP_SOURCES = {"FabrizioRomano", "David_Ornstein"}
+# Strongest "it's truly official" words — only these let a single top source post.
+OFFICIAL_WORDS = ["here we go", "official", "confirmed", "completed", "medical",
+                  "joins", "signs", "done deal", "sealed", "unveiled"]
 # ── KEYWORDS ───────────────────────────────────────────────────────────────────
 TRANSFER_KW = ["transfer", "sign", "deal", "fee", "bid", "move", "loan",
                 "contract", "agree", "confirm", "medical", "official", "close",
@@ -48,6 +54,22 @@ MANAGER_KW = ["sack", "appoint", "manager", "coach", "resign", "dismiss",
 COLLAPSE_KW = ["collapse", "collapsed", "fell through", "breaks down",
                 "no deal", "deal off", "pulled out", "rejected", "refused",
                 "failed", "cancelled", "called off", "walks away"]
+# ── SAFETY: words that mean the tweet is about a STAFF/OFF-PITCH person, not a
+#    playing transfer. If any appear we skip — this blocks scouts/directors like
+#    Steve Nickson (head of recruitment) being posted as a "transfer".
+STAFF_BLOCK_KW = [
+    "head of recruitment", "recruitment", "sporting director", "director of football",
+    "technical director", "chief scout", "scout", "scouting", "ceo", "chairman",
+    "owner", "president", "board", "agent", "physio", "kit man", "analyst",
+    "head of football", "transfer chief", "negotiator", "sd ", "dof",
+]
+# ── SAFETY: a STRONG signal that an actual player move is really happening.
+#    Max-safety mode requires one of these before a transfer can be posted.
+STRONG_TRANSFER_SIGNAL = [
+    "here we go", "official", "confirmed", "completed", "complete", "signs",
+    "signed", "joins", "joined", "medical", "done deal", "agreement", "agreed",
+    "sign ", "signing", "bid accepted", "personal terms", "loan move", "permanent",
+]
 # ── STAGE KEYWORDS ─────────────────────────────────────────────────────────────
 STAGE_KW = {
     "transfer": {
@@ -114,8 +136,12 @@ CLUB_COLORS = {
 def load_data() -> dict:
     if POSTED_FILE.exists():
         with open(POSTED_FILE) as f:
-            return json.load(f)
-    return {"daily": {"date": "", "count": 0, "limit": 17}, "stories": {}, "posted_ids": []}
+            d = json.load(f)
+    else:
+        d = {"daily": {"date": "", "count": 0, "limit": 17}, "stories": {}, "posted_ids": []}
+    # "pending" holds UNCONFIRMED stories waiting for a 2nd source before posting.
+    d.setdefault("pending", {})
+    return d
 def save_data(data: dict):
     with open(POSTED_FILE, "w") as f:
         json.dump(data, f, indent=2)
@@ -586,7 +612,7 @@ def _load_crest(club_key: str, box: int = 150):
     return None
 
 
-def create_image(headline: str, detail_line: str, source_users: list, stage: int, stype: str, collapsed: bool, filename: str, target_club: str, player_name: str, from_club: str = None, to_club: str = None):
+def create_image(headline: str, detail_line: str, source_users: list, stage: int, stype: str, collapsed: bool, filename: str, target_club: str, player_name: str, from_club: str = None, to_club: str = None, rumour: bool = False):
     W, H = 1200, 675
     fpl_data = fetch_fpl_data()
     player_el = find_player_in_fpl(player_name, fpl_data)
@@ -669,11 +695,18 @@ def create_image(headline: str, detail_line: str, source_users: list, stage: int
     fpl_w = draw.textlength("FPL ", font=brand_font)
     draw.text((TEXT_X + fpl_w, 44), "VORTEX", font=brand_font, fill=accent)
 
-    s_label = STAGE_LABELS.get(stype, {}).get(0 if collapsed else stage, "UPDATE").upper()
-    badge_txt = f"STATUS: {s_label}"
+    if rumour:
+        badge_txt = "RUMOUR – NOT CONFIRMED"
+        badge_fill = (255, 196, 0)             # amber warning
+        badge_bg = (60, 45, 0)
+    else:
+        s_label = STAGE_LABELS.get(stype, {}).get(0 if collapsed else stage, "UPDATE").upper()
+        badge_txt = f"STATUS: {s_label}"
+        badge_fill = accent
+        badge_bg = (25, 28, 38)
     badge_w = int(draw.textlength(badge_txt, font=sub_font))
-    draw.rounded_rectangle([TEXT_X, 138, TEXT_X + badge_w + 52, 206], radius=14, fill=(25, 28, 38))
-    draw.text((TEXT_X + 26, 152), badge_txt, font=sub_font, fill=accent)
+    draw.rounded_rectangle([TEXT_X, 138, TEXT_X + badge_w + 52, 206], radius=14, fill=badge_bg)
+    draw.text((TEXT_X + 26, 152), badge_txt, font=sub_font, fill=badge_fill)
 
     # ── Player name (big, ALL CAPS, auto-fit to the left column) ─────────────────
     name_up = (player_name or "PLAYER").upper()
@@ -777,8 +810,86 @@ def get_nitter_tweets(username: str) -> list:
             if tweets: return tweets
         except: continue
     return []
+def passes_safety_gate(text, stype, player, clubs, from_club, to_club, fpl_data, collapsed):
+    """MAX-SAFETY gate. Returns (ok: bool, why: str).
+    Goal: never post a false/garbled transfer. When unsure -> reject."""
+    tl = text.lower()
+
+    # 1) Block staff / off-pitch people (scouts, directors, agents, owners…).
+    if any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl) for w in STAFF_BLOCK_KW):
+        return False, "staff_or_offpitch"
+
+    # Injuries: lighter rules (need a real FPL player to be safe + on-topic).
+    if stype == "injury":
+        if not player or find_player_in_fpl(player, fpl_data) is None:
+            return False, "injury_player_not_verified"
+        return True, "ok_injury"
+
+    # Managers: only post if clearly a manager appointment AND a PL club present.
+    if stype == "manager":
+        if not clubs:
+            return False, "manager_no_club"
+        if not any(k in tl for k in ["appoint", "appointed", "new manager", "new head coach",
+                                     "sacked", "sack", "takes charge", "confirmed as", "officially"]):
+            return False, "manager_weak_signal"
+        return True, "ok_manager"
+
+    # Transfers (the risky one) — strictest rules:
+    if not player:
+        return False, "no_player"
+    # (a) player must be a REAL FPL player -> filters scouts/non-PL noise
+    if find_player_in_fpl(player, fpl_data) is None:
+        return False, "player_not_in_fpl"
+    # (b) must have a destination PL club
+    if not to_club:
+        return False, "no_destination_club"
+    # (c) ambiguity guard: many clubs named but no clear from/to wording -> skip
+    if len(clubs) >= 3 and not from_club:
+        return False, "too_ambiguous"
+    # NOTE: weak-signal (rumour) transfers are allowed through here, but only get
+    # POSTED later if the player is a 'big name' — decided in classify_post().
+    return True, "ok_transfer"
+
+
+def is_big_player(player, fpl_data):
+    """A 'big name' = worth posting an UNCONFIRMED rumour about.
+    Objective FPL test: expensive OR high-scoring."""
+    el = find_player_in_fpl(player, fpl_data)
+    if not el:
+        return False
+    return el.get("now_cost", 0) >= 70 or el.get("total_points", 0) >= 100   # £7.0m or 100+ pts
+
+
+def classify_post(text, stype, player, sources, collapsed, fpl_data):
+    """Decide HOW a story may be posted:
+       'confirmed' -> post as fact
+       'rumour'    -> post but clearly labelled UNCONFIRMED (big players only)
+       None        -> do not post (yet)
+    """
+    tl = text.lower()
+    has_official = any(w in tl for w in OFFICIAL_WORDS)
+    top_source = any(s in TOP_SOURCES for s in sources)
+    multi_source = len(set(sources)) >= 2
+
+    if collapsed:
+        return "confirmed"
+    if stype in ("manager", "injury"):
+        return "confirmed"                      # already gated tightly upstream
+
+    # Transfers:
+    if has_official and (top_source or multi_source):
+        return "confirmed"                      # trusted + official wording
+    if multi_source:
+        return "confirmed"                      # 2+ journalists agree = confirmed
+    # Otherwise it's a single-source, non-official report = RUMOUR.
+    if is_big_player(player, fpl_data):
+        return "rumour"                         # big name -> post, clearly labelled
+    return None                                 # small-player rumour -> skip
+
+
 async def scrape(data: dict, club_hashtags: dict) -> list:
     story_map = {}
+    fpl_data = fetch_fpl_data()
     for username in JOURNALISTS:
         tweets = get_nitter_tweets(username)
         for t in tweets:
@@ -793,9 +904,10 @@ async def scrape(data: dict, club_hashtags: dict) -> list:
             clubs = extract_clubs(text)                 # official keys, word-boundary matched
             player = extract_player(text, clubs)        # skip club words when picking a name
             from_club, to_club = extract_transfer_clubs(text)   # direction of the move
-            # QUALITY GATE: a transfer/manager story is junk without BOTH a real
-            # PL club and a player name. Skip it instead of posting garbage.
-            if stype in ("transfer", "manager") and (not clubs or not player):
+
+            # ── MAX-SAFETY GATE: reject anything we aren't confident about ──
+            safe, why = passes_safety_gate(text, stype, player, clubs, from_club, to_club, fpl_data, collapsed)
+            if not safe:
                 continue
             key = build_story_key(player, to_club or (clubs[0] if clubs else None), stype)
             ok, reason = should_post(data, key, stage, collapsed)
@@ -805,14 +917,37 @@ async def scrape(data: dict, club_hashtags: dict) -> list:
                 if username not in existing["sources"]: existing["sources"].append(username)
                 if stage > existing["stage"]: existing["stage"] = stage
             else:
+                # carry over any sources seen for this story in PREVIOUS runs
+                prior = data.get("pending", {}).get(key, {}).get("sources", [])
+                merged_sources = list(dict.fromkeys(prior + [username]))
                 story_map[key] = {
-                    "id": tid, "key": key, "text": text, "sources": [username], "stype": stype,
+                    "id": tid, "key": key, "text": text, "sources": merged_sources, "stype": stype,
                     "stage": stage, "collapsed": collapsed, "player": player, "clubs": clubs,
                     "from_club": from_club, "to_club": to_club,
                     "fee": extract_fee(text), "contract": extract_contract(text), "reason": reason
                 }
         await asyncio.sleep(1)
-    return sorted(story_map.values(), key=lambda x: -(1 if x["collapsed"] else x["stage"]))
+
+    # ── Decide post mode (confirmed / rumour / hold) for each story ──────────────
+    ready = []
+    for key, st in story_map.items():
+        mode = classify_post(st["text"], st["stype"], st["player"], st["sources"], st["collapsed"], fpl_data)
+        if mode is None:
+            # not postable yet — but if it's a real story, remember it so a future
+            # source can CONFIRM it later (hold-and-retry).
+            data["pending"][key] = {
+                "sources": st["sources"], "player": st["player"],
+                "to_club": st.get("to_club"), "stype": st["stype"],
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+            }
+            continue
+        st["rumour"] = (mode == "rumour")
+        # once we decide to post, drop it from pending
+        data["pending"].pop(key, None)
+        ready.append(st)
+
+    save_data(data)
+    return sorted(ready, key=lambda x: -(1 if x["collapsed"] else x["stage"]))
 # ── TWITTER PUBLISHER ──────────────────────────────────────────────────────────
 async def post_item(client: Client, item: dict, data: dict, club_hashtags: dict, pl_clubs: set):
     headline, detail_line = build_headline(item["player"], item["clubs"], item["stage"], item["stype"], item["fee"], item["contract"], item["collapsed"])
@@ -822,13 +957,18 @@ async def post_item(client: Client, item: dict, data: dict, club_hashtags: dict,
     from_club = item.get("from_club")
     to_club = item.get("to_club") or (item["clubs"][-1] if item["clubs"] else None)
     target_club = to_club
+    rumour = item.get("rumour", False)
     filename = "news_card.png"
-    create_image(headline, detail_line, item["sources"], item["stage"], item["stype"], item["collapsed"], filename, target_club, item["player"], from_club, to_club)
+    create_image(headline, detail_line, item["sources"], item["stage"], item["stype"], item["collapsed"], filename, target_club, item["player"], from_club, to_club, rumour=rumour)
     media_id = await client.upload_media(filename, media_type="image/png")
 
     # full club name for the tweet body (Man_Utd -> "Man Utd")
     raw_club_name = to_club if to_club else "Club"
     body = build_tweet_body(item["player"], raw_club_name, item["stage"], item["stype"], item["fee"], item["contract"], item["collapsed"], hashtags)
+
+    # Clearly mark unconfirmed rumours at the very top of the tweet.
+    if rumour:
+        body = "⚠️ RUMOUR (UNCONFIRMED)\n" + body
 
     body = trim_for_twitter(body, limit=278)   # weighted trim (URLs=23, emoji=2)
     await client.create_tweet(text=body, media_ids=[media_id])
