@@ -318,8 +318,8 @@ def extract_story_fallback(tweet_text: str) -> dict:
         name = m
         break
     clean = re.sub(r'\s+', ' ', tweet_text).strip()
-    to_key = clubs[-1] if clubs else None
-    from_key = clubs[0] if len(clubs) >= 2 else None
+    to_key = clubs[0] if clubs else None
+    from_key = clubs[1] if len(clubs) >= 2 else None
     return {
         "is_football": True, "event": event, "is_real_move": event in ("transfer", "loan", "loan_option"),
         "player": name,
