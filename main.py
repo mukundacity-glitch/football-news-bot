@@ -295,8 +295,28 @@ def extract_story_fallback(tweet_text: str) -> dict:
         name = m
         break
     clean = re.sub(r'\s+', ' ', tweet_text).strip()
-    to_key = clubs[-1] if clubs else None
-    from_key = clubs[0] if len(clubs) >= 2 else None
+    # Determine from/to by looking for explicit "from [club]" keyword in tweet.
+    # Pattern: "X want Y from Z" → clubs[0]=X(to), clubs[-1]=Z(from)
+    # Fallback heuristic: buying/interested club is usually mentioned first.
+    from_key = None
+    to_key = None
+    if clubs:
+        # Check for explicit "from <club>" pattern to anchor the from_club
+        from_match = None
+        for alias in _SORTED_ALIASES:
+            pattern = r'\bfrom\s+' + re.escape(alias) + r'\b'
+            if re.search(pattern, tl):
+                from_match = CLUB_ALIASES[alias]
+                break
+        if from_match and from_match in clubs:
+            from_key = from_match
+            remaining = [c for c in clubs if c != from_key]
+            to_key = remaining[0] if remaining else None
+        else:
+            # Default heuristic: first club mentioned = destination (buying club),
+            # last club mentioned = current/selling club.
+            to_key = clubs[0]
+            from_key = clubs[-1] if len(clubs) >= 2 else None
     return {
         "is_football": True, "event": event, "is_real_move": event in ("transfer", "loan", "loan_option"),
         "player": name,
