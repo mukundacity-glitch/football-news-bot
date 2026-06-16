@@ -39,7 +39,7 @@ GEMINI_MODEL = "gemini-2.0-flash"   # free tier; change to a newer Flash if you 
 try:
     from google import genai
     _GEMINI_OK = bool(os.getenv("GEMINI_API_KEY"))
-    _genai_client = genai.Client() if _GEMINI_OK else None
+    _genai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY")) if _GEMINI_OK else None
 except Exception:
     _GEMINI_OK = False
     _genai_client = None
@@ -60,12 +60,13 @@ for d in (PENDING_DIR, POSTED_DIR, Path("logos"), Path("players")):
 
 # ── JOURNALISTS ──────────────────────────────────────────────────────────────
 JOURNALISTS = [
-    "FabrizioRomano", "David_Ornstein", "Plettigoal", "Santi_J_M",
-    "sistoney67", "MatteoMoretto_", "AlfredoPedulla", "cfalk_news",
-    "BenJacobs", "GianlucaDiMarzio",
-    # Premier League beat reporters (improve PL relevance + corroboration)
-    "_pauljoyce", "SamiMokbel1_DM", "JamesPearceLFC", "mcgrathmike",
-    "SkySportsNews",
+    # Tier-1 global transfer journalists
+    "FabrizioRomano", "David_Ornstein",
+    # European transfer reporters
+    "Plettigoal", "MatteoMoretto", "AlfredoPedulla", "DiMarzio",
+    # PL-focused reporters
+    "JacobsBen", "sistoney67", "_pauljoyce", "JamesPearceLFC",
+    "mcgrathmike", "SkySportsNews",
 ]
 NITTER_INSTANCES = [
     "https://nitter.net",
@@ -393,6 +394,8 @@ def fpl_team_key(el, fpl_data):
 def build_story_key(player, club_key, event) -> str:
     p = (player or "unknown").lower().replace(" ", "_")
     c = (club_key or "unknown").lower()
+    # group loan/stay/renewal/loan_option under "transfer" family so the same
+    # player doesn't get two separate active stories for related events
     fam = "injury" if event == "injury" else "manager" if event == "manager" else "transfer"
     return f"{p}_{c}_{fam}"
 
@@ -890,6 +893,8 @@ async def scrape(data, read_client):
             else:
                 story = build_story(text)                            # READ the story (LLM if new)
                 data["extracted"][tid] = dict(story)
+                if _GEMINI_OK:
+                    time.sleep(4)        # ~15 RPM free tier → 4s gap keeps us safely under
             safe, why = passes_safety_gate(story, text, fpl)
             if not safe:
                 skipped += 1
