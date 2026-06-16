@@ -775,7 +775,13 @@ def create_image(story, sources, filename, rumour=False):
         draw.text((x + (CREST - fnw)//2, row_y + CREST + 10), fn, font=crest_font, fill=(235, 235, 235))
         x += CREST + 30
     if (from_im is not None) or (to_im is not None):
-        _draw_arrow(draw, x, cy - 14, 150, GREEN, thick=28); x += 180
+        if ev in ("transfer", "loan", "loan_option"):
+            # Only draw the arrow for actual movement
+            _draw_arrow(draw, x, cy - 14, 150, GREEN, thick=28)
+            x += 180
+        else:
+            # Leave a clean, smaller gap when there is no arrow
+            x += 60
     if to_im is not None:
         img.paste(to_im, (x, row_y + (CREST - to_im.height)//2), to_im)
         tn = (story.get("to_club") or to_key or "").replace("_", " ").upper()
