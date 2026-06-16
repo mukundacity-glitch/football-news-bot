@@ -84,10 +84,10 @@ FOOTBALL_KW = [
 STAFF_BLOCK_KW = [
     "head of recruitment", "sporting director", "director of football",
     "technical director", "chief scout", "scouting", "ceo", "chairman",
-    "owner", "president", "physio", "kit man", "head of football",
-    "transfer chief", "negotiator", "doctor", "club doctor", "team doctor",
-    "physio", "doctor", "medical", "medic", "surgeon", 
-    "physician", "head of medical", "club doctor", "physiotherapist"
+    "owner", "president", "kit man", "head of football",
+    "transfer chief", "negotiator", "team doctor", "physio", 
+    "doctor", "medical", "medic", "surgeon", "physician", 
+    "head of medical", "club doctor", "physiotherapist"
 ]
 
 # FIX 2: nationality/descriptor blocklist — never treat these as a player name
