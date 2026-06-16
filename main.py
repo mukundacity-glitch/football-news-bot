@@ -278,12 +278,20 @@ def extract_story_fallback(tweet_text: str) -> dict:
     """No-LLM path: still TRUTHFUL — uses the tweet's own words as the body
     instead of a fabricated template. Crude club/stage guesses only."""
     tl = tweet_text.lower()
-    clubs = []
+    found_clubs = []
+    
+    # Find every club and record its exact character position
     for alias in _SORTED_ALIASES:
-        if re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl):
-            k = CLUB_ALIASES[alias]
-            if k not in clubs:
-                clubs.append(k)
+        for match in re.finditer(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl):
+            found_clubs.append((match.start(), CLUB_ALIASES[alias]))
+            
+    # Sort left-to-right exactly as written in the sentence
+    found_clubs.sort(key=lambda x: x[0])
+    
+    clubs = []
+    for _, k in found_clubs:
+        if k not in clubs:
+            clubs.append(k)
     if any(w in tl for w in ["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt", "knock"]):
         event = "injury"
     elif any(w in tl for w in ["appoint", "manager", "head coach", "sack"]):
