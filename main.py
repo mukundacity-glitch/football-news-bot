@@ -284,14 +284,17 @@ def extract_story_fallback(tweet_text: str) -> dict:
     """No-LLM path: still TRUTHFUL — uses the tweet's own words as the body
     instead of a fabricated template. Crude club/stage guesses only."""
     tl = tweet_text.lower()
+    
+    # Helper to strictly match whole words only, preventing "unofficial" from triggering "official"
+    def has_word(words_list, text_to_check):
+        return any(re.search(r'\b' + re.escape(w) + r'\b', text_to_check) for w in words_list)
+
     clubs = []
     for alias in _SORTED_ALIASES:
         if re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl):
             k = CLUB_ALIASES[alias]
             if k not in clubs:
                 clubs.append(k)
-    #def has_word(words, text):
-        return any(re.search(r'\b' + re.escape(w) + r'\b', text) for w in words)
 
     if has_word(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt", "knock"], tl):
         event = "injury"
@@ -307,6 +310,7 @@ def extract_story_fallback(tweet_text: str) -> dict:
         
     stage = 4 if has_word(["here we go", "official", "confirmed", "completed", "medical", "joins"], tl) else \
             2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
+
     # player: first capitalised 2+ token name that is NOT a club (any league)
     # and not a header/filler word. Excludes "Real Madrid", "Excl", "Nothing"…
     FILLER = {"excl", "exclusive", "breaking", "official", "understand", "update",
@@ -320,19 +324,31 @@ def extract_story_fallback(tweet_text: str) -> dict:
             continue
         name = m
         break
+
     clean = re.sub(r'\s+', ' ', tweet_text).strip()
     to_key = clubs[-1] if clubs else None
     from_key = clubs[0] if len(clubs) >= 2 else None
+
+    # Check for collapsed deals accurately using the helper function
+    is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
+
     return {
-        "is_football": True, "event": event, "is_real_move": event in ("transfer", "loan", "loan_option"),
+        "is_football": True, 
+        "event": event, 
+        "is_real_move": event in ("transfer", "loan", "loan_option"),
         "player": name,
         "from_club": (from_key.replace("_", " ") if from_key else None),
         "to_club": (to_key.replace("_", " ") if to_key else None),
-        "from_key": from_key, "to_key": to_key,
-        "fee": None, "contract": None, "conditional": None,
-        "stage": stage, "collapsed": any(re.search(r'\b' + w + r'\b', tl) for w in ["collapsed", "called off", "rejected", "deal off"]),
-        "headline": (name + " — update") if name else "Transfer update",
-        "body": clean[:240], "confidence": 0.5,
+        "from_key": from_key, 
+        "to_key": to_key,
+        "fee": None, 
+        "contract": None, 
+        "conditional": None,
+        "stage": stage, 
+        "collapsed": is_collapsed,
+        "headline": name if name else "Transfer",
+        "body": clean[:240], 
+        "confidence": 0.5,
     }
 
 def build_story(tweet_text: str) -> dict:
