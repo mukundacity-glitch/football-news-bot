@@ -552,19 +552,22 @@ def build_tweet_body(story, sources, rumour: bool) -> str:
     ev = story["event"]
     prefix = "COLLAPSED" if story.get("collapsed") else EVENT_PREFIX.get(ev, "UPDATE")
 
-    # Clean the headline: format strictly to 🚨 TRANSFER | Player Name
+    # 1. Headline Format (Removes "update")
     head = (story.get("headline") or story.get("player") or "Transfer").replace(" — update", "").replace(" update", "").replace("Update", "").strip()
     
     lines = [f"🚨 {prefix} | {head}", ""]
 
-    # Main news body block
-    body_text = story.get("body") or ""
-    lines.append(f"🚨 {body_text}")
+    # 2. Post Content (Description) - Force strip all URLs (pic.x.com, t.co, etc.)
+    raw_body = story.get("body") or ""
+    clean_body = re.sub(r'https?://\S+|www\.\S+|pic\.x\.com/\S+', '', raw_body).strip()
+    
+    if clean_body:
+        lines.append(f"🚨 {clean_body}")
 
     if story.get("conditional"):
-        lines.append(f"\n📌 {story['conditional']}")
+        lines.append(f"📌 {story['conditional']}")
 
-    # Apply specific emojis and stacked layout
+    # 3. Stacked format for Fee and Contract
     details = []
     if story.get("fee"):
         details.append(f"💰 Fee: {story['fee']}")
@@ -572,14 +575,16 @@ def build_tweet_body(story, sources, rumour: bool) -> str:
         details.append(f"📝 Contract: {story['contract']}")
 
     if details:
-        lines.append("\n" + "\n".join(details))
+        lines.append("\n".join(details))
 
-    body = "\n".join(p for p in lines if p is not None)
+    body = "\n\n".join(p for p in lines if p.strip() != "")
+    
     if rumour:
         body = "⚠️ RUMOUR (UNCONFIRMED)\n" + body
 
-    # Build and attach hashtags at the end
+    # 4. Append the full Hashtags at the very end
     body += "\n\n" + build_hashtags(story)
+    
     return body
 
 def build_detail_line(story) -> str:
