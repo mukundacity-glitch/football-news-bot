@@ -286,7 +286,9 @@ def extract_story_fallback(tweet_text: str) -> dict:
                 clubs.append(k)
     if any(w in tl for w in ["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt", "knock"]):
         event = "injury"
-    elif any(w in tl for w in ["appoint", "manager", "head coach", "sack"]):
+    # FIX: Prevent player signings from being flagged as manager updates just because the manager is mentioned
+    elif (any(w in tl for w in ["appoint", "sack", "part company"]) or 
+         (any(w in tl for w in ["manager", "head coach"]) and not any(w in tl for w in ["signing", "sign", "joins", "fee", "transfer", "bid"]))):
         event = "manager"
     elif any(w in tl for w in ["loan"]):
         event = "loan"
