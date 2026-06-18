@@ -782,9 +782,20 @@ def create_image(story, sources, filename, rumour=False):
             sil = _fit_contain(sil, 500, 500)
             img.paste(sil, (50, H - sil.height), sil)
 
-    # Left Side Typography
-    draw.text((40, 40), player_name.upper(), font=get_premium_font(54, "Black"), fill=theme['text'])
-    draw.text((40, 100), pos_str, font=get_premium_font(28, "Bold"), fill=theme['accent'])
+    # === Left Side Typography (Dynamic Scaling to Prevent Overlap) ===
+    name_up = player_name.upper()
+    nsize = 54
+    
+    # Shrink the font size until the text fits within a 520px width limit.
+    # This guarantees an 80px safety buffer before hitting the 600px center line.
+    while nsize >= 24 and draw.textlength(name_up, font=get_premium_font(nsize, "Black")) > 520:
+        nsize -= 2
+        
+    draw.text((40, 40), name_up, font=get_premium_font(nsize, "Black"), fill=theme['text'])
+    
+    # Dynamically push the Position text down so it doesn't overlap the Name
+    pos_y = 40 + nsize + 10
+    draw.text((40, pos_y), pos_str, font=get_premium_font(28, "Bold"), fill=theme['accent'])
 
     # Left Side Logo Placement
     crest = _load_crest(club_key, 120)
