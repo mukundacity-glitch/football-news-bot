@@ -39,6 +39,21 @@ NITTER_INSTANCES = [
     "https://nitter.net",
     "https://nitter.poast.org",
 ]
+# ── FREE RSS NEWS FEEDS (primary source now that Nitter is dead) ──────────────
+# Trusted outlets, no API key, no bans, $0. Each item's TITLE is the headline we
+# analyse; the LINK is the unique id used for de-duplication. Treated like a
+# "source" so the existing pipeline (safety gate, dedup, cards) works unchanged.
+# name shown as the source -> RSS url
+RSS_FEEDS = {
+    "Guardian":  "https://www.theguardian.com/football/transferwindow/rss",
+    "GuardianPL":"https://www.theguardian.com/football/premierleague/rss",
+    "Goal":      "https://www.goal.com/feeds/en/news",
+    "talkSPORT": "https://talksport.com/football/transfer-news/feed/",
+    "90min":     "https://www.90min.com/posts.rss",
+    "BBCSport":  "https://feeds.bbci.co.uk/sport/football/rss.xml",
+}
+# Outlets we trust enough to post a CONFIRMED (official-worded) story from alone.
+TRUSTED_RSS = {"Guardian", "GuardianPL", "BBCSport", "talkSPORT"}
 # Tier-1 journalists: their "official/here we go" word is trusted to post alone.
 # Anyone else needs a 2nd source to confirm before we post.
 TOP_SOURCES = {"FabrizioRomano", "David_Ornstein"}
@@ -153,6 +168,9 @@ def load_data() -> dict:
         d = {"daily": {"date": "", "count": 0, "limit": 17}, "stories": {}, "posted_ids": []}
     # "pending" holds UNCONFIRMED stories waiting for a 2nd source before posting.
     d.setdefault("pending", {})
+    # "fpl_status" remembers each player's last seen FPL injury status, so we only
+    # post when it CHANGES (not every injured player every run).
+    d.setdefault("fpl_status", {})
     return d
 def save_data(data: dict):
     with open(POSTED_FILE, "w") as f:
@@ -379,6 +397,49 @@ def fpl_player_club(player_el, data):
         return CLUB_NAME_MAP[name]
     # try our broader alias table too
     return CLUB_ALIASES.get(name)
+
+# FPL 'status' codes -> our injury stage + meaning.
+#  a=available, d=doubtful, i=injured, s=suspended, u=unavailable, n=ineligible
+_FPL_STATUS_STAGE = {"a": 4, "d": 1, "i": 3, "s": 3, "u": 3, "n": 3}
+
+def scan_fpl_injuries(data: dict, fpl_data: dict) -> list:
+    """Read official FPL player status. Emit an injury 'story' ONLY when a
+    player's status CHANGES vs last run (e.g. available->injured, or back to fit).
+    100% reliable, structured, free — the ground truth for FPL injuries."""
+    if not fpl_data:
+        return []
+    teams = {t["id"]: t for t in fpl_data.get("teams", [])}
+    last = data.get("fpl_status", {})
+    out = []
+    for el in fpl_data.get("elements", []):
+        pid = str(el.get("id"))
+        status = el.get("status", "a")
+        prev = last.get(pid)
+        # record current status for next run regardless
+        last[pid] = status
+        if prev is None:
+            continue                      # first time we see this player -> baseline only, don't post
+        if status == prev:
+            continue                      # no change -> nothing to post
+        # Only post meaningful changes: becoming unavailable, or returning to fit.
+        became_unavailable = prev == "a" and status in ("d", "i", "s", "u")
+        returned_fit = prev in ("d", "i", "s", "u") and status == "a"
+        if not (became_unavailable or returned_fit):
+            continue
+        name = f"{el.get('first_name','')} {el.get('second_name','')}".strip() or el.get("web_name")
+        web = el.get("web_name", name)
+        club = teams.get(el.get("team"), {}).get("name", "")
+        news = (el.get("news") or "").strip()
+        stage = _FPL_STATUS_STAGE.get(status, 3)
+        out.append({
+            "id": f"fpl-{pid}-{status}",      # unique per status change
+            "player": web,
+            "fpl_status_text": news,          # official FPL note e.g. "Knee injury - 75%"
+            "stage": stage,
+            "team_name": club,
+        })
+    data["fpl_status"] = last
+    return out
 # ── TEXT GENERATORS ────────────────────────────────────────────────────────────
 def detect_subtype(text: str, stype: str) -> str:
     """Refine a 'transfer' into 'loan' or 'new_deal' for better category labels."""
@@ -945,6 +1006,45 @@ def get_nitter_tweets(username: str) -> list:
             _WORKING_INSTANCE["url"] = instance
             return tweets
     return []
+
+# Only keep RSS headlines that are actually about transfers/injuries/managers,
+# so we don't waste the pipeline on match reports etc.
+_NEWS_RELEVANT = set(TRANSFER_KW) | set(INJURY_KW) | set(MANAGER_KW)
+
+def get_rss_news() -> list:
+    """Fetch free football news from trusted RSS feeds (replaces dead Nitter).
+    Returns items shaped like the old scraper: {id, text, source}.
+    id   = article URL (stable -> de-dupes repeats)
+    text = headline (what we analyse)
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; FPLVortex/1.0)"}
+    items = []
+    for source, url in RSS_FEEDS.items():
+        try:
+            r = requests.get(url, headers=headers, timeout=12)
+            _INSTANCE_STATUS[url] = r.status_code
+            if r.status_code != 200:
+                continue
+            root = ET.fromstring(r.content)
+            n_feed = 0
+            for it in root.findall(".//item")[:25]:
+                title_el = it.find("title")
+                link_el = it.find("link")
+                title = (title_el.text or "").strip() if title_el is not None else ""
+                link = (link_el.text or "").strip() if link_el is not None else ""
+                if not title or not link:
+                    continue
+                tl = title.lower()
+                # keep only football-news-relevant headlines
+                if not any(k in tl for k in _NEWS_RELEVANT):
+                    continue
+                items.append({"id": link, "text": title, "source": source})
+                n_feed += 1
+            print(f"[BOT] RSS {source}: {n_feed} relevant headlines")
+        except Exception:
+            _INSTANCE_STATUS[url] = "ERR"
+            print(f"[BOT] RSS {source}: ERROR")
+    return items
 def passes_safety_gate(text, stype, player, clubs, from_club, to_club, fpl_data, collapsed):
     """MAX-SAFETY gate. Returns (ok: bool, why: str).
     Goal: never post a false/garbled transfer. When unsure -> reject."""
@@ -1003,7 +1103,8 @@ def classify_post(text, stype, player, sources, collapsed, fpl_data):
     """
     tl = text.lower()
     has_official = any(w in tl for w in OFFICIAL_WORDS)
-    top_source = any(s in TOP_SOURCES for s in sources)
+    # a "trusted" source = a tier-1 journalist OR a trusted news outlet
+    top_source = any(s in TOP_SOURCES or s in TRUSTED_RSS for s in sources)
     multi_source = len(set(sources)) >= 2
 
     if collapsed:
@@ -1025,41 +1126,60 @@ def classify_post(text, stype, player, sources, collapsed, fpl_data):
 async def scrape(data: dict, club_hashtags: dict) -> list:
     story_map = {}
     fpl_data = fetch_fpl_data()
-    for username in JOURNALISTS:
-        tweets = get_nitter_tweets(username)
-        for t in tweets:
-            tid, text = t["id"], t["text"]
-            if tid in data["posted_ids"]: continue
-            tl = text.lower()
-            if not (any(k in tl for k in TRANSFER_KW) or any(k in tl for k in INJURY_KW) or any(k in tl for k in MANAGER_KW)): continue
 
-            collapsed = is_collapse(text)
-            stype = classify_type(text)
-            stage = 0 if collapsed else get_stage(text, stype)
-            clubs = extract_clubs(text)                 # official keys, word-boundary matched
-            player = extract_player(text, clubs)        # skip club words when picking a name
-            from_club, to_club = extract_transfer_clubs(text)   # direction of the move
+    # ── SOURCE 1: Official FPL injury status changes (ground truth, free) ────────
+    for inj in scan_fpl_injuries(data, fpl_data):
+        if inj["id"] in data["posted_ids"]:
+            continue
+        club_key = fpl_player_club(find_player_in_fpl(inj["player"], fpl_data), fpl_data)
+        key = build_story_key(inj["player"], club_key, "injury")
+        ok, reason = should_post(data, key, inj["stage"], False)
+        if not ok:
+            continue
+        story_map[key] = {
+            "id": inj["id"], "key": key, "text": f"{inj['player']} injury status: {inj['fpl_status_text']}",
+            "sources": ["FPL"], "stype": "injury", "stage": inj["stage"], "collapsed": False,
+            "player": inj["player"], "clubs": [club_key] if club_key else [],
+            "from_club": None, "to_club": club_key,
+            "fee": None, "contract": None, "reason": reason,
+            "fpl_news": inj["fpl_status_text"],
+        }
+    print(f"[BOT] FPL injury changes detected: {len(story_map)}")
 
-            # ── MAX-SAFETY GATE: reject anything we aren't confident about ──
-            safe, why = passes_safety_gate(text, stype, player, clubs, from_club, to_club, fpl_data, collapsed)
-            if not safe:
-                continue
-            key = build_story_key(player, to_club or (clubs[0] if clubs else None), stype)
-            ok, reason = should_post(data, key, stage, collapsed)
-            if not ok: continue
-            if key in story_map:
-                existing = story_map[key]
-                if username not in existing["sources"]: existing["sources"].append(username)
-                if stage > existing["stage"]: existing["stage"] = stage
-            else:
-                # carry over any sources seen for this story in PREVIOUS runs
-                prior = data.get("pending", {}).get(key, {}).get("sources", [])
-                merged_sources = list(dict.fromkeys(prior + [username]))
-                story_map[key] = {
-                    "id": tid, "key": key, "text": text, "sources": merged_sources, "stype": stype,
-                    "stage": stage, "collapsed": collapsed, "player": player, "clubs": clubs,
-                    "from_club": from_club, "to_club": to_club,
-                    "fee": extract_fee(text), "contract": extract_contract(text), "reason": reason
+    # ── SOURCE 2: free RSS news feeds for transfers (Nitter is dead) ─────────────
+    for t in get_rss_news():
+        tid, text, source = t["id"], t["text"], t.get("source", "RSS")
+        if tid in data["posted_ids"]: continue
+        tl = text.lower()
+        if not (any(k in tl for k in TRANSFER_KW) or any(k in tl for k in INJURY_KW) or any(k in tl for k in MANAGER_KW)): continue
+
+        collapsed = is_collapse(text)
+        stype = classify_type(text)
+        stage = 0 if collapsed else get_stage(text, stype)
+        clubs = extract_clubs(text)                 # official keys, word-boundary matched
+        player = extract_player(text, clubs)        # skip club words when picking a name
+        from_club, to_club = extract_transfer_clubs(text)   # direction of the move
+
+        # ── MAX-SAFETY GATE: reject anything we aren't confident about ──
+        safe, why = passes_safety_gate(text, stype, player, clubs, from_club, to_club, fpl_data, collapsed)
+        if not safe:
+            continue
+        key = build_story_key(player, to_club or (clubs[0] if clubs else None), stype)
+        ok, reason = should_post(data, key, stage, collapsed)
+        if not ok: continue
+        if key in story_map:
+            existing = story_map[key]
+            if source not in existing["sources"]: existing["sources"].append(source)
+            if stage > existing["stage"]: existing["stage"] = stage
+        else:
+            # carry over any sources seen for this story in PREVIOUS runs
+            prior = data.get("pending", {}).get(key, {}).get("sources", [])
+            merged_sources = list(dict.fromkeys(prior + [source]))
+            story_map[key] = {
+                "id": tid, "key": key, "text": text, "sources": merged_sources, "stype": stype,
+                "stage": stage, "collapsed": collapsed, "player": player, "clubs": clubs,
+                "from_club": from_club, "to_club": to_club,
+                "fee": extract_fee(text), "contract": extract_contract(text), "reason": reason
                 }
         await asyncio.sleep(1)
 
