@@ -30,8 +30,13 @@ JOURNALISTS = [
     "BenJacobs", "GianlucaDiMarzio",
 ]
 NITTER_INSTANCES = [
+    # Public Nitter is mostly dead in 2026. These are the instances still cited
+    # as occasionally alive. They die often — check https://status.d420.de/ and
+    # update this list when the run log shows all of them failing.
+    "https://xcancel.com",
+    "https://nitter.privacyredirect.com",
+    "https://lightbrd.com",
     "https://nitter.net",
-    "https://nitter.privacydev.net",
     "https://nitter.poast.org",
 ]
 # Tier-1 journalists: their "official/here we go" word is trusted to post alone.
@@ -70,6 +75,13 @@ STRONG_TRANSFER_SIGNAL = [
     "signed", "joins", "joined", "medical", "done deal", "agreement", "agreed",
     "sign ", "signing", "bid accepted", "personal terms", "loan move", "permanent",
 ]
+# Sub-category signals (refine a "transfer" into LOAN / NEW DEAL).
+LOAN_KW = ["loan", "on loan", "loan move", "loan deal", "season-long loan", "loan with"]
+NEW_DEAL_KW = ["new contract", "contract extension", "new deal", "extends", "extended",
+               "signs new", "fresh terms", "renews", "renewal", "pens new"]
+# "developing story" -> add a MORE TO FOLLOW tag.
+MORE_TO_FOLLOW_KW = ["more to follow", "developing", "expected", "set to", "verbal agreement",
+                     "advanced talks", "close to", "edging closer", "in progress"]
 # ── STAGE KEYWORDS ─────────────────────────────────────────────────────────────
 STAGE_KW = {
     "transfer": {
@@ -368,16 +380,33 @@ def fpl_player_club(player_el, data):
     # try our broader alias table too
     return CLUB_ALIASES.get(name)
 # ── TEXT GENERATORS ────────────────────────────────────────────────────────────
-def status_label(stype: str, stage: int, collapsed: bool, rumour: bool = False) -> str:
+def detect_subtype(text: str, stype: str) -> str:
+    """Refine a 'transfer' into 'loan' or 'new_deal' for better category labels."""
+    if stype != "transfer":
+        return stype
+    tl = text.lower()
+    if any(k in tl for k in NEW_DEAL_KW):
+        return "new_deal"
+    if any(k in tl for k in LOAN_KW):
+        return "loan"
+    return "transfer"
+
+
+def status_label(stype: str, stage: int, collapsed: bool, rumour: bool = False, subtype: str = None) -> str:
     """ONE consistent status word used on BOTH the card pill and the tweet,
     so the brand looks the same every time."""
     if collapsed:
         return "COLLAPSED"
     if rumour:
         return "RUMOUR"
-    if stype == "transfer":
+    st = subtype or stype
+    if st == "new_deal":
+        return {4: "NEW DEAL ✍️"}.get(stage, "NEW DEAL")
+    if st == "loan":
+        return {4: "LOAN DONE", 3: "LOAN AGREED"}.get(stage, "LOAN")
+    if st == "transfer":
         return {1: "CONFIRMED", 2: "ADVANCED", 3: "HERE WE GO", 4: "DONE DEAL"}.get(stage, "CONFIRMED")
-    if stype == "manager":
+    if st == "manager":
         return {1: "LATEST", 2: "TALKS", 3: "AGREED", 4: "APPOINTED"}.get(stage, "LATEST")
     # injury
     return {1: "INJURY DOUBT", 2: "INJURY SCAN", 3: "RULED OUT", 4: "FIT AGAIN"}.get(stage, "INJURY")
@@ -420,7 +449,7 @@ def build_headline(player: str, clubs: list, stage: int, stype: str, fee: str, c
     else:
         texts = {1: f"⚠️ {p} injury concern — fitness in doubt", 2: f"🏥 {p} undergoes scan — diagnosis awaited", 3: f"🤕 {p} ruled out — return date unknown", 4: f"💪 {p} fit again — available for selection ✅"}
     return texts.get(stage, f"{p} update"), detail_line
-def build_tweet_body(player: str, club: str, stage: int, stype: str, fee: str, contract: str, collapsed: bool, hashtags: str, from_club: str = None) -> str:
+def build_tweet_body(player: str, club: str, stage: int, stype: str, fee: str, contract: str, collapsed: bool, hashtags: str, from_club: str = None, subtype: str = None, more_to_follow: bool = False) -> str:
     p = player or "Player"
     c = club or "Club"
     clean_club = c.replace("_", " ")
@@ -428,7 +457,7 @@ def build_tweet_body(player: str, club: str, stage: int, stype: str, fee: str, c
     # otherwise just the destination club.
     from_clean = from_club.replace("_", " ") if from_club else None
     move = f"{from_clean} ➜ {clean_club}" if from_clean else clean_club
-    lbl = status_label(stype, stage, collapsed)        # consistent brand label
+    lbl = status_label(stype, stage, collapsed, subtype=subtype)   # consistent brand label
     if collapsed:
         base = f"🚨 {lbl} | {p} | {move}\n\nThe proposed deal taking {p} to {clean_club} has officially collapsed. The move is completely off and the player will explore other options. 🚫"
     elif stype == "transfer":
@@ -456,6 +485,10 @@ def build_tweet_body(player: str, club: str, stage: int, stype: str, fee: str, c
 
     if details:
         base += "\n\n" + "\n".join(details)
+
+    # Developing story tag (only when not already a done/official stage).
+    if more_to_follow and not collapsed and stage < 4:
+        base += "\n\n🔜 MORE TO FOLLOW"
 
     base += f"\n\n{hashtags} #FPL"
     return base
@@ -710,9 +743,11 @@ def create_image(headline: str, detail_line: str, source_users: list, stage: int
     grad = grad.resize((W, H))
     img.paste(shade, (0, 0), Image.composite(shade.split()[3], Image.new("L", (W, H), 0), grad))
 
-    # 2. Player headshot (bottom-right), aspect-correct + soft shadow.
-    #    If there is no FPL photo, draw a clean "NO PHOTO" placeholder instead
-    #    so the right panel never looks empty/unfinished.
+    # 2. RIGHT VISUAL.
+    #    - Photo available  -> player photo + small club crest badge (balance).
+    #    - No photo         -> big club crest centred on the panel (no "NO PHOTO").
+    # The club shown here = injury_club for injuries, else the destination club.
+    right_club = injury_club if stype == "injury" else to_club
     photo_ok = False
     if have_player_img:
         p_src = _safe_open_rgba(player_img_path)
@@ -725,23 +760,29 @@ def create_image(headline: str, detail_line: str, source_users: list, stage: int
             img.paste(shadow, (0, 0), shadow)
             img.paste(p_img, (W - 420, H - p_img.height - 6), p_img)
             photo_ok = True
+            # small club crest badge, top-right corner of the photo zone
+            badge = _load_crest(right_club, 92)
+            if badge is not None:
+                bx, by = W - 40 - badge.width, 40
+                halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                ImageDraw.Draw(halo).ellipse([bx - 10, by - 10, bx + badge.width + 10, by + badge.height + 10], fill=(255, 255, 255, 230))
+                img.paste(halo, (0, 0), halo)
+                img.paste(badge, (bx, by), badge)
     if not photo_ok:
-        # silhouette circle + "NO PHOTO" label, centred in the colour panel
-        ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        od = ImageDraw.Draw(ov)
-        cx, cyc, r = int(W * 0.78), int(H * 0.50), 150
-        od.ellipse([cx - r, cyc - r, cx + r, cyc + r], fill=(0, 0, 0, 70))
-        # simple person silhouette (head + shoulders) in a soft tint
-        head_r = 52
-        od.ellipse([cx - head_r, cyc - 78, cx + head_r, cyc - 78 + head_r * 2],
-                   fill=(255, 255, 255, 60))
-        od.pieslice([cx - 95, cyc + 6, cx + 95, cyc + 210], 180, 360, fill=(255, 255, 255, 60))
-        img.paste(ov, (0, 0), ov)
-        ph_font = get_premium_font(34, "Black")
-        label = "NO PHOTO"
-        lw = od.textlength(label, font=ph_font)
-        ImageDraw.Draw(img).text((cx - lw / 2, cyc + r - 6), label,
-                                  font=ph_font, fill=(255, 255, 255))
+        # No photo -> show the club crest BIG, centred in the colour panel.
+        big = _load_crest(right_club, 300)
+        if big is not None:
+            cx, cyc = int(W * 0.74), int(H * 0.50)
+            img.paste(big, (cx - big.width // 2, cyc - big.height // 2), big)
+        else:
+            # last resort: subtle silhouette (no club known either)
+            ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(ov)
+            cx, cyc = int(W * 0.74), int(H * 0.50)
+            head_r = 56
+            od.ellipse([cx - head_r, cyc - 96, cx + head_r, cyc - 96 + head_r * 2], fill=(255, 255, 255, 55))
+            od.pieslice([cx - 100, cyc + 4, cx + 100, cyc + 220], 180, 360, fill=(255, 255, 255, 55))
+            img.paste(ov, (0, 0), ov)
 
     # ── Left layout: borders, brand, status ─────────────────────────────────────
     TEXT_X = 60
@@ -868,23 +909,41 @@ def move_to_posted(item: dict):
     else:
         with open(dst, "w") as f: json.dump(item, f, indent=2)
 # ── SCRAPER CORE ───────────────────────────────────────────────────────────────
-def get_nitter_tweets(username: str) -> list:
+# Remembers which instance worked this run so we don't hammer dead ones for every
+# journalist. Also feeds a diagnostics summary so the log shows what's alive.
+_WORKING_INSTANCE = {"url": None}
+_INSTANCE_STATUS = {}      # url -> last HTTP code / "ERR" (printed at end of run)
+
+def _fetch_rss(instance: str, username: str):
     headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
-    for instance in NITTER_INSTANCES:
-        try:
-            r = requests.get(f"{instance}/{username}/rss", headers=headers, timeout=10)
-            if r.status_code != 200: continue
-            root = ET.fromstring(r.content)
-            tweets = []
-            for item in root.findall(".//item")[:8]:
-                link = item.find("link")
-                desc = item.find("description")
-                if link is None: continue
-                tid = link.text.strip().split("/")[-1].split("#")[0]
-                text = re.sub(r'<[^>]+>', '', desc.text).strip() if desc is not None and desc.text else ""
-                if tid and text: tweets.append({"id": tid, "text": text})
-            if tweets: return tweets
-        except: continue
+    try:
+        r = requests.get(f"{instance}/{username}/rss", headers=headers, timeout=12)
+        _INSTANCE_STATUS[instance] = r.status_code
+        if r.status_code != 200:
+            return None
+        root = ET.fromstring(r.content)
+        tweets = []
+        for item in root.findall(".//item")[:8]:
+            link = item.find("link")
+            desc = item.find("description")
+            if link is None: continue
+            tid = link.text.strip().split("/")[-1].split("#")[0]
+            text = re.sub(r'<[^>]+>', '', desc.text).strip() if desc is not None and desc.text else ""
+            if tid and text: tweets.append({"id": tid, "text": text})
+        return tweets
+    except Exception:
+        _INSTANCE_STATUS[instance] = "ERR"
+        return None
+
+def get_nitter_tweets(username: str) -> list:
+    # try the known-good instance first
+    order = ([_WORKING_INSTANCE["url"]] if _WORKING_INSTANCE["url"] else []) + \
+            [i for i in NITTER_INSTANCES if i != _WORKING_INSTANCE["url"]]
+    for instance in order:
+        tweets = _fetch_rss(instance, username)
+        if tweets:
+            _WORKING_INSTANCE["url"] = instance
+            return tweets
     return []
 def passes_safety_gate(text, stype, player, clubs, from_club, to_club, fpl_data, collapsed):
     """MAX-SAFETY gate. Returns (ok: bool, why: str).
@@ -1040,7 +1099,10 @@ async def post_item(client: Client, item: dict, data: dict, club_hashtags: dict,
 
     # full club name for the tweet body (Man_Utd -> "Man Utd")
     raw_club_name = to_club if to_club else "Club"
-    body = build_tweet_body(item["player"], raw_club_name, item["stage"], item["stype"], item["fee"], item["contract"], item["collapsed"], hashtags, from_club)
+    txt = item.get("text", "")
+    subtype = detect_subtype(txt, item["stype"])                       # transfer / loan / new_deal
+    more_to_follow = any(k in txt.lower() for k in MORE_TO_FOLLOW_KW)   # developing story?
+    body = build_tweet_body(item["player"], raw_club_name, item["stage"], item["stype"], item["fee"], item["contract"], item["collapsed"], hashtags, from_club, subtype, more_to_follow)
 
     # Clearly mark unconfirmed rumours at the very top of the tweet.
     if rumour:
@@ -1070,6 +1132,17 @@ async def main():
     queue = await scrape(data, CLUB_HASHTAGS)
     if not queue:
         print("[BOT] Quiet run. No new stories found.")
+        # Diagnostics: show what each Nitter instance returned so you can tell
+        # whether the SOURCE is dead vs. just no qualifying news.
+        if _INSTANCE_STATUS:
+            print("[BOT] Nitter feed health this run:")
+            for url, code in _INSTANCE_STATUS.items():
+                print(f"        {url} -> {code}")
+            if all(c != 200 for c in _INSTANCE_STATUS.values()):
+                print("[BOT] ⚠️ ALL feeds failed — the data source (Nitter) is down. "
+                      "Update NITTER_INSTANCES (see https://status.d420.de/).")
+        else:
+            print("[BOT] No instances were even attempted.")
         return
     for item in queue: save_pending(item)
     post_client = Client("en-US")
