@@ -284,20 +284,24 @@ def extract_story_fallback(tweet_text: str) -> dict:
             k = CLUB_ALIASES[alias]
             if k not in clubs:
                 clubs.append(k)
-    if any(w in tl for w in ["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt", "knock"]):
+    # Helper to strictly match whole words only, preventing "unofficial" from triggering "official"
+    def has_word(words, text):
+        return any(re.search(r'\b' + w + r'\b', text) for w in words)
+
+    if has_word(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt", "knock"], tl):
         event = "injury"
-    # FIX: Prevent player signings from being flagged as manager updates just because the manager is mentioned
-    elif (any(w in tl for w in ["appoint", "sack", "part company"]) or 
-         (any(w in tl for w in ["manager", "head coach"]) and not any(w in tl for w in ["signing", "sign", "joins", "fee", "transfer", "bid"]))):
+    elif (has_word(["appoint", "sack", "part company"], tl) or 
+         (has_word(["manager", "head coach"], tl) and not has_word(["signing", "sign", "joins", "fee", "transfer", "bid"], tl))):
         event = "manager"
-    elif any(w in tl for w in ["loan"]):
+    elif has_word(["loan"], tl):
         event = "loan"
-    elif any(w in tl for w in ["stay", "remain", "not for sale"]):
+    elif has_word(["stay", "remain", "not for sale"], tl):
         event = "stay"
     else:
         event = "transfer"
-    stage = 4 if any(w in tl for w in ["here we go", "official", "confirmed", "completed", "medical", "joins"]) else \
-            2 if any(w in tl for w in ["agreement", "agreed", "advanced", "personal terms"]) else 1
+        
+    stage = 4 if has_word(["here we go", "official", "confirmed", "completed", "medical", "joins"], tl) else \
+            2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
     # player: first capitalised 2+ token name that is NOT a club (any league)
     # and not a header/filler word. Excludes "Real Madrid", "Excl", "Nothing"…
     FILLER = {"excl", "exclusive", "breaking", "official", "understand", "update",
@@ -468,7 +472,7 @@ def classify_post(story, sources):
     if story["event"] in ("manager", "injury", "stay", "renewal", "loan_option"):
         return "confirmed"  # factual reports; framed accurately, not as "joins"
     tl = story.get("body", "").lower() + " " + " ".join(story.get(k, "") or "" for k in ("headline",)).lower()
-    strong = story["stage"] >= 4 or any(w in tl for w in STRONG_OFFICIAL)
+    strong = story["stage"] >= 4 or any(re.search(r'\b' + w + r'\b', tl) for w in STRONG_OFFICIAL)
     top_source = any(s in TOP_SOURCES for s in sources)
     multi = len(set(sources)) >= 2
     if strong or multi or top_source:
