@@ -551,20 +551,34 @@ def build_hashtags(story):
 def build_tweet_body(story, sources, rumour: bool) -> str:
     ev = story["event"]
     prefix = "COLLAPSED" if story.get("collapsed") else EVENT_PREFIX.get(ev, "UPDATE")
-    head = story.get("headline") or "Update"
-    lines = [f"🚨 {prefix} | {head}", "", story.get("body") or ""]
+
+    # Clean the headline: format strictly to 🚨 TRANSFER | Player Name
+    head = (story.get("headline") or story.get("player") or "Transfer").replace(" — update", "").replace(" update", "").replace("Update", "").strip()
+    
+    lines = [f"🚨 {prefix} | {head}", ""]
+
+    # Main news body block
+    body_text = story.get("body") or ""
+    lines.append(f"🚨 {body_text}")
+
     if story.get("conditional"):
         lines.append(f"\n📌 {story['conditional']}")
+
+    # Apply specific emojis and stacked layout
     details = []
     if story.get("fee"):
         details.append(f"💰 Fee: {story['fee']}")
     if story.get("contract"):
-        details.append(f"📄 {story['contract']}")
+        details.append(f"📝 Contract: {story['contract']}")
+
     if details:
-        lines.append("\n" + "  |  ".join(details))
+        lines.append("\n" + "\n".join(details))
+
     body = "\n".join(p for p in lines if p is not None)
     if rumour:
         body = "⚠️ RUMOUR (UNCONFIRMED)\n" + body
+
+    # Build and attach hashtags at the end
     body += "\n\n" + build_hashtags(story)
     return body
 
@@ -700,7 +714,6 @@ def create_image(story, sources, filename, rumour=False):
     player_el = find_player_in_fpl(story.get("player"), fpl)
     to_key, from_key = story.get("to_key"), story.get("from_key")
 
-    # face_verified kept exactly as before — never show a photo we can't confirm
     face_verified = False
     if player_el:
         cur = fpl_team_key(player_el, fpl)
@@ -708,15 +721,35 @@ def create_image(story, sources, filename, rumour=False):
             face_verified = True
 
     post_type = _classify_post_type(story, rumour)
-    theme = PALETTES.get(post_type, PALETTES['TRANSFER_ONGOING'])
+    
+    # Use premium transfer-news colors
+    theme = {
+        'bg': (10, 20, 35),           # Dark navy background
+        'card_bg': (15, 25, 45),      # Contrast card
+        'text': (255, 255, 255),      # White primary text
+        'accent': (255, 215, 0),      # Gold accents
+        'alert': (220, 38, 38),       # Red alert icon base
+        'fee': (34, 197, 94),         # Green for fee
+        'contract': (59, 130, 246)    # Blue for contract
+    }
+
     club_key = to_key or from_key
     player_name = (player_el["web_name"] if player_el else story.get("player")) or "UPDATE"
     seo_tags = build_seo_hashtags(story)
+    
+    # Map FPL element type to Position String
+    pos_str = "PLAYER"
+    if player_el:
+        type_map = {1: "GOALKEEPER", 2: "DEFENDER", 3: "MIDFIELDER", 4: "FORWARD"}
+        pos_str = type_map.get(player_el.get("element_type"), "PLAYER")
 
-    img = Image.new("RGB", (W, H), (20, 20, 20))
+    img = Image.new("RGB", (W, H), theme['bg'])
     draw = ImageDraw.Draw(img, "RGBA")
 
-    # ── Photo zone (right ~55%): verified photo, else silhouette. No fallback crest. ──
+    # Layout Setup: Left = 0 to 600 | Right = 600 to 1200
+    draw.rectangle([600, 0, W, H], fill=theme['card_bg'])
+
+    # === LEFT SIDE: IMAGE, POS, LOGO ===
     p_img_loaded = False
     if player_el and face_verified:
         code = player_el["code"]
@@ -726,74 +759,77 @@ def create_image(story, sources, filename, rumour=False):
         if player_img.exists():
             p_src = _safe_open_rgba(player_img)
             if p_src is not None:
-                p_img = _fit_contain(p_src, 650, 650)
-                img.paste(p_img, (W - 600, H - p_img.height), p_img)
+                p_img = _fit_contain(p_src, 600, 600)
+                img.paste(p_img, (0, H - p_img.height), p_img)
                 p_img_loaded = True
+
     if not p_img_loaded:
         sil = _safe_open_rgba(Path("players/silhouette.png"))
         if sil is not None:
-            sil = _fit_contain(sil, 460, 460)
-            img.paste(sil, (W - 500, H - sil.height - 20), sil)
+            sil = _fit_contain(sil, 500, 500)
+            img.paste(sil, (50, H - sil.height), sil)
 
-    # ── Swoosh division between text column and photo column ──
-    arc_bbox = [-200, -100, 750, 950]
-    draw.ellipse(arc_bbox, fill=theme['bg'])
-    draw.arc([-205, -105, 755, 955], 270, 90, fill=theme['swoosh'], width=8)
+    # Left Side Typography
+    draw.text((40, 40), player_name.upper(), font=get_premium_font(54, "Black"), fill=theme['text'])
+    draw.text((40, 100), pos_str, font=get_premium_font(28, "Bold"), fill=theme['accent'])
 
-    crest = _load_crest(club_key, 200)
+    # Left Side Logo Placement
+    crest = _load_crest(club_key, 120)
     if crest is not None:
-        img.paste(crest, (int(W * 0.48), 20), crest)
-        watermark = crest.copy()
-        watermark.putalpha(watermark.split()[3].point(lambda a: int(a * 0.08)))
-        watermark = watermark.resize((400, 400), Image.Resampling.LANCZOS)
-        img.paste(watermark, (-50, H - 350), watermark)
+        img.paste(crest, (440, 40), crest)
 
-    # ── Typography (left column) ──
-    TEXT_X = 50
-    head_font = get_premium_font(42, "Black")
-    body_font = get_premium_font(28, "Bold")
-    header_text = ("COLLAPSED" if story.get("collapsed") else post_type.replace("_", " "))
-    draw.text((TEXT_X, 60), header_text.upper(), font=head_font, fill=theme['accent'])
+    # Center Separator Line
+    draw.line([(600, 0), (600, H)], fill=theme['accent'], width=4)
 
-    name_up = player_name.upper()
-    nsize = 68
-    while nsize >= 30 and draw.textlength(name_up, font=get_premium_font(nsize, "Black")) > 500:
-        nsize -= 2
-    draw.text((TEXT_X, 110), name_up, font=get_premium_font(nsize, "Black"), fill=theme['text'])
+    # === RIGHT SIDE: INFO CARD ===
+    TEXT_X = 640
+    head_text = "🚨 TRANSFER NEWS" if not story.get("collapsed") else "🚨 COLLAPSED DEAL"
+    if post_type == "INJURY": head_text = "🚨 INJURY UPDATE"
+    elif post_type == "MANAGER_UPDATE": head_text = "🚨 MANAGER UPDATE"
 
-    bullets = [story.get("body") or ""]
-    if story.get("conditional"):
-        bullets.append(story["conditional"])
-    if story.get("fee"):
-        bullets.append(f"Fee: {story['fee']}")
-    if story.get("contract"):
-        bullets.append(story["contract"])
-
-    y = 220
-    bullet_icon = "❌" if story.get("collapsed") else ("⚠️" if rumour else "✅")
     with Pilmoji(img) as pj:
-        for line in bullets:
-            if not line:
-                continue
-            words, wrapped, cur = line.split(), [], ""
-            for w in words:
-                if pj.getsize(cur + w, font=body_font)[0] <= 450:
-                    cur += w + " "
-                else:
-                    wrapped.append(cur); cur = w + " "
-            wrapped.append(cur)
-            pj.text((TEXT_X, y), f"{bullet_icon} {wrapped[0]}", font=body_font, fill=(240, 240, 240))
-            y += 35
-            for wl in wrapped[1:]:
-                pj.text((TEXT_X + 40, y), wl, font=body_font, fill=(240, 240, 240))
-                y += 35
-            y += 15
+        pj.text((TEXT_X, 50), head_text, font=get_premium_font(36, "Black"), fill=theme['accent'])
 
-    # ── Caption strip: short SEO hashtags, bottom-left; source, bottom-right ──
-    draw.text((TEXT_X, H - 45), seo_tags, font=get_premium_font(20, "Bold"), fill=(150, 150, 150))
-    src = "  ·  ".join(f"@{s}" for s in sources[:2])
-    sw = draw.textlength(src, font=get_premium_font(18, "Bold"))
-    draw.text((W - sw - 40, H - 45), src, font=get_premium_font(18, "Bold"), fill=(150, 150, 150))
+    body_font = get_premium_font(24, "Bold")
+    y = 130
+    status_icon = "❌" if story.get("collapsed") else ("⚠️" if rumour else "✅")
+    details = story.get("body") or ""
+
+    with Pilmoji(img) as pj:
+        words, wrapped, cur = details.split(), [], ""
+        for w in words:
+            if pj.getsize(cur + w, font=body_font)[0] <= 500:
+                cur += w + " "
+            else:
+                wrapped.append(cur)
+                cur = w + " "
+        wrapped.append(cur)
+
+        pj.text((TEXT_X, y), f"{status_icon} {wrapped[0]}", font=body_font, fill=theme['text'])
+        y += 35
+        for wl in wrapped[1:]:
+            if wl.strip():
+                pj.text((TEXT_X + 40, y), wl, font=body_font, fill=theme['text'])
+                y += 35
+        y += 40
+
+        if story.get("fee"):
+            pj.text((TEXT_X, y), f"💰 Fee: {story['fee']}", font=get_premium_font(26, "Black"), fill=theme['fee'])
+            y += 45
+        if story.get("contract"):
+            pj.text((TEXT_X, y), f"📝 Contract: {story['contract']}", font=get_premium_font(26, "Black"), fill=theme['contract'])
+            y += 45
+        if story.get("conditional"):
+            pj.text((TEXT_X, y), f"📌 {story['conditional']}", font=body_font, fill=theme['accent'])
+
+    # Branding & Watermark
+    brand_font = get_premium_font(18, "Bold")
+    draw.text((TEXT_X, H - 40), "FPL_VORTEX", font=brand_font, fill=(150, 150, 150))
+
+    # SEO Tags / Source
+    src = " · ".join(f"@{s}" for s in sources[:2])
+    sw = draw.textlength(src, font=brand_font)
+    draw.text((W - sw - 40, H - 40), src, font=brand_font, fill=(150, 150, 150))
 
     img.save(filename)
 
