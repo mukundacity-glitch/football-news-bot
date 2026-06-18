@@ -62,11 +62,16 @@ for d in (PENDING_DIR, POSTED_DIR, Path("logos"), Path("players")):
 JOURNALISTS = [
     # Tier-1 global transfer journalists
     "FabrizioRomano", "David_Ornstein",
+    
     # European transfer reporters
     "Plettigoal", "MatteoMoretto", "AlfredoPedulla", "DiMarzio",
-    # PL-focused reporters
+    
+    # PL-focused reporters & Club Tier-1s
     "JacobsBen", "sistoney67", "_pauljoyce", "JamesPearceLFC",
-    "mcgrathmike", "SkySportsNews",
+    "mcgrathmike", "SkySportsNews", "AlasdairGold", "SamLee", "JPercyTelegraph",
+    
+    # FPL & Injury Specialists (CRUCIAL FOR SUBSCRIBERS)
+    "BenDinnery", "OfficialFPL"
 ]
 NITTER_INSTANCES = [
     "https://nitter.net",
@@ -244,6 +249,7 @@ Return STRICT JSON only, no markdown, no prose:
  "fee": "e.g. £30m or null",
  "contract": "e.g. until 2028 or null",
  "conditional": "one short ENGLISH sentence describing any deadline/condition, else null",
+ "fpl_impact": "One short sentence explaining how this specifically impacts Fantasy Premier League (e.g., 'Expected to start immediately, making him a viable £5.5m midfield option.', 'Puts Saka's gameweek minutes at risk.'), else null",
  "stage": 1,            // 1=rumour/talks 2=agreement/advanced 3=signed 4=official/confirmed (or for injury: 1=concern 2=scan 3=ruled out 4=fit again)
  "collapsed": true/false,
  "headline": "<=10 word ENGLISH headline true to THIS exact story",
@@ -573,6 +579,9 @@ def build_tweet_body(story, sources, rumour: bool) -> str:
     if story.get("conditional"):
         lines.append(f"📌 {story['conditional']}")
 
+    if story.get("fpl_impact"):
+        lines.append(f"🎯 FPL Impact: {story['fpl_impact']}")
+
     # 3. Stacked format for Fee and Contract
     details = []
     if story.get("fee"):
@@ -588,7 +597,17 @@ def build_tweet_body(story, sources, rumour: bool) -> str:
     if rumour:
         body = "⚠️ RUMOUR (UNCONFIRMED)\n" + body
 
-    # 4. Append the full Hashtags at the very end
+    # 4. Add an engagement hook to boost algorithmic reach
+    import random
+    hooks = [
+        "Are you putting him in your FPL draft? 👇",
+        "How does this change your Gameweek plans? 🗣️",
+        "Is he going straight into your starting XI? 🤔",
+        "A must-own FPL asset or a wait-and-see? 📉📈"
+    ]
+    body += "\n\n" + random.choice(hooks)
+
+    # 5. Append the full Hashtags at the very end
     body += "\n\n" + build_hashtags(story)
     
     return body
