@@ -58,16 +58,46 @@ POSTED_DIR  = Path("queue/posted")
 for d in (PENDING_DIR, POSTED_DIR, Path("logos"), Path("players")):
     d.mkdir(parents=True, exist_ok=True)
 
-# ── JOURNALISTS ──────────────────────────────────────────────────────────────
-JOURNALISTS = [
-    # Tier-1 global transfer journalists
-    "FabrizioRomano", "David_Ornstein",
-    # European transfer reporters
-    "Plettigoal", "MatteoMoretto", "AlfredoPedulla", "DiMarzio",
-    # PL-focused reporters
-    "JacobsBen", "sistoney67", "_pauljoyce", "JamesPearceLFC",
-    "mcgrathmike", "SkySportsNews",
-]
+JOURNALIST_FILE = Path("journalists.json")
+
+DEFAULT_JOURNALISTS = {
+    "tier1": [
+        "FabrizioRomano",
+        "David_Ornstein",
+    ],
+    "tier2": [
+        "Plettigoal",
+        "MatteoMoretto",
+        "AlfredoPedulla",
+        "DiMarzio",
+    ],
+    "pl": [
+        "JacobsBen",
+        "sistoney67",
+        "_pauljoyce",
+        "JamesPearceLFC",
+        "mcgrathmike",
+        "SkySportsNews",
+    ],
+    "club": []
+}
+
+def load_journalists():
+    if JOURNALIST_FILE.exists():
+        with open(JOURNALIST_FILE, "r") as f:
+            cfg = json.load(f)
+    else:
+        cfg = DEFAULT_JOURNALISTS
+        with open(JOURNALIST_FILE, "w") as f:
+            json.dump(cfg, f, indent=2)
+
+    ordered = []
+    for group in ("tier1", "tier2", "pl", "club"):
+        ordered.extend(cfg.get(group, []))
+
+    return list(dict.fromkeys(ordered))
+
+JOURNALISTS = load_journalists()
 NITTER_INSTANCES = [
     "https://nitter.net",
     "https://nitter.privacydev.net",
