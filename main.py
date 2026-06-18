@@ -286,22 +286,63 @@ Tweet:
 def extract_story_llm(tweet_text: str):
     if not _GEMINI_OK or _genai_client is None:
         return None
+
+    def _clean_json_text(raw: str) -> str:
+        if not raw:
+            return ''
+        raw = raw.strip()
+
+        # Remove fenced code blocks if Gemini adds them
+        raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.IGNORECASE)
+        raw = re.sub(r'\s*```$', '', raw)
+
+        # Try to isolate the first JSON object
+        start = raw.find('{')
+        end = raw.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            raw = raw[start:end + 1]
+
+        return raw.strip()
+
     for attempt in range(3):
         try:
             resp = _genai_client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=_EXTRACT_PROMPT.format(tweet=tweet_text),
             )
-            raw = resp.text or ""
-            return json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
+
+            raw = getattr(resp, 'text', None) or ''
+
+            # Some SDK responses can wrap text in parts, so keep a fallback
+            if not raw and hasattr(resp, 'candidates'):
+                try:
+                    parts = resp.candidates[0].content.parts
+                    raw = ''.join(getattr(p, 'text', '') or '' for p in parts)
+                except Exception:
+                    raw = ''
+
+            cleaned = _clean_json_text(raw)
+            if not cleaned:
+                return None
+
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                # Second chance, extract the first valid object-like chunk
+                match = re.search(r'\{.*\}', cleaned, flags=re.DOTALL)
+                if match:
+                    return json.loads(match.group(0))
+                raise
+
         except Exception as e:
             m = str(e).lower()
-            if any(s in m for s in ("429", "rate", "quota", "resource_exhausted", "exhausted")):
-                time.sleep(6 * (attempt + 1))     # free-tier rate limit → back off + retry
+            if any(s in m for s in ('429', 'rate', 'quota', 'resource_exhausted', 'exhausted')):
+                time.sleep(6 * (attempt + 1))
                 continue
-            print(f"  [LLM] Gemini failed, using fallback: {e}")
+            print(f'  [LLM] Gemini failed, using fallback: {e}')
             return None
-    print("  [LLM] Gemini rate-limited after retries, using fallback")
+
+    print('  [LLM] Gemini rate-limited after retries, using fallback')
     return None
 
 def extract_story_fallback(tweet_text: str) -> dict:
