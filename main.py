@@ -36,6 +36,7 @@ from twikit import Client
 # google-generativeai package is deprecated). Key from aistudio.google.com,
 # stored as GEMINI_API_KEY. If unset, the bot uses the truthful fallback.
 GEMINI_MODEL = "gemini-2.0-flash"   # free tier; change to a newer Flash if you like
+GEMINI_DELAY = float(os.getenv("GEMINI_DELAY", "1"))
 try:
     from google import genai
     _GEMINI_OK = bool(os.getenv("GEMINI_API_KEY"))
@@ -98,10 +99,11 @@ def load_journalists():
     return list(dict.fromkeys(ordered))
 
 JOURNALISTS = load_journalists()
+USE_NITTER_FALLBACK = False
+
 NITTER_INSTANCES = [
     "https://nitter.net",
     "https://nitter.privacydev.net",
-    "https://nitter.poast.org",
 ]
 # Tier-1: their official word is trusted to post alone.
 TOP_SOURCES = {"FabrizioRomano", "David_Ornstein"}
@@ -226,7 +228,7 @@ def hashtag_for(name_or_key: str):
 
 # ── STATE ────────────────────────────────────────────────────────────────────
 def load_data() -> dict:
-    fresh = {"daily": {"date": "", "count": 0, "limit": 17}, "stories": {}, "posted_ids": []}
+    fresh = {"daily": {"date": "", "count": 0, "limit": 25}, "stories": {}, "posted_ids": []}
     if POSTED_FILE.exists():
         try:
             with open(POSTED_FILE) as f:
@@ -253,7 +255,7 @@ def save_data(data: dict):
 def check_daily_limit(data: dict) -> bool:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if data["daily"]["date"] != today:
-        data["daily"] = {"date": today, "count": 0, "limit": 17}
+        data["daily"] = {"date": today, "count": 0, "limit": 25}
     return data["daily"]["count"] < data["daily"]["limit"]
 
 def increment_daily(data: dict):
@@ -373,8 +375,35 @@ def extract_story_fallback(tweet_text: str) -> dict:
         event = "stay"
     else:
         event = "transfer"
-    stage = 4 if any(w in tl for w in ["here we go", "official", "confirmed", "completed", "medical", "joins"]) else \
-            2 if any(w in tl for w in ["agreement", "agreed", "advanced", "personal terms"]) else 1
+    if any(w in tl for w in [
+    "official",
+    "confirmed",
+    "signed",
+    "signs",
+    "joins",
+    "joined",
+    "completed",
+    "here we go"
+]):
+    stage = 4
+
+elif any(w in tl for w in [
+    "medical scheduled",
+    "medical booked",
+    "medical set",
+    "medical tests",
+    "medical today",
+    "agreement",
+    "agreed",
+    "advanced",
+    "personal terms",
+    "verbal agreement",
+    "deal agreed"
+]):
+    stage = 3
+
+else:
+    stage = 1
     # player: first capitalised 2+ token name that is NOT a club (any league)
     # and not a header/filler word. Excludes "Real Madrid", "Excl", "Nothing"…
     FILLER = {"excl", "exclusive", "breaking", "official", "understand", "update",
@@ -908,26 +937,39 @@ def move_to_posted(item):
 
 # ── SCRAPER ──────────────────────────────────────────────────────────────────
 def get_nitter_tweets(username):
+    if not USE_NITTER_FALLBACK:
+        return []
+
     headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
     for inst in NITTER_INSTANCES:
         try:
-            r = requests.get(f"{inst}/{username}/rss", headers=headers, timeout=10)
+            r = requests.get(f'{inst}/{username}/rss', headers=headers, timeout=8)
             if r.status_code != 200:
                 continue
+
             root = ET.fromstring(r.content)
             out = []
-            for it in root.findall(".//item")[:8]:
-                link, desc = it.find("link"), it.find("description")
-                if link is None:
+
+            for it in root.findall('.//item')[:6]:
+                link = it.find('link')
+                desc = it.find('description')
+
+                if link is None or not link.text:
                     continue
-                tid = link.text.strip().split("/")[-1].split("#")[0]
-                text = re.sub(r'<[^>]+>', '', desc.text).strip() if desc is not None and desc.text else ""
+
+                tid = link.text.strip().split('/')[-1].split('#')[0]
+                text = re.sub(r'<[^>]+>', '', desc.text).strip() if desc is not None and desc.text else ''
+
                 if tid and text:
-                    out.append({"id": tid, "text": text})
+                    out.append({'id': tid, 'text': text})
+
             if out:
                 return out
-        except Exception:
+
+        except Exception as e:
+            print(f'  [NITTER] {inst} failed: {e}')
             continue
+
     return []
 
 async def get_twikit_tweets(read_client, username, count=20, retries=2):
@@ -954,12 +996,16 @@ async def get_twikit_tweets(read_client, username, count=20, retries=2):
     return []
 
 async def fetch_tweets(read_client, username):
-    """twikit first; Nitter only as a fallback. Never raise — return []."""
+    """twikit first. Nitter is optional and disabled by default."""
     tweets = await get_twikit_tweets(read_client, username)
     if tweets:
-        return tweets, "twikit"
-    nit = get_nitter_tweets(username)
-    return nit, ("nitter" if nit else "none")
+        return tweets, 'twikit'
+
+    if USE_NITTER_FALLBACK:
+        nit = get_nitter_tweets(username)
+        return nit, ('nitter' if nit else 'none')
+
+    return [], 'none'
 
 async def scrape(data, read_client):
     fpl = fetch_fpl_data()
@@ -983,12 +1029,14 @@ async def scrape(data, read_client):
             # Extraction cache: each tweet is sent to the LLM ONCE, ever.
             # Re-runs reuse the stored result → stays inside Gemini's free quota.
             if tid in data["extracted"]:
-                story = dict(data["extracted"][tid])
-            else:
-                story = build_story(text)                            # READ the story (LLM if new)
-                data["extracted"][tid] = dict(story)
-                if _GEMINI_OK:
-                    time.sleep(4)        # ~15 RPM free tier → 4s gap keeps us safely under
+    story = dict(data["extracted"][tid])
+else:
+    story = build_story(text)
+    data["extracted"][tid] = dict(story)
+
+    # Gemini free tier protection
+    if _GEMINI_OK:
+        time.sleep(1)
             safe, why = passes_safety_gate(story, text, fpl)
             if not safe:
                 skipped += 1
@@ -1095,7 +1143,8 @@ async def main():
     client = Client("en-US")
     client.set_cookies({"auth_token": X_POST_AUTH_TOKEN, "ct0": X_POST_CT0_TOKEN})
     remaining = data["daily"]["limit"] - data["daily"]["count"]
-    batch = queue[:max(0, min(3, remaining))]
+    MAX_POSTS_PER_RUN = 5
+    batch = queue[:max(0, min(MAX_POSTS_PER_RUN, remaining))]
     for i, item in enumerate(batch):
         try:
             await post_item(client, item, data)
