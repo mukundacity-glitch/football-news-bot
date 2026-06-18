@@ -748,13 +748,18 @@ def create_image(story, sources, filename, rumour=False):
     player_name = (player_el["web_name"] if player_el else story.get("player")) or "UPDATE"
     seo_tags = build_seo_hashtags(story)
     
-    # Map FPL element type to Position String
-    pos_str = "PLAYER"
+    # Map FPL element type to Position String with logical emojis
+    pos_str = "⚽ PLAYER"
     if player_el:
-        type_map = {1: "GOALKEEPER", 2: "DEFENDER", 3: "MIDFIELDER", 4: "FORWARD"}
-        pos_str = type_map.get(player_el.get("element_type"), "PLAYER")
+        type_map = {
+            1: "🧤 GOALKEEPER", 
+            2: "🛡️ DEFENDER", 
+            3: "🎯 MIDFIELDER", 
+            4: "⚡ FORWARD"
+        }
+        pos_str = type_map.get(player_el.get("element_type"), "⚽ PLAYER")
     elif post_type == "MANAGER_UPDATE":
-        pos_str = "HEAD COACH"
+        pos_str = "👔 HEAD COACH"
 
     img = Image.new("RGB", (W, H), theme['bg'])
     draw = ImageDraw.Draw(img, "RGBA")
@@ -786,16 +791,15 @@ def create_image(story, sources, filename, rumour=False):
     name_up = player_name.upper()
     nsize = 54
     
-    # Shrink the font size until the text fits within a 520px width limit.
-    # This guarantees an 80px safety buffer before hitting the 600px center line.
     while nsize >= 24 and draw.textlength(name_up, font=get_premium_font(nsize, "Black")) > 520:
         nsize -= 2
         
     draw.text((40, 40), name_up, font=get_premium_font(nsize, "Black"), fill=theme['text'])
     
-    # Dynamically push the Position text down so it doesn't overlap the Name
+    # Dynamically push the Position text down and use Pilmoji to render the emoji
     pos_y = 40 + nsize + 10
-    draw.text((40, pos_y), pos_str, font=get_premium_font(28, "Bold"), fill=theme['accent'])
+    with Pilmoji(img) as pj:
+        pj.text((40, pos_y), pos_str, font=get_premium_font(28, "Bold"), fill=theme['accent'])
 
     # Left Side Logo Placement
     crest = _load_crest(club_key, 120)
