@@ -284,9 +284,8 @@ def extract_story_fallback(tweet_text: str) -> dict:
             k = CLUB_ALIASES[alias]
             if k not in clubs:
                 clubs.append(k)
-    # Helper to strictly match whole words only, preventing "unofficial" from triggering "official"
-    def has_word(words, text):
-        return any(re.search(r'\b' + w + r'\b', text) for w in words)
+    #def has_word(words, text):
+        return any(re.search(r'\b' + re.escape(w) + r'\b', text) for w in words)
 
     if has_word(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt", "knock"], tl):
         event = "injury"
@@ -558,8 +557,9 @@ def build_tweet_body(story, sources, rumour: bool) -> str:
     ev = story["event"]
     prefix = "COLLAPSED" if story.get("collapsed") else EVENT_PREFIX.get(ev, "UPDATE")
 
-    # 1. Headline Format (Removes "update")
-    head = (story.get("headline") or story.get("player") or "Transfer").replace(" — update", "").replace(" update", "").replace("Update", "").strip()
+    # 1. Headline Format (Only removes "- update" if it is at the end of the phrase)
+    raw_head = story.get("headline") or story.get("player") or "Transfer"
+    head = re.sub(r'(?i)[\s\-—]*update\s*$', '', raw_head).strip()
     
     lines = [f"🚨 {prefix} | {head}", ""]
 
@@ -753,6 +753,8 @@ def create_image(story, sources, filename, rumour=False):
     if player_el:
         type_map = {1: "GOALKEEPER", 2: "DEFENDER", 3: "MIDFIELDER", 4: "FORWARD"}
         pos_str = type_map.get(player_el.get("element_type"), "PLAYER")
+    elif post_type == "MANAGER_UPDATE":
+        pos_str = "HEAD COACH"
 
     img = Image.new("RGB", (W, H), theme['bg'])
     draw = ImageDraw.Draw(img, "RGBA")
