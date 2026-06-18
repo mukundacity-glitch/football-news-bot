@@ -483,19 +483,28 @@ def passes_safety_gate(story, raw_text, fpl_data):
         if find_player_in_fpl(story["player"], fpl_data) is None:
             return False, "injury_player_not_in_fpl"
         return True, "ok_injury"
-    # transfer / loan / stay / renewal — must be FPL-relevant:
-    #   a current FPL player, OR a Premier League club on either side.
-    pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
-    pl_club = bool(story.get("to_key") or story.get("from_key"))
+        # transfer / loan / stay / renewal
+    # allow:
+    # 1) current FPL player
+    # 2) any story involving a Premier League club
+    # 3) any story where the player is moving to a PL club even if not yet in FPL
+    pl_player = find_player_in_fpl(story['player'], fpl_data) is not None
+
+    to_club = (story.get('to_club') or '').lower().strip()
+    from_club = (story.get('from_club') or '').lower().strip()
+
+    pl_club = bool(story.get('to_key') or story.get('from_key'))
+
     if not pl_club:
-        # also check clubs_cache PL names for clubs we render no crest for
-        for nm in (story.get("to_club"), story.get("from_club")):
-            if nm and nm.lower() in PL_CLUB_NAMES:
+        for nm in (to_club, from_club):
+            if nm and nm in PL_CLUB_NAMES:
                 pl_club = True
                 break
+
     if not pl_player and not pl_club:
-        return False, "not_fpl_relevant"   # e.g. Heidenheim<->Hoffenheim, Real/Real
-    return True, "ok"
+        return False, 'not_fpl_relevant'
+
+    return True, 'ok'
 
 def classify_post(story, sources):
     """'confirmed' -> post as fact | 'rumour' -> labelled unconfirmed | None -> hold."""
