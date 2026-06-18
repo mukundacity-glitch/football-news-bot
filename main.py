@@ -321,7 +321,7 @@ def extract_story_fallback(tweet_text: str) -> dict:
         "to_club": (to_key.replace("_", " ") if to_key else None),
         "from_key": from_key, "to_key": to_key,
         "fee": None, "contract": None, "conditional": None,
-        "stage": stage, "collapsed": any(w in tl for w in ["collapsed", "off", "called off", "rejected"]),
+        "stage": stage, "collapsed": any(re.search(r'\b' + w + r'\b', tl) for w in ["collapsed", "called off", "rejected", "deal off"]),
         "headline": (name + " — update") if name else "Transfer update",
         "body": clean[:240], "confidence": 0.5,
     }
@@ -799,8 +799,9 @@ def create_image(story, sources, filename, rumour=False):
 
     body_font = get_premium_font(24, "Bold")
     y = 130
-    status_icon = "❌" if story.get("collapsed") else ("⚠️" if rumour else "✅")
-    details = story.get("body") or ""
+    sstatus_icon = "❌" if story.get("collapsed") else ("⚠️" if rumour else "✅")
+    raw_details = story.get("body") or ""
+    details = re.sub(r'https?://\S+|www\.\S+|pic\.x\.com/\S+', '', raw_details).strip()
 
     with Pilmoji(img) as pj:
         words, wrapped, cur = details.split(), [], ""
