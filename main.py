@@ -511,6 +511,28 @@ EVENT_PREFIX = {
     "manager": "MANAGER", "collapse": "COLLAPSED", "other": "UPDATE",
 }
 
+SEO_HASHTAGS = ["#FPL", "#FantasyPL", "#PremierLeague", "#FootballTwitter"]
+
+def build_seo_hashtags(story, max_tags=3):
+    """Short, search-friendly tag set for card captions — separate from the
+    longer club/event tag block build_hashtags() already produces for the tweet body."""
+    tags = []
+    ev = story.get("event")
+    if ev in ("transfer", "loan", "loan_option"):
+        tags.append("#TransferNews")
+    elif ev == "injury":
+        tags.append("#InjuryUpdate")
+    elif ev == "manager":
+        tags.append("#FootballManager")
+    for key, name in ((story.get("to_key"), story.get("to_club")),
+                       (story.get("from_key"), story.get("from_club"))):
+        ht = hashtag_for(key) or hashtag_for(name)
+        if ht and ht not in tags:
+            tags.append(ht)
+            break
+    tags += [t for t in SEO_HASHTAGS if t not in tags]
+    return " ".join(tags[:max_tags])
+
 def build_hashtags(story):
     ev = story["event"]
     base = "#TransferNews" if ev in ("transfer", "loan", "loan_option") else \
@@ -556,7 +578,16 @@ def build_detail_line(story) -> str:
         bits.append(story["conditional"])
     return "  |  ".join(bits)
 
+
 # ── GRAPHICS ENGINE ──────────────────────────────────────────────────────────
+PALETTES = {
+    'INJURY':              {'accent': (220, 38, 38),  'text': (255, 255, 255), 'bg': (18, 0, 0),   'swoosh': (180, 20, 20)},
+    'TRANSFER_ONGOING':     {'accent': (200, 160, 40), 'text': (200, 160, 40), 'bg': (10, 20, 35),  'swoosh': (200, 160, 40)},
+    'TRANSFER_CONFIRMED':   {'accent': (255, 215, 0),  'text': (255, 255, 255), 'bg': (15, 15, 15), 'swoosh': (255, 215, 0)},
+    'TRANSFER_RUMOUR':      {'accent': (255, 196, 0),  'text': (255, 196, 0),  'bg': (40, 30, 0),   'swoosh': (200, 150, 0)},
+    'TRANSFER_COLLAPSED':   {'accent': (153, 27, 40),  'text': (220, 220, 220), 'bg': (25, 25, 25), 'swoosh': (100, 15, 20)},
+    'MANAGER_UPDATE':       {'accent': (192, 192, 192), 'text': (255, 255, 255), 'bg': (0, 10, 30), 'swoosh': (150, 150, 170)},
+}
 _FONT_CACHE = {}
 _FALLBACK_FONTS = {
     "Black": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -649,151 +680,121 @@ def _load_crest(club_key, box=132):
             return _fit_contain(src, box, box)
     return None
 
+def _classify_post_type(story, rumour):
+    if story.get("collapsed"):
+        return "TRANSFER_COLLAPSED"
+    if rumour:
+        return "TRANSFER_RUMOUR"
+    ev = story.get("event")
+    if ev == "injury":
+        return "INJURY"
+    if ev == "manager":
+        return "MANAGER_UPDATE"
+    if ev in ("transfer", "loan", "loan_option") and story.get("stage", 1) >= 4:
+        return "TRANSFER_CONFIRMED"
+    return "TRANSFER_ONGOING"
+
 def create_image(story, sources, filename, rumour=False):
     W, H = 1200, 675
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
+    to_key, from_key = story.get("to_key"), story.get("from_key")
 
-    # label always matches the photo: if we have an FPL element, use its name
-    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
-
-    to_key   = story.get("to_key")
-    from_key = story.get("from_key")
-    ev = story["event"]
-    collapsed = story.get("collapsed")
-    GREEN = (40, 210, 90)
-
-    # CLUB-VERIFIED FACE: a strict name match can still be the wrong person.
-    # Trust the photo only when the FPL player's actual club lines up with the
-    # story's clubs. If it contradicts, drop the face (club-only card).
+    # face_verified kept exactly as before — never show a photo we can't confirm
     face_verified = False
     if player_el:
         cur = fpl_team_key(player_el, fpl)
-        if cur is None:
-            face_verified = True                      # can't check → trust strict name match
-        elif cur == from_key or cur == to_key:
-            face_verified = True                      # club agrees → confident
-        elif not from_key and not to_key:
-            face_verified = True                      # no PL club in story to check against
-        # else: cur exists but matches neither club → suspicious, no face
+        if cur is None or cur == from_key or cur == to_key or (not from_key and not to_key):
+            face_verified = True
 
-    stats = None
-    player_img = Path("players/silhouette.png")
-    if player_el:
+    post_type = _classify_post_type(story, rumour)
+    theme = PALETTES.get(post_type, PALETTES['TRANSFER_ONGOING'])
+    club_key = to_key or from_key
+    player_name = (player_el["web_name"] if player_el else story.get("player")) or "UPDATE"
+    seo_tags = build_seo_hashtags(story)
+
+    img = Image.new("RGB", (W, H), (20, 20, 20))
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    # ── Photo zone (right ~55%): verified photo, else silhouette. No fallback crest. ──
+    p_img_loaded = False
+    if player_el and face_verified:
         code = player_el["code"]
-        stats = {"cost": f"£{player_el['now_cost']/10.0}m", "pts": str(player_el['total_points']),
-                 "goals": str(player_el['goals_scored']), "assists": str(player_el['assists'])}
-        if face_verified:
-            player_img = Path(f"players/{code}.png")
-            if not player_img.exists():
-                _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png", player_img)
+        player_img = Path(f"players/{code}.png")
+        if not player_img.exists():
+            _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png", player_img)
+        if player_img.exists():
+            p_src = _safe_open_rgba(player_img)
+            if p_src is not None:
+                p_img = _fit_contain(p_src, 650, 650)
+                img.paste(p_img, (W - 600, H - p_img.height), p_img)
+                p_img_loaded = True
+    if not p_img_loaded:
+        sil = _safe_open_rgba(Path("players/silhouette.png"))
+        if sil is not None:
+            sil = _fit_contain(sil, 460, 460)
+            img.paste(sil, (W - 500, H - sil.height - 20), sil)
 
-    bg_color = CLUB_COLORS.get(to_key, (25, 29, 38))
-    accent = (255, 90, 0) if ev in ("transfer", "loan", "loan_option") else \
-             (0, 163, 255) if ev == "manager" else (255, 0, 77) if ev == "injury" else (120, 200, 120)
-    if collapsed:
-        accent = (150, 80, 80)
+    # ── Swoosh division between text column and photo column ──
+    arc_bbox = [-200, -100, 750, 950]
+    draw.ellipse(arc_bbox, fill=theme['bg'])
+    draw.arc([-205, -105, 755, 955], 270, 90, fill=theme['swoosh'], width=8)
 
-    img = Image.new("RGB", (W, H), (14, 16, 21))
-    draw = ImageDraw.Draw(img)
+    crest = _load_crest(club_key, 200)
+    if crest is not None:
+        img.paste(crest, (int(W * 0.48), 20), crest)
+        watermark = crest.copy()
+        watermark.putalpha(watermark.split()[3].point(lambda a: int(a * 0.08)))
+        watermark = watermark.resize((400, 400), Image.Resampling.LANCZOS)
+        img.paste(watermark, (-50, H - 350), watermark)
 
-    draw.polygon([(W*0.52, 0), (W, 0), (W, H), (W*0.42, H)], fill=bg_color)
-    shade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ImageDraw.Draw(shade).polygon([(W*0.52, 0), (W, 0), (W, H), (W*0.42, H)], fill=(0, 0, 0, 70))
-    grad = Image.new("L", (1, H), 0)
-    for y in range(H):
-        grad.putpixel((0, y), int(110 * (y / H)))
-    grad = grad.resize((W, H))
-    img.paste(shade, (0, 0), Image.composite(shade.split()[3], Image.new("L", (W, H), 0), grad))
-
-    photo_ok = False
-    if player_el and face_verified and player_img.exists():   # strict match + club agrees
-        p_src = _safe_open_rgba(player_img)
-        if p_src is not None:
-            p_img = _fit_contain(p_src, 460, 460)
-            shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            sh = p_img.split()[3].point(lambda a: int(a * 0.55))
-            shadow.paste((0, 0, 0, 255), (W - 420 + 8, H - p_img.height - 6 + 8), sh)
-            shadow = shadow.filter(ImageFilter.GaussianBlur(8))
-            img.paste(shadow, (0, 0), shadow)
-            img.paste(p_img, (W - 420, H - p_img.height - 6), p_img)
-            photo_ok = True
-    if not photo_ok:
-        ov = Image.new("RGBA", (W, H), (0, 0, 0, 0)); od = ImageDraw.Draw(ov)
-        cx, cyc, r = int(W * 0.78), int(H * 0.50), 150
-        od.ellipse([cx - r, cyc - r, cx + r, cyc + r], fill=(0, 0, 0, 70))
-        od.ellipse([cx - 52, cyc - 78, cx + 52, cyc + 26], fill=(255, 255, 255, 60))
-        od.pieslice([cx - 95, cyc + 6, cx + 95, cyc + 210], 180, 360, fill=(255, 255, 255, 60))
-        img.paste(ov, (0, 0), ov)
-        ph = get_premium_font(34, "Black"); lab = "NO PHOTO"
-        lw = od.textlength(lab, font=ph)
-        ImageDraw.Draw(img).text((cx - lw/2, cyc + r - 6), lab, font=ph, fill=(255, 255, 255))
-
-    TEXT_X = 60
-    TEXT_MAX_W = int(W * 0.62) - TEXT_X
-    draw.rectangle([0, 0, W, 12], fill=accent)
-    brand = get_premium_font(60, "Black"); sub = get_premium_font(38, "Bold")
-    crest_font = get_premium_font(34, "Black")
-    draw.text((TEXT_X, 44), "FPL", font=brand, fill=(255, 255, 255))
-    fpl_w = draw.textlength("FPL ", font=brand)
-    draw.text((TEXT_X + fpl_w, 44), "VORTEX", font=brand, fill=accent)
-
-    if rumour:
-        badge_txt, badge_fill, badge_bg = "RUMOUR – NOT CONFIRMED", (255, 196, 0), (60, 45, 0)
-    else:
-        badge_txt = ("COLLAPSED" if collapsed else EVENT_PREFIX.get(ev, "UPDATE"))
-        badge_fill, badge_bg = accent, (25, 28, 38)
-    bw = int(draw.textlength(badge_txt, font=sub))
-    draw.rounded_rectangle([TEXT_X, 138, TEXT_X + bw + 52, 206], radius=14, fill=badge_bg)
-    draw.text((TEXT_X + 26, 152), badge_txt, font=sub, fill=badge_fill)
+    # ── Typography (left column) ──
+    TEXT_X = 50
+    head_font = get_premium_font(42, "Black")
+    body_font = get_premium_font(28, "Bold")
+    header_text = ("COLLAPSED" if story.get("collapsed") else post_type.replace("_", " "))
+    draw.text((TEXT_X, 60), header_text.upper(), font=head_font, fill=theme['accent'])
 
     name_up = player_name.upper()
-    nsize = 78
-    while nsize >= 40 and draw.textlength(name_up, font=get_premium_font(nsize, "Black")) > TEXT_MAX_W:
-        nsize -= 3
-    nf = get_premium_font(nsize, "Black"); name_y = 236
+    nsize = 68
+    while nsize >= 30 and draw.textlength(name_up, font=get_premium_font(nsize, "Black")) > 500:
+        nsize -= 2
+    draw.text((TEXT_X, 110), name_up, font=get_premium_font(nsize, "Black"), fill=theme['text'])
+
+    bullets = [story.get("body") or ""]
+    if story.get("conditional"):
+        bullets.append(story["conditional"])
+    if story.get("fee"):
+        bullets.append(f"Fee: {story['fee']}")
+    if story.get("contract"):
+        bullets.append(story["contract"])
+
+    y = 220
+    bullet_icon = "❌" if story.get("collapsed") else ("⚠️" if rumour else "✅")
     with Pilmoji(img) as pj:
-        pj.text((TEXT_X, name_y), name_up, font=nf, fill=(255, 255, 255))
-    nb = draw.textbbox((0, 0), name_up, font=nf)
-    name_bottom = name_y + (nb[3] - nb[1]) + 12
+        for line in bullets:
+            if not line:
+                continue
+            words, wrapped, cur = line.split(), [], ""
+            for w in words:
+                if pj.getsize(cur + w, font=body_font)[0] <= 450:
+                    cur += w + " "
+                else:
+                    wrapped.append(cur); cur = w + " "
+            wrapped.append(cur)
+            pj.text((TEXT_X, y), f"{bullet_icon} {wrapped[0]}", font=body_font, fill=(240, 240, 240))
+            y += 35
+            for wl in wrapped[1:]:
+                pj.text((TEXT_X + 40, y), wl, font=body_font, fill=(240, 240, 240))
+                y += 35
+            y += 15
 
-    CREST = 132
-    from_im = _load_crest(from_key, CREST); to_im = _load_crest(to_key, CREST)
-    row_y = name_bottom + 36; cy = row_y + CREST // 2; x = TEXT_X
-    if from_im is not None:
-        img.paste(from_im, (x, row_y + (CREST - from_im.height)//2), from_im)
-        fn = (story.get("from_club") or from_key or "").replace("_", " ").upper()
-        fnw = draw.textlength(fn, font=crest_font)
-        draw.text((x + (CREST - fnw)//2, row_y + CREST + 10), fn, font=crest_font, fill=(235, 235, 235))
-        x += CREST + 30
-    if (from_im is not None) or (to_im is not None):
-        _draw_arrow(draw, x, cy - 14, 150, GREEN, thick=28); x += 180
-    if to_im is not None:
-        img.paste(to_im, (x, row_y + (CREST - to_im.height)//2), to_im)
-        tn = (story.get("to_club") or to_key or "").replace("_", " ").upper()
-        tnw = draw.textlength(tn, font=crest_font)
-        draw.text((x + (CREST - tnw)//2, row_y + CREST + 10), tn, font=crest_font, fill=(255, 255, 255))
+    # ── Caption strip: short SEO hashtags, bottom-left; source, bottom-right ──
+    draw.text((TEXT_X, H - 45), seo_tags, font=get_premium_font(20, "Bold"), fill=(150, 150, 150))
+    src = "  ·  ".join(f"@{s}" for s in sources[:2])
+    sw = draw.textlength(src, font=get_premium_font(18, "Bold"))
+    draw.text((W - sw - 40, H - 45), src, font=get_premium_font(18, "Bold"), fill=(150, 150, 150))
 
-    detail = build_detail_line(story)
-    if detail:
-        with Pilmoji(img) as pj:
-            pj.text((TEXT_X, row_y + CREST + 56), detail.upper()[:60], font=sub, fill=(160, 255, 120))
-
-    draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
-    draw.rectangle([0, H - 12, W, H], fill=accent)
-    if stats:
-        bar = (f"FPL COST: {stats['cost']}    |    POINTS: {stats['pts']}"
-               f"    |    GOALS: {stats['goals']}    |    ASSISTS: {stats['assists']}")
-        fill = (255, 255, 255)
-    else:
-        src = "  ·  ".join(f"@{s}" for s in sources[:2])
-        bar = f"Source: {src}    |    @FPLVortex"; fill = (170, 180, 200)
-    bsize = 30; bf = get_premium_font(bsize, "Bold")
-    while bsize > 18 and draw.textlength(bar, font=bf) > (W - 120):
-        bsize -= 1; bf = get_premium_font(bsize, "Bold")
-    bbox = draw.textbbox((0, 0), bar, font=bf)
-    by = (H - 90) + (78 - (bbox[3]-bbox[1])) // 2 - bbox[1]
-    draw.text((60, by), bar, font=bf, fill=fill)
     img.save(filename)
 
 # ── QUEUE FILES ──────────────────────────────────────────────────────────────
