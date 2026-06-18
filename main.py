@@ -351,6 +351,22 @@ def find_player_in_fpl(player_name, data):
         if p_lower in el["web_name"].lower().replace(" ", "") or p_lower in fullname:
             return el
     return None
+
+def fpl_player_club(player_el, data):
+    """Return the player's CURRENT club as an official key (e.g. 'Man_Utd'),
+    read straight from FPL team data. Reliable — no tweet parsing needed."""
+    if not player_el or not data:
+        return None
+    teams = {t["id"]: t for t in data.get("teams", [])}
+    t = teams.get(player_el.get("team"))
+    if not t:
+        return None
+    # match the FPL team name to our official key via CLUB_NAME_MAP / aliases
+    name = t.get("name", "").lower()
+    if name in CLUB_NAME_MAP:
+        return CLUB_NAME_MAP[name]
+    # try our broader alias table too
+    return CLUB_ALIASES.get(name)
 # ── TEXT GENERATORS ────────────────────────────────────────────────────────────
 def status_label(stype: str, stage: int, collapsed: bool, rumour: bool = False) -> str:
     """ONE consistent status word used on BOTH the card pill and the tweet,
@@ -365,6 +381,23 @@ def status_label(stype: str, stage: int, collapsed: bool, rumour: bool = False) 
         return {1: "LATEST", 2: "TALKS", 3: "AGREED", 4: "APPOINTED"}.get(stage, "LATEST")
     # injury
     return {1: "INJURY DOUBT", 2: "INJURY SCAN", 3: "RULED OUT", 4: "FIT AGAIN"}.get(stage, "INJURY")
+
+
+def label_color(stype: str, stage: int, collapsed: bool, rumour: bool = False):
+    """Eye-catching colour for the status label, by meaning:
+       RED = bad/injury/collapsed, GREEN = good/done/fit,
+       ORANGE = transfer in progress, AMBER = rumour."""
+    RED, GREEN, ORANGE, AMBER, BLUE = (255, 60, 70), (40, 210, 90), (255, 120, 0), (255, 196, 0), (0, 170, 255)
+    if collapsed:
+        return RED
+    if rumour:
+        return AMBER
+    if stype == "injury":
+        return GREEN if stage == 4 else RED          # fit again = green, else red
+    if stype == "manager":
+        return GREEN if stage == 4 else BLUE
+    # transfer
+    return GREEN if stage >= 3 else ORANGE           # signed/done = green, talks = orange
 
 
 def build_headline(player: str, clubs: list, stage: int, stype: str, fee: str, contract: str, collapsed: bool) -> tuple[str, str]:
@@ -642,6 +675,13 @@ def create_image(headline: str, detail_line: str, source_users: list, stage: int
         to_club = target_club
     GREEN = (40, 210, 90)
 
+    # For INJURY cards there is no move. Use the player's OWN club (from FPL) as
+    # the single club shown, and as the colour panel.
+    injury_club = None
+    if stype == "injury":
+        injury_club = fpl_player_club(player_el, fpl_data) or target_club
+        to_club = injury_club            # colour panel = player's club
+
     stats = None
     player_img_path = Path("players/silhouette.png")
     if player_el:
@@ -722,7 +762,7 @@ def create_image(headline: str, detail_line: str, source_users: list, stage: int
     else:
         # SAME label set as the tweet, so the brand reads consistently.
         badge_txt = status_label(stype, stage, collapsed)
-        badge_fill = accent
+        badge_fill = label_color(stype, stage, collapsed)   # colour-coded by meaning
         badge_bg = (25, 28, 38)
     badge_w = int(draw.textlength(badge_txt, font=sub_font))
     draw.rounded_rectangle([TEXT_X, 138, TEXT_X + badge_w + 52, 206], radius=14, fill=badge_bg)
@@ -743,32 +783,48 @@ def create_image(headline: str, detail_line: str, source_users: list, stage: int
     nb = draw.textbbox((0, 0), name_up, font=nf)
     name_bottom = name_y + (nb[3] - nb[1]) + 12
 
-    # ── FROM crest ─► TO crest, with names underneath ───────────────────────────
     CREST = 132
-    from_im = _load_crest(from_club, CREST)
-    to_im = _load_crest(to_club, CREST)
     row_y = name_bottom + 36
     cy = row_y + CREST // 2
 
-    x = TEXT_X
-    from_name = (from_club.replace("_", " ") if from_club else "")
-    to_name = (to_club.replace("_", " ") if to_club else "")
-
-    # FROM crest
-    if from_im is not None:
-        img.paste(from_im, (x, row_y + (CREST - from_im.height)//2), from_im)
-        fnw = draw.textlength(from_name.upper(), font=crest_name_font)
-        draw.text((x + (CREST - fnw)//2, row_y + CREST + 10), from_name.upper(), font=crest_name_font, fill=(235, 235, 235))
-        x += CREST + 30
-    # Green arrow between
-    arrow_w = 150
-    _draw_arrow(draw, x, cy - 14, arrow_w, GREEN, "right", thick=28)
-    x += arrow_w + 30
-    # TO crest
-    if to_im is not None:
-        img.paste(to_im, (x, row_y + (CREST - to_im.height)//2), to_im)
-        tnw = draw.textlength(to_name.upper(), font=crest_name_font)
-        draw.text((x + (CREST - tnw)//2, row_y + CREST + 10), to_name.upper(), font=crest_name_font, fill=(255, 255, 255))
+    if stype == "injury":
+        # ── INJURY: ONE club crest + name + medical icon (NO arrow) ─────────────
+        club_im = _load_crest(injury_club, CREST)
+        club_name = (injury_club.replace("_", " ") if injury_club else "")
+        x = TEXT_X
+        if club_im is not None:
+            img.paste(club_im, (x, row_y + (CREST - club_im.height)//2), club_im)
+            cnw = draw.textlength(club_name.upper(), font=crest_name_font)
+            draw.text((x + (CREST - cnw)//2, row_y + CREST + 10), club_name.upper(), font=crest_name_font, fill=(255, 255, 255))
+            x += CREST + 36
+        # medical cross badge instead of an arrow
+        cross_fill = label_color(stype, stage, collapsed)
+        cs = 96
+        cyy = row_y + (CREST - cs)//2
+        draw.rounded_rectangle([x, cyy, x + cs, cyy + cs], radius=18, fill=cross_fill)
+        bar = 22
+        midx, midy = x + cs//2, cyy + cs//2
+        draw.rectangle([midx - bar//2, cyy + 18, midx + bar//2, cyy + cs - 18], fill=(255, 255, 255))
+        draw.rectangle([x + 18, midy - bar//2, x + cs - 18, midy + bar//2], fill=(255, 255, 255))
+    else:
+        # ── TRANSFER / MANAGER: FROM crest ─► TO crest, names underneath ────────
+        from_im = _load_crest(from_club, CREST)
+        to_im = _load_crest(to_club, CREST)
+        x = TEXT_X
+        from_name = (from_club.replace("_", " ") if from_club else "")
+        to_name = (to_club.replace("_", " ") if to_club else "")
+        if from_im is not None:
+            img.paste(from_im, (x, row_y + (CREST - from_im.height)//2), from_im)
+            fnw = draw.textlength(from_name.upper(), font=crest_name_font)
+            draw.text((x + (CREST - fnw)//2, row_y + CREST + 10), from_name.upper(), font=crest_name_font, fill=(235, 235, 235))
+            x += CREST + 30
+        arrow_w = 150
+        _draw_arrow(draw, x, cy - 14, arrow_w, GREEN, "right", thick=28)
+        x += arrow_w + 30
+        if to_im is not None:
+            img.paste(to_im, (x, row_y + (CREST - to_im.height)//2), to_im)
+            tnw = draw.textlength(to_name.upper(), font=crest_name_font)
+            draw.text((x + (CREST - tnw)//2, row_y + CREST + 10), to_name.upper(), font=crest_name_font, fill=(255, 255, 255))
 
     # ── Detail line (fee / contract) in caps, green, clearly visible ─────────────
     if detail_line:
