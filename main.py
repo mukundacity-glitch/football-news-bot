@@ -1855,7 +1855,6 @@ async def main(post: bool = False):
     for item in queue:
         if build_draft(item, data, fpl):
             drafted += 1
-            # Add state tracking to prevent duplicate extraction on next run
             if item.get("id") and item["id"] not in data["posted_ids"]:
                 data["posted_ids"].append(item["id"])
             
@@ -1865,7 +1864,7 @@ async def main(post: bool = False):
             }
     save_data(data)
 
-print(f"\n[BOT] {drafted} draft(s) written to {PENDING_DIR}/.")
+    print(f"\n[BOT] {drafted} draft(s) written to {PENDING_DIR}/.")
     if post:
         if read_client:
             print("\n[BOT] Auto-posting is ENABLED. Publishing drafts...")
