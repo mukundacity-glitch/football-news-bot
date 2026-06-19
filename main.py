@@ -1926,7 +1926,7 @@ MAX_POSTS_PER_RUN = 3
 
 
 async def main(post: bool = True, allow_rumours: bool = False):
-    mode_str = "POST" if post else "DRAFT-ONLY"
+    mode_str = "LIVE" if post else "DRAFT-ONLY"
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
           f"(LLM={'Gemini' if _GEMINI_OK else 'off/fallback'}, mode={mode_str})")
     init_club_data()
