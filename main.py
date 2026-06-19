@@ -1,26 +1,27 @@
 """
 FPL VORTEX — Transfer / Injury / Manager news bot for X.
 
-Design goals (fixing the old version):
+Design goals:
   1. THE BOT READS THE STORY. An extraction step turns each raw tweet into an
      accurate, structured story — real from/to clubs, fees, deadlines and
-     conditions (e.g. "Barcelona must pay the £30m option by Thursday or he
-     returns to Man Utd"). No more fixed templates inventing a "joins" sentence.
+     conditions. No fixed templates inventing a "joins" sentence.
   2. CORRECT CLUB / KIT. The player photo is only ever used when the name match
-     is strict, so we never paste a different (e.g. Aston Villa) player's photo
-     onto the card. Crest + colours come from the real destination club.
+     is strict AND the player's real FPL club lines up with the story, so we
+     never paste a different player's photo onto the card. Crest + colours come
+     from the real destination club.
   3. NOTHING TRUE IS SILENTLY DROPPED. Official/confirmed reports post even from
      a single mid-tier source; loan/stay/renewal stories post with accurate
      framing instead of being skipped or mislabelled.
 
 Extraction uses Anthropic Haiku when ANTHROPIC_API_KEY is set; otherwise it
-falls back to a truthful summary built from the tweet text itself.
+falls back to a truthful summary built from the tweet text itself. Each tweet is
+sent to the LLM at most ONCE (results are cached in posted_news.json), keeping
+API cost and latency low across repeated runs.
 """
 from clubs_cache import get_club_data
 import os
 import re
 import json
-import time
 import asyncio
 import requests
 import urllib.request
@@ -31,18 +32,11 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 from pilmoji import Pilmoji
 from twikit import Client
 
-# ── LLM (Google Gemini, free tier) ───────────────────────────────────────────
-# Uses the CURRENT unified SDK: pip install google-genai  (the old
-# google-generativeai package is deprecated). Key from aistudio.google.com,
-# stored as GEMINI_API_KEY. If unset, the bot uses the truthful fallback.
-GEMINI_MODEL = "gemini-2.0-flash"   # free tier; change to a newer Flash if you like
 try:
-    from google import genai
-    _GEMINI_OK = bool(os.getenv("GEMINI_API_KEY"))
-    _genai_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY")) if _GEMINI_OK else None
+    import anthropic
+    _ANTHROPIC_OK = bool(os.getenv("ANTHROPIC_API_KEY"))
 except Exception:
-    _GEMINI_OK = False
-    _genai_client = None
+    _ANTHROPIC_OK = False
 
 # ── SECRETS ──────────────────────────────────────────────────────────────────
 X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
@@ -59,19 +53,16 @@ for d in (PENDING_DIR, POSTED_DIR, Path("logos"), Path("players")):
     d.mkdir(parents=True, exist_ok=True)
 
 # ── JOURNALISTS ──────────────────────────────────────────────────────────────
+# NOTE: handles below are the CORRECT current X usernames. A wrong handle
+# silently returns zero tweets, so these are kept accurate on purpose.
 JOURNALISTS = [
     # Tier-1 global transfer journalists
     "FabrizioRomano", "David_Ornstein",
-    
     # European transfer reporters
     "Plettigoal", "MatteoMoretto", "AlfredoPedulla", "DiMarzio",
-    
-    # PL-focused reporters & Club Tier-1s
+    # PL-focused reporters & club beat writers
     "JacobsBen", "sistoney67", "_pauljoyce", "JamesPearceLFC",
-    "mcgrathmike", "SkySportsNews", "AlasdairGold", "SamLee", "JPercyTelegraph",
-    
-    # FPL & Injury Specialists (CRUCIAL FOR SUBSCRIBERS)
-    "BenDinnery", "OfficialFPL"
+    "mcgrathmike", "SkySportsNews",
 ]
 NITTER_INSTANCES = [
     "https://nitter.net",
@@ -159,9 +150,6 @@ def resolve_club_key(name: str):
     return None
 
 # ── CLUBS_CACHE WIRING (all leagues, not just PL) ────────────────────────────
-# Populated once at startup from get_club_data(). Lets us (a) recognise every
-# club name across Europe so a club is never mistaken for the player, (b) tag
-# non-PL clubs correctly, and (c) gate the feed to FPL-relevant news.
 CLUB_NAME_SET = set()        # every known club name/alias, lowercased
 CLUB_HASHTAGS = {}           # name/alias -> hashtag (all leagues)
 PL_CLUB_NAMES = set()        # PL club names/aliases, lowercased
@@ -176,7 +164,6 @@ def init_club_data():
     CLUB_HASHTAGS = d.get("club_hashtags", {}) or {}
     PL_CLUB_NAMES = set(d.get("pl_clubs", []) or [])
     CLUB_NAME_SET = set(CLUB_HASHTAGS.keys()) | set((d.get("short_names", {}) or {}).keys())
-    # plus our own PL aliases, for safety
     CLUB_NAME_SET |= set(CLUB_ALIASES.keys())
 
 def looks_like_club(name: str) -> bool:
@@ -186,7 +173,6 @@ def looks_like_club(name: str) -> bool:
     n = name.lower().strip()
     if n in CLUB_NAME_SET or n in CLUB_ALIASES:
         return True
-    # token check: 'real madrid', 'fc barcelona', etc.
     return any(n == c or c in n for c in CLUB_NAME_SET if len(c) >= 5)
 
 def hashtag_for(name_or_key: str):
@@ -237,6 +223,14 @@ def increment_daily(data: dict):
 # ── STORY EXTRACTION (the brain) ─────────────────────────────────────────────
 _EXTRACT_PROMPT = """You are a football transfer-desk editor. Read this reporter tweet and extract ONLY what it actually states. Do NOT invent, assume, or generalise. If the tweet is conditional (deadlines, options, "if X then Y"), capture that exactly.
 
+ACCURACY RULES (critical):
+- Every field must come from THIS tweet only. Never mix in other players, clubs, fees or stories.
+- from_club is the player's CURRENT/SELLING club; to_club is the DESTINATION/BUYING club. Do not reverse them.
+- from_club and to_club must be DIFFERENT clubs. If only one club is clearly named, set the other to null.
+- Do not output placeholder text (e.g. "Player Name", "Example", "xxx", "TBD"). Use null when unknown.
+- If the tweet is about a manager/coach appointment, set event=manager, not transfer.
+- If the tweet is about an injury, set event=injury and leave transfer fields null.
+
 LANGUAGE: The tweet may be in Spanish, Italian, Portuguese, French or German. ALL output text fields (headline, body, conditional, club and player names) MUST be in natural English. Translate everything. Never output non-English or mixed-language text. Use the player's and club's common English names.
 
 Return STRICT JSON only, no markdown, no prose:
@@ -249,7 +243,10 @@ Return STRICT JSON only, no markdown, no prose:
  "fee": "e.g. £30m or null",
  "contract": "e.g. until 2028 or null",
  "conditional": "one short ENGLISH sentence describing any deadline/condition, else null",
- "fpl_impact": "One short sentence explaining how this specifically impacts Fantasy Premier League (e.g., 'Expected to start immediately, making him a viable £5.5m midfield option.', 'Puts Saka's gameweek minutes at risk.'), else null",
+ "fpl_impact": "one short ENGLISH sentence on the Fantasy Premier League angle (e.g. 'Expected to start immediately, a viable £5.5m midfield option.'), else null",
+ "diagnosis": "for injury events only: the injury type in 1-4 words (e.g. 'Hamstring strain'), else null",
+ "expected_return": "for injury events only: expected return / timeline in a few words (e.g. 'Out 3-4 weeks', 'Awaiting scans', 'Doubtful for weekend'), else null",
+ "next_match": "for injury events only: the next/affected fixture if stated (e.g. 'Arsenal vs Liverpool'), else null",
  "stage": 1,            // 1=rumour/talks 2=agreement/advanced 3=signed 4=official/confirmed (or for injury: 1=concern 2=scan 3=ruled out 4=fit again)
  "collapsed": true/false,
  "headline": "<=10 word ENGLISH headline true to THIS exact story",
@@ -260,34 +257,29 @@ Tweet:
 \"\"\"{tweet}\"\"\""""
 
 def extract_story_llm(tweet_text: str):
-    if not _GEMINI_OK or _genai_client is None:
+    if not _ANTHROPIC_OK:
         return None
-    for attempt in range(3):
-        try:
-            resp = _genai_client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=_EXTRACT_PROMPT.format(tweet=tweet_text),
-            )
-            raw = resp.text or ""
-            return json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
-        except Exception as e:
-            m = str(e).lower()
-            if any(s in m for s in ("429", "rate", "quota", "resource_exhausted", "exhausted")):
-                time.sleep(6 * (attempt + 1))     # free-tier rate limit → back off + retry
-                continue
-            print(f"  [LLM] Gemini failed, using fallback: {e}")
-            return None
-    print("  [LLM] Gemini rate-limited after retries, using fallback")
-    return None
+    try:
+        client = anthropic.Anthropic()
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=600,
+            messages=[{"role": "user", "content": _EXTRACT_PROMPT.format(tweet=tweet_text)}],
+        )
+        raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        return json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
+    except Exception as e:
+        print(f"  [LLM] extraction failed, using fallback: {e}")
+        return None
 
 def extract_story_fallback(tweet_text: str) -> dict:
     """No-LLM path: still TRUTHFUL — uses the tweet's own words as the body
     instead of a fabricated template. Crude club/stage guesses only."""
     tl = tweet_text.lower()
-    
-    # Helper to strictly match whole words only, preventing "unofficial" from triggering "official"
-    def has_word(words_list, text_to_check):
-        return any(re.search(r'\b' + re.escape(w) + r'\b', text_to_check) for w in words_list)
+
+    def has_word(words_list, text):
+        # whole-word match so 'unofficial' never triggers 'official'
+        return any(re.search(r'\b' + re.escape(w) + r'\b', text) for w in words_list)
 
     clubs = []
     for alias in _SORTED_ALIASES:
@@ -298,8 +290,9 @@ def extract_story_fallback(tweet_text: str) -> dict:
 
     if has_word(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt", "knock"], tl):
         event = "injury"
-    elif (has_word(["appoint", "sack", "part company"], tl) or 
-         (has_word(["manager", "head coach"], tl) and not has_word(["signing", "sign", "joins", "fee", "transfer", "bid"], tl))):
+    elif (has_word(["appoint", "sack", "part company"], tl) or
+          (has_word(["manager", "head coach"], tl) and
+           not has_word(["signing", "sign", "joins", "fee", "transfer", "bid"], tl))):
         event = "manager"
     elif has_word(["loan"], tl):
         event = "loan"
@@ -307,12 +300,10 @@ def extract_story_fallback(tweet_text: str) -> dict:
         event = "stay"
     else:
         event = "transfer"
-        
+
     stage = 4 if has_word(["here we go", "official", "confirmed", "completed", "medical", "joins"], tl) else \
             2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
 
-    # player: first capitalised 2+ token name that is NOT a club (any league)
-    # and not a header/filler word. Excludes "Real Madrid", "Excl", "Nothing"…
     FILLER = {"excl", "exclusive", "breaking", "official", "understand", "update",
               "here", "done", "deal", "medical", "nothing", "all", "source", "news"}
     name = None
@@ -326,34 +317,42 @@ def extract_story_fallback(tweet_text: str) -> dict:
         break
 
     clean = re.sub(r'\s+', ' ', tweet_text).strip()
-    to_key = clubs[-1] if clubs else None
-    from_key = clubs[0] if len(clubs) >= 2 else None
 
-    # Check for collapsed deals accurately using the helper function
+    # Determine from/to: look for an explicit "from <club>" anchor first.
+    from_key = None
+    to_key = None
+    if clubs:
+        from_match = None
+        for alias in _SORTED_ALIASES:
+            if re.search(r'\bfrom\s+' + re.escape(alias) + r'\b', tl):
+                from_match = CLUB_ALIASES[alias]
+                break
+        if from_match and from_match in clubs:
+            from_key = from_match
+            remaining = [c for c in clubs if c != from_key]
+            to_key = remaining[0] if remaining else None
+        else:
+            # Heuristic: first club = destination (buying), last = current/selling.
+            to_key = clubs[0]
+            from_key = clubs[-1] if len(clubs) >= 2 else None
+
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
 
     return {
-        "is_football": True, 
-        "event": event, 
+        "is_football": True, "event": event,
         "is_real_move": event in ("transfer", "loan", "loan_option"),
         "player": name,
         "from_club": (from_key.replace("_", " ") if from_key else None),
         "to_club": (to_key.replace("_", " ") if to_key else None),
-        "from_key": from_key, 
-        "to_key": to_key,
-        "fee": None, 
-        "contract": None, 
-        "conditional": None,
-        "stage": stage, 
-        "collapsed": is_collapsed,
-        "headline": name if name else "Transfer",
-        "body": clean[:240], 
-        "confidence": 0.5,
+        "from_key": from_key, "to_key": to_key,
+        "fee": None, "contract": None, "conditional": None, "fpl_impact": None,
+        "stage": stage, "collapsed": is_collapsed,
+        "headline": name if name else "Transfer update",
+        "body": clean[:240], "confidence": 0.5,
     }
 
 def build_story(tweet_text: str) -> dict:
     s = extract_story_llm(tweet_text) or extract_story_fallback(tweet_text)
-    # normalise + resolve PL keys (don't overwrite keys the fallback already set)
     s["from_key"] = s.get("from_key") or resolve_club_key(s.get("from_club"))
     s["to_key"]   = s.get("to_key") or resolve_club_key(s.get("to_club"))
     try:
@@ -382,8 +381,7 @@ def fetch_fpl_data():
         return None
 
 def find_player_in_fpl(player_name, data):
-    """STRICT match. Returns an element only when the name clearly lines up, so
-    we never put a different player's photo/kit on the card."""
+    """STRICT match. Returns an element only when the name clearly lines up."""
     if not data or not player_name:
         return None
     q = player_name.lower().strip()
@@ -421,8 +419,6 @@ def fpl_team_key(el, fpl_data):
 def build_story_key(player, club_key, event) -> str:
     p = (player or "unknown").lower().replace(" ", "_")
     c = (club_key or "unknown").lower()
-    # group loan/stay/renewal/loan_option under "transfer" family so the same
-    # player doesn't get two separate active stories for related events
     fam = "injury" if event == "injury" else "manager" if event == "manager" else "transfer"
     return f"{p}_{c}_{fam}"
 
@@ -448,7 +444,6 @@ def passes_safety_gate(story, raw_text, fpl_data):
     """Reject only things we should never post. Loan/stay/renewal are allowed —
     they just get accurate framing downstream."""
     tl = raw_text.lower()
-    # off-topic content that names clubs but isn't transfer/injury/manager news
     NON_NEWS_KW = ["documentary", "amazon prime", "netflix", "man of the match",
                    "potm", "player of the month", "kit launch", "new kit", "sponsor",
                    "anniversary", "birthday", "wins the", "award", "fifa the best",
@@ -468,22 +463,18 @@ def passes_safety_gate(story, raw_text, fpl_data):
             return False, "manager_no_club"
         return True, "ok_manager"
     if story["event"] == "injury":
-        # injuries must be a real PL (FPL) player to be on-topic
         if find_player_in_fpl(story["player"], fpl_data) is None:
             return False, "injury_player_not_in_fpl"
         return True, "ok_injury"
-    # transfer / loan / stay / renewal — must be FPL-relevant:
-    #   a current FPL player, OR a Premier League club on either side.
     pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
     pl_club = bool(story.get("to_key") or story.get("from_key"))
     if not pl_club:
-        # also check clubs_cache PL names for clubs we render no crest for
         for nm in (story.get("to_club"), story.get("from_club")):
             if nm and nm.lower() in PL_CLUB_NAMES:
                 pl_club = True
                 break
     if not pl_player and not pl_club:
-        return False, "not_fpl_relevant"   # e.g. Heidenheim<->Hoffenheim, Real/Real
+        return False, "not_fpl_relevant"
     return True, "ok"
 
 def classify_post(story, sources):
@@ -491,9 +482,9 @@ def classify_post(story, sources):
     if story.get("collapsed"):
         return "confirmed"
     if story["event"] in ("manager", "injury", "stay", "renewal", "loan_option"):
-        return "confirmed"  # factual reports; framed accurately, not as "joins"
-    tl = story.get("body", "").lower() + " " + " ".join(story.get(k, "") or "" for k in ("headline",)).lower()
-    strong = story["stage"] >= 4 or any(re.search(r'\b' + w + r'\b', tl) for w in STRONG_OFFICIAL)
+        return "confirmed"
+    tl = story.get("body", "").lower() + " " + (story.get("headline", "") or "").lower()
+    strong = story["stage"] >= 4 or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
     top_source = any(s in TOP_SOURCES for s in sources)
     multi = len(set(sources)) >= 2
     if strong or multi or top_source:
@@ -538,34 +529,11 @@ EVENT_PREFIX = {
     "manager": "MANAGER", "collapse": "COLLAPSED", "other": "UPDATE",
 }
 
-SEO_HASHTAGS = ["#FPL", "#FantasyPL", "#PremierLeague", "#FootballTwitter"]
-
-def build_seo_hashtags(story, max_tags=3):
-    """Short, search-friendly tag set for card captions — separate from the
-    longer club/event tag block build_hashtags() already produces for the tweet body."""
-    tags = []
-    ev = story.get("event")
-    if ev in ("transfer", "loan", "loan_option"):
-        tags.append("#TransferNews")
-    elif ev == "injury":
-        tags.append("#InjuryUpdate")
-    elif ev == "manager":
-        tags.append("#FootballManager")
-    for key, name in ((story.get("to_key"), story.get("to_club")),
-                       (story.get("from_key"), story.get("from_club"))):
-        ht = hashtag_for(key) or hashtag_for(name)
-        if ht and ht not in tags:
-            tags.append(ht)
-            break
-    tags += [t for t in SEO_HASHTAGS if t not in tags]
-    return " ".join(tags[:max_tags])
-
 def build_hashtags(story):
     ev = story["event"]
     base = "#TransferNews" if ev in ("transfer", "loan", "loan_option") else \
            "#ManagerNews" if ev == "manager" else "#InjuryNews" if ev == "injury" else "#FootballNews"
     tags = [base, "#Football"]
-    # PL side via clean map; non-PL side (Barcelona, Real Madrid…) via clubs_cache
     for key, name in ((story.get("to_key"), story.get("to_club")),
                       (story.get("from_key"), story.get("from_club"))):
         ht = hashtag_for(key) or hashtag_for(name)
@@ -578,54 +546,23 @@ def build_hashtags(story):
 def build_tweet_body(story, sources, rumour: bool) -> str:
     ev = story["event"]
     prefix = "COLLAPSED" if story.get("collapsed") else EVENT_PREFIX.get(ev, "UPDATE")
-
-    # 1. Headline Format (Only removes "- update" if it is at the end of the phrase)
-    raw_head = story.get("headline") or story.get("player") or "Transfer"
-    head = re.sub(r'(?i)[\s\-—]*update\s*$', '', raw_head).strip()
-    
-    lines = [f"🚨 {prefix} | {head}", ""]
-
-    # 2. Post Content (Description) - Force strip all URLs (pic.x.com, t.co, etc.)
-    raw_body = story.get("body") or ""
-    clean_body = re.sub(r'https?://\S+|www\.\S+|pic\.x\.com/\S+', '', raw_body).strip()
-    
-    if clean_body:
-        lines.append(f"🚨 {clean_body}")
-
+    head = story.get("headline") or story.get("player") or "Update"
+    lines = [f"🚨 {prefix} | {head}", "", story.get("body") or ""]
     if story.get("conditional"):
-        lines.append(f"📌 {story['conditional']}")
-
+        lines.append(f"\n📌 {story['conditional']}")
     if story.get("fpl_impact"):
-        lines.append(f"🎯 FPL Impact: {story['fpl_impact']}")
-
-    # 3. Stacked format for Fee and Contract
+        lines.append(f"\n🎯 FPL: {story['fpl_impact']}")
     details = []
     if story.get("fee"):
         details.append(f"💰 Fee: {story['fee']}")
     if story.get("contract"):
-        details.append(f"📝 Contract: {story['contract']}")
-
+        details.append(f"📄 {story['contract']}")
     if details:
-        lines.append("\n".join(details))
-
-    body = "\n\n".join(p for p in lines if p.strip() != "")
-    
+        lines.append("\n" + "  |  ".join(details))
+    body = "\n".join(p for p in lines if p is not None)
     if rumour:
         body = "⚠️ RUMOUR (UNCONFIRMED)\n" + body
-
-    # 4. Add an engagement hook to boost algorithmic reach
-    import random
-    hooks = [
-        "Are you putting him in your FPL draft? 👇",
-        "How does this change your Gameweek plans? 🗣️",
-        "Is he going straight into your starting XI? 🤔",
-        "A must-own FPL asset or a wait-and-see? 📉📈"
-    ]
-    body += "\n\n" + random.choice(hooks)
-
-    # 5. Append the full Hashtags at the very end
     body += "\n\n" + build_hashtags(story)
-    
     return body
 
 def build_detail_line(story) -> str:
@@ -638,17 +575,10 @@ def build_detail_line(story) -> str:
         bits.append(story["conditional"])
     return "  |  ".join(bits)
 
-
 # ── GRAPHICS ENGINE ──────────────────────────────────────────────────────────
-PALETTES = {
-    'INJURY':              {'accent': (220, 38, 38),  'text': (255, 255, 255), 'bg': (18, 0, 0),   'swoosh': (180, 20, 20)},
-    'TRANSFER_ONGOING':     {'accent': (200, 160, 40), 'text': (200, 160, 40), 'bg': (10, 20, 35),  'swoosh': (200, 160, 40)},
-    'TRANSFER_CONFIRMED':   {'accent': (255, 215, 0),  'text': (255, 255, 255), 'bg': (15, 15, 15), 'swoosh': (255, 215, 0)},
-    'TRANSFER_RUMOUR':      {'accent': (255, 196, 0),  'text': (255, 196, 0),  'bg': (40, 30, 0),   'swoosh': (200, 150, 0)},
-    'TRANSFER_COLLAPSED':   {'accent': (153, 27, 40),  'text': (220, 220, 220), 'bg': (25, 25, 25), 'swoosh': (100, 15, 20)},
-    'MANAGER_UPDATE':       {'accent': (192, 192, 192), 'text': (255, 255, 255), 'bg': (0, 10, 30), 'swoosh': (150, 150, 170)},
-}
 _FONT_CACHE = {}
+# Readable, widely-available fallbacks. DejaVu/Liberation render crisp at the
+# sizes used below, and the Pilmoji path handles colour emoji separately.
 _FALLBACK_FONTS = {
     "Black": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
               "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"],
@@ -727,6 +657,26 @@ def _draw_arrow(d, x, y, w, color, thick=24):
     d.rounded_rectangle([x, y, x + w - head, y + thick], radius=thick // 2, fill=color)
     d.polygon([(x + w - head, cy - thick), (x + w, cy), (x + w - head, cy + thick)], fill=color)
 
+def _draw_text_shadow(draw, xy, text, font, fill, shadow=(0, 0, 0), offset=2):
+    """Draw text with a subtle shadow for readability over busy backgrounds."""
+    x, y = xy
+    draw.text((x + offset, y + offset), text, font=font, fill=shadow)
+    draw.text((x, y), text, font=font, fill=fill)
+
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\u2190-\u21FF\u2B00-\u2BFF\uFE0F]")
+
+def _safe_emoji_text(img, xy, text, font, fill):
+    """Render text with colour emoji via Pilmoji, but NEVER crash the card if
+    the emoji source can't be fetched (e.g. no network). Falls back to plain
+    text with emoji stripped, so a post always gets an image."""
+    try:
+        with Pilmoji(img) as pj:
+            pj.text(xy, text, font=font, fill=fill)
+    except Exception:
+        plain = _EMOJI_RE.sub("", text).strip()
+        ImageDraw.Draw(img).text(xy, plain, font=font, fill=fill)
+
 def _load_crest(club_key, box=132):
     if not club_key:
         return None
@@ -740,25 +690,205 @@ def _load_crest(club_key, box=132):
             return _fit_contain(src, box, box)
     return None
 
-def _classify_post_type(story, rumour):
-    if story.get("collapsed"):
-        return "TRANSFER_COLLAPSED"
-    if rumour:
-        return "TRANSFER_RUMOUR"
-    ev = story.get("event")
-    if ev == "injury":
-        return "INJURY"
-    if ev == "manager":
-        return "MANAGER_UPDATE"
-    if ev in ("transfer", "loan", "loan_option") and story.get("stage", 1) >= 4:
-        return "TRANSFER_CONFIRMED"
-    return "TRANSFER_ONGOING"
+def _injury_rows(story):
+    """Build the (label, value) rows for the injury panel, in display order.
+    Falls back to sensible defaults so the panel never looks empty."""
+    rows = []
+    if story.get("diagnosis"):
+        rows.append(("DIAGNOSIS", story["diagnosis"]))
+    if story.get("next_match"):
+        rows.append(("MATCH", story["next_match"]))
+    # availability: derive a short status from stage if not explicit
+    stage = story.get("stage", 1)
+    avail = {4: "Available / fit again", 3: "Ruled out", 2: "Doubt", 1: "To be assessed"}.get(stage)
+    rows.append(("AVAILABILITY", avail))
+    rows.append(("TIMELINE", story.get("expected_return") or "Awaiting update"))
+    return rows[:4]
 
-def create_image(story, sources, filename, rumour=False):
-    W, H = 1200, 675
+def create_injury_image(story, sources, filename):
+    """Injury card in the style of the reference: full-bleed player photo on the
+    right with a red wash, large serif name + medical cross top-left, red INJURY
+    label, and a dark rounded panel of red-label detail rows. Degrades to a
+    silhouette + flat red background when no verified photo is available."""
+    W, H = 1380, 776
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
-    to_key, from_key = story.get("to_key"), story.get("from_key")
+    # Prefer the full name (e.g. "Bukayo Saka") so it stacks across two lines
+    # like the reference card; fall back to the story's player or web_name.
+    if player_el:
+        full = f"{player_el.get('first_name','')} {player_el.get('second_name','')}".strip()
+        player_name = full or player_el.get("web_name") or story.get("player") or "PLAYER"
+    else:
+        player_name = story.get("player") or "PLAYER"
+    club_key = story.get("to_key") or story.get("from_key") or fpl_team_key(player_el, fpl)
+
+    RED = (206, 22, 30)
+    RED_BRIGHT = (227, 30, 36)
+    WHITE = (255, 255, 255)
+    DARK = (12, 14, 18)
+
+    # face verified the same way as the main card
+    face_verified = False
+    if player_el:
+        cur = fpl_team_key(player_el, fpl)
+        if cur is None or cur == club_key or club_key is None:
+            face_verified = True
+
+    img = Image.new("RGB", (W, H), DARK)
+
+    # ── Right side: player photo, full-height, bleeding off the right edge ──
+    photo_ok = False
+    if player_el and face_verified:
+        code = player_el["code"]
+        pth = Path(f"players/{code}.png")
+        if not pth.exists():
+            _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png", pth)
+        src = _safe_open_rgba(pth)
+        if src is not None:
+            # scale photo to roughly full card height, anchored bottom-right
+            ph = ImageOps.contain(src, (int(W * 0.55), H), Image.Resampling.LANCZOS)
+            img.paste(ph, (W - ph.width, H - ph.height), ph)
+            photo_ok = True
+
+    if not photo_ok:
+        sil = _safe_open_rgba(Path("players/silhouette.png"))
+        if sil is not None:
+            sil = ImageOps.contain(sil, (int(W * 0.5), H), Image.Resampling.LANCZOS)
+            img.paste(sil, (W - sil.width - 30, H - sil.height), sil)
+
+    # ── Red atmospheric wash: dark on the left for text, red over the photo ──
+    wash = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    wd = ImageDraw.Draw(wash)
+    for x in range(W):
+        # left → mostly opaque dark; right → translucent red tint
+        if x < W * 0.45:
+            a = 235
+            wd.line([(x, 0), (x, H)], fill=(DARK[0], DARK[1], DARK[2], a))
+        else:
+            t = (x - W * 0.45) / (W * 0.55)
+            a = int(150 * (1 - t))           # red fades toward the right edge
+            wd.line([(x, 0), (x, H)], fill=(RED[0], RED[1], RED[2], max(40, a)))
+    img.paste(wash, (0, 0), wash)
+    # bottom + top darkening for legibility
+    grad = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(grad)
+    for y in range(H):
+        if y > H * 0.7:
+            a = int(160 * ((y - H * 0.7) / (H * 0.3)))
+            gd.line([(0, y), (W, y)], fill=(0, 0, 0, a))
+    img.paste(grad, (0, 0), grad)
+
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    # ── Club crest, top-right ──
+    crest = _load_crest(club_key, 150)
+    if crest is not None:
+        img.paste(crest, (W - crest.width - 45, 40), crest)
+
+    # ── Name (big, stacked, serif-style display) + medical cross ──
+    TEXT_X = 55
+    name_words = player_name.upper().split()
+    if len(name_words) >= 2:
+        line1, line2 = name_words[0], " ".join(name_words[1:])
+    else:
+        line1, line2 = player_name.upper(), ""
+    nf = get_premium_font(118, "Black")
+    # shrink if a single line is too wide for the left 60%
+    maxw = int(W * 0.6)
+    while draw.textlength(max(line1, line2, key=len), font=nf) > maxw and nf.size > 64:
+        nf = get_premium_font(nf.size - 4, "Black")
+    y = 70
+    _draw_text_shadow(draw, (TEXT_X, y), line1, nf, WHITE, offset=3)
+    name_h = nf.size + 6
+    if line2:
+        _draw_text_shadow(draw, (TEXT_X, y + name_h), line2, nf, WHITE, offset=3)
+        name_bottom = y + name_h * 2
+    else:
+        name_bottom = y + name_h
+
+    # medical cross to the right of the name block
+    cross_cx = TEXT_X + int(draw.textlength(line1, font=nf)) + 120
+    cross_cy = y + name_h
+    arm = 70; thick = 46
+    for box in ([cross_cx - thick // 2, cross_cy - arm, cross_cx + thick // 2, cross_cy + arm],
+                [cross_cx - arm, cross_cy - thick // 2, cross_cx + arm, cross_cy + thick // 2]):
+        draw.rounded_rectangle(box, radius=10, fill=RED_BRIGHT)
+
+    # ── Red INJURY label under the name ──
+    label_font = get_premium_font(52, "Black")
+    draw.text((TEXT_X, name_bottom + 8), "INJURY", font=label_font, fill=RED_BRIGHT)
+    panel_top = name_bottom + 8 + 64 + 18
+
+    # ── Dark rounded translucent detail panel ──
+    rows = _injury_rows(story)
+    row_label_f = get_premium_font(34, "Black")
+    row_val_f = get_premium_font(34, "Bold")
+    head_f = get_premium_font(30, "Black")
+    panel_w = int(W * 0.56)
+    row_h = 64
+    panel_h = 34 + 40 + len(rows) * row_h + 24
+    panel = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))
+    ImageDraw.Draw(panel).rounded_rectangle([0, 0, panel_w, panel_h], radius=28, fill=(10, 12, 16, 222))
+    img.paste(panel, (TEXT_X, panel_top), panel)
+    pd = ImageDraw.Draw(img, "RGBA")
+
+    px = TEXT_X + 34
+    py = panel_top + 26
+    pd.text((px, py), "INJURY", font=head_f, fill=RED_BRIGHT)
+    py += 50
+    for label, value in rows:
+        # bullet
+        pd.ellipse([px, py + 18, px + 12, py + 30], fill=WHITE)
+        lx = px + 28
+        pd.text((lx, py), f"{label}:", font=row_label_f, fill=RED_BRIGHT)
+        lw = pd.textlength(f"{label}: ", font=row_label_f)
+        val = value or ""
+        # truncate overly long values to fit the panel
+        while pd.textlength(val, font=row_val_f) > (panel_w - (lx - TEXT_X) - lw - 30) and len(val) > 4:
+            val = val[:-2]
+        if val != (value or ""):
+            val = val.rstrip() + "…"
+        pd.text((lx + lw, py), val, font=row_val_f, fill=WHITE)
+        py += row_h
+
+    # ── Bottom source strip ──
+    src = "  ·  ".join(f"@{s}" for s in sources[:2])
+    sf = get_premium_font(22, "Bold")
+    sw = draw.textlength(f"Source: {src}  |  @FPLVortex", font=sf)
+    draw.text((W - sw - 40, H - 40), f"Source: {src}  |  @FPLVortex", font=sf, fill=(220, 220, 220))
+
+    img.save(filename)
+
+def _draw_diagonal_accents(img, accent, gold=(212, 175, 55)):
+    """Subtle diagonal corner stripes like the reference, on a dark bg."""
+    W, H = img.size
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    for i, x0 in enumerate(range(-40, 180, 36)):
+        col = gold if i % 2 == 0 else accent
+        d.polygon([(x0, 0), (x0 + 22, 0), (x0 + 22 - 90, H), (x0 - 90, H)], fill=col + (60,))
+    for i, x0 in enumerate(range(W - 180, W + 40, 36)):
+        col = gold if i % 2 == 0 else accent
+        d.polygon([(x0, 0), (x0 + 22, 0), (x0 + 22 + 90, H), (x0 + 90, H)], fill=col + (60,))
+    img.paste(ov, (0, 0), ov)
+
+def create_transfer_image(story, sources, filename, collapsed=False):
+    """FUT-style transfer card: dark navy bg with diagonal accents, big red
+    heading, a light panel with PLAYER NAME / FROM..TO crests / PRICE / CONTRACT,
+    and a framed player portrait on the right. Used for transfers, loans and
+    collapsed deals (collapsed flips the heading + accent to red/grey)."""
+    W, H = 1380, 776
+    fpl = fetch_fpl_data()
+    player_el = find_player_in_fpl(story.get("player"), fpl)
+    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER NAME"
+    to_key = story.get("to_key")
+    from_key = story.get("from_key")
+
+    NAVY = (11, 18, 32)
+    GOLD = (212, 175, 55)
+    RED = (227, 30, 36)
+    accent = (120, 30, 34) if collapsed else (30, 55, 110)
+    head_col = (200, 30, 34) if collapsed else RED
 
     face_verified = False
     if player_el:
@@ -766,134 +896,363 @@ def create_image(story, sources, filename, rumour=False):
         if cur is None or cur == from_key or cur == to_key or (not from_key and not to_key):
             face_verified = True
 
-    post_type = _classify_post_type(story, rumour)
-    
-    # Use premium transfer-news colors
-    theme = {
-        'bg': (10, 20, 35),           # Dark navy background
-        'card_bg': (15, 25, 45),      # Contrast card
-        'text': (255, 255, 255),      # White primary text
-        'accent': (255, 215, 0),      # Gold accents
-        'alert': (220, 38, 38),       # Red alert icon base
-        'fee': (34, 197, 94),         # Green for fee
-        'contract': (59, 130, 246)    # Blue for contract
-    }
-
-    club_key = to_key or from_key
-    player_name = (player_el["web_name"] if player_el else story.get("player")) or "UPDATE"
-    seo_tags = build_seo_hashtags(story)
-    
-    # Map FPL element type to Position String with logical emojis
-    pos_str = "⚽ PLAYER"
-    if player_el:
-        type_map = {
-            1: "🧤 GOALKEEPER", 
-            2: "🛡️ DEFENDER", 
-            3: "🎯 MIDFIELDER", 
-            4: "⚡ FORWARD"
-        }
-        pos_str = type_map.get(player_el.get("element_type"), "⚽ PLAYER")
-    elif post_type == "MANAGER_UPDATE":
-        pos_str = "👔 HEAD COACH"
-
-    img = Image.new("RGB", (W, H), theme['bg'])
+    img = Image.new("RGB", (W, H), NAVY)
+    # vertical sheen
+    sheen = Image.new("L", (1, H), 0)
+    for y in range(H):
+        sheen.putpixel((0, y), int(30 * (1 - abs(y - H/2) / (H/2))))
+    img.paste(Image.new("RGB", (W, H), (28, 40, 70)), (0, 0),
+              sheen.resize((W, H)))
+    _draw_diagonal_accents(img, accent, GOLD)
     draw = ImageDraw.Draw(img, "RGBA")
 
-    # Layout Setup: Left = 0 to 600 | Right = 600 to 1200
-    draw.rectangle([600, 0, W, H], fill=theme['card_bg'])
+    # ── Red heading, top-left ──
+    head_font = get_premium_font(72, "Black")
+    heading = ["TRANSFER", "COLLAPSED"] if collapsed else ["TRANSFER", "UPDATE"]
+    hy = 36
+    for ln in heading:
+        _draw_text_shadow(draw, (55, hy), ln, head_font, head_col, offset=3)
+        hy += 78
 
-    # === LEFT SIDE: IMAGE, POS, LOGO ===
-    p_img_loaded = False
+    # ── Right: framed player portrait panel ──
+    PANEL_X, PANEL_Y, PANEL_W, PANEL_H = W - 470, 40, 430, H - 80
+    draw.rounded_rectangle([PANEL_X, PANEL_Y, PANEL_X + PANEL_W, PANEL_Y + PANEL_H],
+                           radius=28, fill=(18, 28, 48), outline=GOLD, width=4)
+    # inner stadium-ish gradient
+    inner = Image.new("RGB", (PANEL_W - 24, PANEL_H - 24), (24, 36, 60))
+    ig = ImageDraw.Draw(inner)
+    for y in range(inner.height):
+        c = int(20 + 30 * (y / inner.height))
+        ig.line([(0, y), (inner.width, y)], fill=(c, c + 6, c + 16))
+    img.paste(inner, (PANEL_X + 12, PANEL_Y + 12))
+    portrait_ok = False
     if player_el and face_verified:
         code = player_el["code"]
-        player_img = Path(f"players/{code}.png")
-        if not player_img.exists():
-            _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png", player_img)
-        if player_img.exists():
-            p_src = _safe_open_rgba(player_img)
-            if p_src is not None:
-                p_img = _fit_contain(p_src, 600, 600)
-                img.paste(p_img, (0, H - p_img.height), p_img)
-                p_img_loaded = True
-
-    if not p_img_loaded:
+        pth = Path(f"players/{code}.png")
+        if not pth.exists():
+            _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png", pth)
+        src = _safe_open_rgba(pth)
+        if src is not None:
+            ph = ImageOps.contain(src, (PANEL_W - 40, PANEL_H - 40), Image.Resampling.LANCZOS)
+            img.paste(ph, (PANEL_X + (PANEL_W - ph.width)//2, PANEL_Y + PANEL_H - ph.height - 12), ph)
+            portrait_ok = True
+    if not portrait_ok:
         sil = _safe_open_rgba(Path("players/silhouette.png"))
         if sil is not None:
-            sil = _fit_contain(sil, 500, 500)
-            img.paste(sil, (50, H - sil.height), sil)
+            sil = ImageOps.contain(sil, (PANEL_W - 80, PANEL_H - 80), Image.Resampling.LANCZOS)
+            img.paste(sil, (PANEL_X + (PANEL_W - sil.width)//2, PANEL_Y + PANEL_H - sil.height - 12), sil)
 
-    # === Left Side Typography (Dynamic Scaling to Prevent Overlap) ===
+    # ── Left: light FUT-style detail panel ──
+    LP_X, LP_Y, LP_W, LP_H = 45, 205, W - 470 - 45 - 40, H - 205 - 60
+    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle([LP_X+8, LP_Y+10, LP_X+LP_W+8, LP_Y+LP_H+10],
+                                             radius=30, fill=(0, 0, 0, 120))
+    img.paste(shadow, (0, 0), shadow)
+    # panel gradient (light silver)
+    panel = Image.new("RGB", (LP_W, LP_H), (236, 238, 242))
+    pg = ImageDraw.Draw(panel)
+    for y in range(LP_H):
+        c = int(246 - 28 * (y / LP_H))
+        pg.line([(0, y), (LP_W, y)], fill=(c, c, c + 4))
+    mask = Image.new("L", (LP_W, LP_H), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, LP_W, LP_H], radius=30, fill=255)
+    img.paste(panel, (LP_X, LP_Y), mask)
+    # gold border
+    draw.rounded_rectangle([LP_X, LP_Y, LP_X + LP_W, LP_Y + LP_H], radius=30, outline=GOLD, width=4)
+
+    INK = (15, 17, 22)
+    px = LP_X + 36
+    # eyebrow
+    eb = get_premium_font(24, "Bold")
+    ebw = draw.textlength("TRANSFER UPDATE", font=eb)
+    draw.text((LP_X + (LP_W - ebw)//2, LP_Y + 16), "TRANSFER UPDATE", font=eb, fill=(90, 95, 105))
+
+    # PLAYER NAME (auto-fit)
     name_up = player_name.upper()
-    nsize = 54
-    
-    while nsize >= 24 and draw.textlength(name_up, font=get_premium_font(nsize, "Black")) > 520:
-        nsize -= 2
-        
-    draw.text((40, 40), name_up, font=get_premium_font(nsize, "Black"), fill=theme['text'])
-    
-    # Dynamically push the Position text down and use Pilmoji to render the emoji
-    pos_y = 40 + nsize + 10
-    with Pilmoji(img) as pj:
-        pj.text((40, pos_y), pos_str, font=get_premium_font(28, "Bold"), fill=theme['accent'])
+    nf = get_premium_font(72, "Black")
+    while draw.textlength(name_up, font=nf) > (LP_W - 72) and nf.size > 36:
+        nf = get_premium_font(nf.size - 3, "Black")
+    name_y = LP_Y + 56
+    draw.text((px, name_y), name_up, font=nf, fill=INK)
+    y = name_y + nf.size + 18
 
-    # Left Side Logo Placement
-    crest = _load_crest(club_key, 120)
-    if crest is not None:
-        img.paste(crest, (440, 40), crest)
+    # FROM [crest] TO [crest] row — auto-fit so long names stay inside the panel
+    from_im = _load_crest(from_key, 64); to_im = _load_crest(to_key, 64)
+    fn = (story.get("from_club") or (from_key or "").replace("_", " ")).upper()
+    tn = (story.get("to_club") or (to_key or "").replace("_", " ")).upper()
 
-    # Center Separator Line
-    draw.line([(600, 0), (600, H)], fill=theme['accent'], width=4)
+    def _row_width(font, crest_px):
+        w = font.getlength("FROM ")
+        w += (crest_px + 8) if from_im is not None else 0
+        w += font.getlength(fn + " TO ")
+        w += (crest_px + 8) if to_im is not None else 0
+        w += font.getlength(tn)
+        return w
 
-    # === RIGHT SIDE: INFO CARD ===
-    TEXT_X = 640
-    head_text = "🚨 TRANSFER NEWS" if not story.get("collapsed") else "🚨 COLLAPSED DEAL"
-    if post_type == "INJURY": head_text = "🚨 INJURY UPDATE"
-    elif post_type == "MANAGER_UPDATE": head_text = "🚨 MANAGER UPDATE"
+    row_f = get_premium_font(36, "Black")
+    crest_px = 64
+    while _row_width(row_f, crest_px) > (LP_W - 72) and row_f.size > 20:
+        row_f = get_premium_font(row_f.size - 2, "Black")
+        crest_px = max(40, int(row_f.size * 1.6))
+    fi = _load_crest(from_key, crest_px); ti = _load_crest(to_key, crest_px)
+    crest_top_off = max(0, (row_f.size - crest_px) // 2)
 
-    with Pilmoji(img) as pj:
-        pj.text((TEXT_X, 50), head_text, font=get_premium_font(36, "Black"), fill=theme['accent'])
+    cx = px
+    draw.text((cx, y + 14), "FROM ", font=row_f, fill=INK); cx += row_f.getlength("FROM ")
+    if fi is not None:
+        img.paste(fi, (int(cx), y + 14 + crest_top_off), fi); cx += crest_px + 8
+    draw.text((cx, y + 14), fn + " ", font=row_f, fill=INK); cx += row_f.getlength(fn + " ")
+    draw.text((cx, y + 14), "TO ", font=row_f, fill=INK); cx += row_f.getlength("TO ")
+    if ti is not None:
+        img.paste(ti, (int(cx), y + 14 + crest_top_off), ti); cx += crest_px + 8
+    draw.text((cx, y + 14), tn, font=row_f, fill=(20, 30, 90))
+    y += 96
 
-    body_font = get_premium_font(24, "Bold")
-    y = 130
-    sstatus_icon = "❌" if story.get("collapsed") else ("⚠️" if rumour else "✅")
-    raw_details = story.get("body") or ""
-    details = re.sub(r'https?://\S+|www\.\S+|pic\.x\.com/\S+', '', raw_details).strip()
+    # divider
+    draw.line([(px, y), (LP_X + LP_W - 36, y)], fill=(190, 165, 90), width=3)
+    y += 22
 
-    with Pilmoji(img) as pj:
-        words, wrapped, cur = details.split(), [], ""
-        for w in words:
-            if pj.getsize(cur + w, font=body_font)[0] <= 500:
-                cur += w + " "
-            else:
-                wrapped.append(cur)
-                cur = w + " "
-        wrapped.append(cur)
+    # PRICE row
+    detail_f = get_premium_font(40, "Black")
+    val_f = get_premium_font(38, "Bold")
+    fee = story.get("fee") or "Undisclosed"
+    _safe_emoji_text(img, (px, y), "💰", get_premium_font(40, "Bold"), GOLD)
+    draw.text((px + 56, y), "PRICE: ", font=detail_f, fill=INK)
+    pw = draw.textlength("PRICE: ", font=detail_f)
+    draw.text((px + 56 + pw, y + 2), str(fee), font=val_f, fill=(20, 30, 90))
+    y += 64
 
-        pj.text((TEXT_X, y), f"{status_icon} {wrapped[0]}", font=body_font, fill=theme['text'])
-        y += 35
-        for wl in wrapped[1:]:
-            if wl.strip():
-                pj.text((TEXT_X + 40, y), wl, font=body_font, fill=theme['text'])
-                y += 35
-        y += 40
+    # CONTRACT row
+    _safe_emoji_text(img, (px, y), "📄", get_premium_font(40, "Bold"), GOLD)
+    draw.text((px + 56, y), "CONTRACT: ", font=detail_f, fill=INK)
+    cw = draw.textlength("CONTRACT: ", font=detail_f)
+    contract = story.get("contract") or "Details to follow"
+    cf = val_f
+    while draw.textlength(str(contract), font=cf) > (LP_W - 36 - (px + 56 + cw - LP_X)) and cf.size > 22:
+        cf = get_premium_font(cf.size - 2, "Bold")
+    draw.text((px + 56 + cw, y + 2), str(contract), font=cf, fill=(20, 30, 90))
+    y += 64
 
-        if story.get("fee"):
-            pj.text((TEXT_X, y), f"💰 Fee: {story['fee']}", font=get_premium_font(26, "Black"), fill=theme['fee'])
-            y += 45
-        if story.get("contract"):
-            pj.text((TEXT_X, y), f"📝 Contract: {story['contract']}", font=get_premium_font(26, "Black"), fill=theme['contract'])
-            y += 45
-        if story.get("conditional"):
-            pj.text((TEXT_X, y), f"📌 {story['conditional']}", font=body_font, fill=theme['accent'])
+    # optional conditional line
+    if story.get("conditional"):
+        cond_f = get_premium_font(26, "Bold")
+        cond = story["conditional"]
+        while draw.textlength(cond, font=cond_f) > (LP_W - 72) and len(cond) > 8:
+            cond = cond[:-2]
+        if cond != story["conditional"]:
+            cond = cond.rstrip() + "…"
+        draw.text((px, y), cond, font=cond_f, fill=(120, 60, 30))
 
-    # Branding & Watermark
-    brand_font = get_premium_font(18, "Bold")
-    draw.text((TEXT_X, H - 40), "FPL_VORTEX", font=brand_font, fill=(150, 150, 150))
+    # source strip bottom-left under panel
+    sf = get_premium_font(22, "Bold")
+    src = "  ·  ".join(f"@{s}" for s in sources[:2])
+    draw.text((55, H - 34), f"Source: {src}  |  @FPLVortex", font=sf, fill=(200, 205, 215))
 
-    # SEO Tags / Source
-    src = " · ".join(f"@{s}" for s in sources[:2])
-    sw = draw.textlength(src, font=brand_font)
-    draw.text((W - sw - 40, H - 40), src, font=brand_font, fill=(150, 150, 150))
+    img.save(filename)
+
+def validate_story(story):
+    """Enforce accuracy/consistency rules before a card is rendered.
+    Returns (ok: bool, reason: str). On failure the caller should skip the post
+    rather than render something wrong. This catches LLM/extraction mistakes:
+    reversed clubs, duplicate from==to, manager data on a transfer, placeholder
+    text, and empty required fields."""
+    ev = story.get("event")
+    player = (story.get("player") or "").strip()
+    if not player:
+        return False, "missing_player"
+
+    # placeholder / template leftovers must never reach a card
+    PLACEHOLDERS = ("player name", "example", "xxx", "[", "]", "tbd", "to follow",
+                    "lorem", "duration & details", "updated heading", "from club", "to club")
+    blob = " ".join(str(story.get(k, "") or "") for k in
+                    ("player", "headline", "body", "from_club", "to_club", "fee",
+                     "contract", "conditional", "diagnosis", "expected_return")).lower()
+    for ph in PLACEHOLDERS:
+        if ph in blob:
+            return False, f"placeholder_text:{ph!r}"
+
+    # the player name must not actually be a club (extraction slip)
+    if looks_like_club(player):
+        return False, "player_is_club"
+
+    if ev in ("transfer", "loan", "loan_option"):
+        fk = story.get("from_key"); tk = story.get("to_key")
+        fc = (story.get("from_club") or "").strip().lower()
+        tc = (story.get("to_club") or "").strip().lower()
+        # duplicate clubs: from == to is incoherent
+        if (fk and tk and fk == tk) or (fc and tc and fc == tc):
+            return False, "from_equals_to"
+        # a transfer card needs at least a destination to be meaningful
+        if not (tk or story.get("to_club") or fk or story.get("from_club")):
+            return False, "no_clubs"
+        # manager/injury vocabulary leaking into a transfer story
+        leak = (story.get("body", "") + " " + story.get("headline", "")).lower()
+        if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak):
+            return False, "event_data_mismatch"
+
+    if ev == "manager" and not (story.get("to_key") or story.get("to_club")):
+        return False, "manager_no_club"
+
+    return True, "ok"
+
+def create_image(story, sources, filename, rumour=False):
+    # Injury stories get the dedicated red medical-card layout (unless it's an
+    # unconfirmed rumour, which keeps the standard rumour styling).
+    if story.get("event") == "injury" and not rumour and not story.get("collapsed"):
+        try:
+            create_injury_image(story, sources, filename)
+            return
+        except Exception as e:
+            print(f"  [IMG] injury card failed, using standard card: {e}")
+    # Transfers, loans and collapsed deals get the FUT-style card (rumours keep
+    # the standard styling so the unconfirmed look is preserved).
+    if (story.get("collapsed") or story.get("event") in ("transfer", "loan", "loan_option")) and not rumour:
+        try:
+            create_transfer_image(story, sources, filename, collapsed=bool(story.get("collapsed")))
+            return
+        except Exception as e:
+            print(f"  [IMG] transfer card failed, using standard card: {e}")
+    W, H = 1200, 675
+    fpl = fetch_fpl_data()
+    player_el = find_player_in_fpl(story.get("player"), fpl)
+    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
+    to_key = story.get("to_key")
+    from_key = story.get("from_key")
+    ev = story["event"]
+    collapsed = story.get("collapsed")
+    GREEN = (40, 210, 90)
+
+    # CLUB-VERIFIED FACE: trust the photo only when the FPL player's actual club
+    # lines up with the story's clubs. Avoids pasting the wrong person's face.
+    face_verified = False
+    if player_el:
+        cur = fpl_team_key(player_el, fpl)
+        if cur is None:
+            face_verified = True
+        elif cur == from_key or cur == to_key:
+            face_verified = True
+        elif not from_key and not to_key:
+            face_verified = True
+
+    stats = None
+    player_img = Path("players/silhouette.png")
+    if player_el:
+        code = player_el["code"]
+        stats = {"cost": f"£{player_el['now_cost']/10.0}m", "pts": str(player_el['total_points']),
+                 "goals": str(player_el['goals_scored']), "assists": str(player_el['assists'])}
+        if face_verified:
+            player_img = Path(f"players/{code}.png")
+            if not player_img.exists():
+                _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png", player_img)
+
+    bg_color = CLUB_COLORS.get(to_key, (25, 29, 38))
+    accent = (255, 90, 0) if ev in ("transfer", "loan", "loan_option") else \
+             (0, 163, 255) if ev == "manager" else (255, 0, 77) if ev == "injury" else (120, 200, 120)
+    if collapsed:
+        accent = (150, 80, 80)
+
+    img = Image.new("RGB", (W, H), (14, 16, 21))
+    draw = ImageDraw.Draw(img)
+    draw.polygon([(W*0.52, 0), (W, 0), (W, H), (W*0.42, H)], fill=bg_color)
+
+    shade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(shade).polygon([(W*0.52, 0), (W, 0), (W, H), (W*0.42, H)], fill=(0, 0, 0, 70))
+    grad = Image.new("L", (1, H), 0)
+    for y in range(H):
+        grad.putpixel((0, y), int(110 * (y / H)))
+    grad = grad.resize((W, H))
+    img.paste(shade, (0, 0), Image.composite(shade.split()[3], Image.new("L", (W, H), 0), grad))
+
+    photo_ok = False
+    if player_el and face_verified and player_img.exists():
+        p_src = _safe_open_rgba(player_img)
+        if p_src is not None:
+            p_img = _fit_contain(p_src, 460, 460)
+            shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            sh = p_img.split()[3].point(lambda a: int(a * 0.55))
+            shadow.paste((0, 0, 0, 255), (W - 420 + 8, H - p_img.height - 6 + 8), sh)
+            shadow = shadow.filter(ImageFilter.GaussianBlur(8))
+            img.paste(shadow, (0, 0), shadow)
+            img.paste(p_img, (W - 420, H - p_img.height - 6), p_img)
+            photo_ok = True
+
+    if not photo_ok:
+        ov = Image.new("RGBA", (W, H), (0, 0, 0, 0)); od = ImageDraw.Draw(ov)
+        cx, cyc, r = int(W * 0.78), int(H * 0.50), 150
+        od.ellipse([cx - r, cyc - r, cx + r, cyc + r], fill=(0, 0, 0, 70))
+        od.ellipse([cx - 52, cyc - 78, cx + 52, cyc + 26], fill=(255, 255, 255, 60))
+        od.pieslice([cx - 95, cyc + 6, cx + 95, cyc + 210], 180, 360, fill=(255, 255, 255, 60))
+        img.paste(ov, (0, 0), ov)
+        ph = get_premium_font(34, "Black"); lab = "NO PHOTO"
+        lw = od.textlength(lab, font=ph)
+        ImageDraw.Draw(img).text((cx - lw/2, cyc + r - 6), lab, font=ph, fill=(255, 255, 255))
+
+    TEXT_X = 60
+    TEXT_MAX_W = int(W * 0.62) - TEXT_X
+    draw.rectangle([0, 0, W, 12], fill=accent)
+
+    brand = get_premium_font(60, "Black"); sub = get_premium_font(38, "Bold")
+    crest_font = get_premium_font(34, "Black")
+    draw.text((TEXT_X, 44), "FPL", font=brand, fill=(255, 255, 255))
+    fpl_w = draw.textlength("FPL ", font=brand)
+    draw.text((TEXT_X + fpl_w, 44), "VORTEX", font=brand, fill=accent)
+
+    if rumour:
+        badge_txt, badge_fill, badge_bg = "RUMOUR – NOT CONFIRMED", (255, 196, 0), (60, 45, 0)
+    else:
+        badge_txt = ("COLLAPSED" if collapsed else EVENT_PREFIX.get(ev, "UPDATE"))
+        badge_fill, badge_bg = accent, (25, 28, 38)
+    bw = int(draw.textlength(badge_txt, font=sub))
+    draw.rounded_rectangle([TEXT_X, 138, TEXT_X + bw + 52, 206], radius=14, fill=badge_bg)
+    draw.text((TEXT_X + 26, 152), badge_txt, font=sub, fill=badge_fill)
+
+    # Player name — large, shadowed for readability, auto-shrinks to fit width.
+    name_up = player_name.upper()
+    nsize = 78
+    while nsize >= 40 and draw.textlength(name_up, font=get_premium_font(nsize, "Black")) > TEXT_MAX_W:
+        nsize -= 3
+    nf = get_premium_font(nsize, "Black"); name_y = 236
+    _draw_text_shadow(draw, (TEXT_X, name_y), name_up, nf, (255, 255, 255), offset=3)
+    nb = draw.textbbox((0, 0), name_up, font=nf)
+    name_bottom = name_y + (nb[3] - nb[1]) + 12
+
+    CREST = 132
+    from_im = _load_crest(from_key, CREST); to_im = _load_crest(to_key, CREST)
+    row_y = name_bottom + 36; cy = row_y + CREST // 2; x = TEXT_X
+    if from_im is not None:
+        img.paste(from_im, (x, row_y + (CREST - from_im.height)//2), from_im)
+        fn = (story.get("from_club") or from_key or "").replace("_", " ").upper()
+        fnw = draw.textlength(fn, font=crest_font)
+        _draw_text_shadow(draw, (x + (CREST - fnw)//2, row_y + CREST + 10), fn, crest_font, (235, 235, 235))
+        x += CREST + 30
+    if (from_im is not None) or (to_im is not None):
+        _draw_arrow(draw, x, cy - 14, 150, GREEN, thick=28); x += 180
+    if to_im is not None:
+        img.paste(to_im, (x, row_y + (CREST - to_im.height)//2), to_im)
+        tn = (story.get("to_club") or to_key or "").replace("_", " ").upper()
+        tnw = draw.textlength(tn, font=crest_font)
+        _draw_text_shadow(draw, (x + (CREST - tnw)//2, row_y + CREST + 10), tn, crest_font, (255, 255, 255))
+
+    detail = build_detail_line(story)
+    if detail:
+        _safe_emoji_text(img, (TEXT_X, row_y + CREST + 56), detail.upper()[:60], sub, (160, 255, 120))
+
+    # Bottom info bar
+    draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
+    draw.rectangle([0, H - 12, W, H], fill=accent)
+    if stats:
+        bar = (f"FPL COST: {stats['cost']}  |  POINTS: {stats['pts']}"
+               f"  |  GOALS: {stats['goals']}  |  ASSISTS: {stats['assists']}")
+        fill = (255, 255, 255)
+    else:
+        src = " · ".join(f"@{s}" for s in sources[:2])
+        bar = f"Source: {src}  |  @FPLVortex"; fill = (190, 200, 220)
+    bsize = 30; bf = get_premium_font(bsize, "Bold")
+    while bsize > 18 and draw.textlength(bar, font=bf) > (W - 120):
+        bsize -= 1; bf = get_premium_font(bsize, "Bold")
+    bbox = draw.textbbox((0, 0), bar, font=bf)
+    by = (H - 90) + (78 - (bbox[3]-bbox[1])) // 2 - bbox[1]
+    draw.text((60, by), bar, font=bf, fill=fill)
 
     img.save(filename)
 
@@ -938,8 +1297,7 @@ def get_nitter_tweets(username):
     return []
 
 async def get_twikit_tweets(read_client, username, count=20, retries=2):
-    """Read latest tweets straight from X via twikit (primary source).
-    Returns [] on failure so the caller can fall back to Nitter."""
+    """Read latest tweets straight from X via twikit (primary source)."""
     if read_client is None:
         return []
     for attempt in range(retries):
@@ -955,7 +1313,7 @@ async def get_twikit_tweets(read_client, username, count=20, retries=2):
             return out
         except Exception as e:
             if attempt + 1 < retries:
-                await asyncio.sleep(3 * (attempt + 1))     # backoff then retry
+                await asyncio.sleep(3 * (attempt + 1))
             else:
                 print(f"  [READ] twikit failed for @{username}: {e}")
     return []
@@ -978,7 +1336,11 @@ async def scrape(data, read_client):
         except Exception as e:
             print(f"  [READ] @{username} error: {e}")
             tweets, src = [], "error"
-        print(f"  [READ] @{username}: {len(tweets)} tweets via {src}")
+        if not tweets and src in ("none", "error"):
+            print(f"  [WARN] @{username}: ALL sources failed — X tokens may be expired or Nitter is down")
+        else:
+            print(f"  [READ] @{username}: {len(tweets)} tweets via {src}")
+
         for t in tweets:
             tid, text = t["id"], t["text"]
             if tid in data["posted_ids"]:
@@ -987,19 +1349,23 @@ async def scrape(data, read_client):
                 continue
             seen += 1
 
-            # Extraction cache: each tweet is sent to the LLM ONCE, ever.
-            # Re-runs reuse the stored result → stays inside Gemini's free quota.
+            # Extraction cache: each tweet hits the LLM at most ONCE, ever.
             if tid in data["extracted"]:
                 story = dict(data["extracted"][tid])
             else:
-                story = build_story(text)                            # READ the story (LLM if new)
+                story = build_story(text)
                 data["extracted"][tid] = dict(story)
-                if _GEMINI_OK:
-                    time.sleep(4)        # ~15 RPM free tier → 4s gap keeps us safely under
+
             safe, why = passes_safety_gate(story, text, fpl)
             if not safe:
                 skipped += 1
                 print(f"    ⏭️  skip ({why}): {text[:70]!r}")
+                continue
+
+            valid, vwhy = validate_story(story)
+            if not valid:
+                skipped += 1
+                print(f"    🚫 invalid ({vwhy}): {text[:70]!r}")
                 continue
 
             anchor = story.get("to_key") or story.get("from_key") or "unknown"
@@ -1014,7 +1380,7 @@ async def scrape(data, read_client):
                 if username not in ex["sources"]:
                     ex["sources"].append(username)
                 if story["stage"] > ex["stage"]:
-                    ex.update({k: story[k] for k in story})  # keep most advanced
+                    ex.update({k: story[k] for k in story})
                     ex["sources"] = list(dict.fromkeys(ex["sources"]))
             else:
                 prior = data.get("pending", {}).get(key, {}).get("sources", [])
@@ -1025,7 +1391,12 @@ async def scrape(data, read_client):
                 story_map[key] = story
         await asyncio.sleep(1)
 
+    total_fetched = seen + skipped
+    if total_fetched == 0:
+        print("  [WARN] ⚠️ Zero football tweets from ALL journalists. X auth tokens likely "
+              "expired — update X_AUTH_TOKEN and X_CT0_TOKEN secrets.")
     print(f"  [SCRAPE] {seen} football tweets seen, {skipped} skipped, {len(story_map)} candidate stories")
+
     ready = []
     for key, st in story_map.items():
         mode = classify_post(st, st["sources"])
@@ -1039,17 +1410,29 @@ async def scrape(data, read_client):
         st["rumour"] = (mode == "rumour")
         data["pending"].pop(key, None)
         ready.append(st)
+
     # keep state files from growing unbounded
     if len(data["extracted"]) > 600:
         for k in list(data["extracted"].keys())[:-600]:
             del data["extracted"][k]
     if len(data["posted_ids"]) > 1500:
         data["posted_ids"] = data["posted_ids"][-1500:]
+
     save_data(data)
     return sorted(ready, key=lambda x: -(1 if x["collapsed"] else x["stage"]))
 
 # ── PUBLISH ──────────────────────────────────────────────────────────────────
 async def post_item(client, item, data):
+    # Final accuracy gate: never render/post a story with reversed clubs,
+    # duplicates, placeholder text, or mismatched event data.
+    valid, why = validate_story(item)
+    if not valid:
+        print(f"  🚫 VALIDATION FAILED ({why}) — not posting: {item.get('player')!r}")
+        # mark the tweet seen so we don't keep re-processing the bad story
+        if item.get("id") and item["id"] not in data["posted_ids"]:
+            data["posted_ids"].append(item["id"])
+        save_data(data)
+        return
     rumour = item.get("rumour", False)
     filename = "news_card.png"
     create_image(item, item["sources"], filename, rumour=rumour)
@@ -1072,15 +1455,13 @@ async def post_item(client, item, data):
 
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 async def main():
-    print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()}  (LLM={'Gemini' if _GEMINI_OK else 'off/fallback'})")
-    init_club_data()             # load all-league club universe + hashtags + PL set
+    print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()}  (LLM={'Haiku' if _ANTHROPIC_OK else 'off/fallback'})")
+    init_club_data()
     data = load_data()
     if not check_daily_limit(data):
         print("[BOT] Daily limit reached.")
         return
 
-    # READ client (twikit) — primary source, replaces Nitter. Falls back to
-    # Nitter automatically if cookies are missing or X reading fails.
     read_client = None
     if X_AUTH_TOKEN and X_CT0_TOKEN:
         try:
@@ -1098,6 +1479,10 @@ async def main():
         return
     for item in queue:
         save_pending(item)
+
+    if not (X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN):
+        print("[BOT] No post cookies set — cannot post. Set X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN.")
+        return
 
     client = Client("en-US")
     client.set_cookies({"auth_token": X_POST_AUTH_TOKEN, "ct0": X_POST_CT0_TOKEN})
