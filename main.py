@@ -735,6 +735,68 @@ def build_story_key(player, club_key, event) -> str:
     return f"{p}_{c}_{fam}"
 
 
+def _event_family(event):
+    return "injury" if event == "injury" else "manager" if event == "manager" else "transfer"
+
+
+def reconcile_key(player, anchor, event, *maps):
+    """Merge same-player + same-event-family stories that differ only by club
+    resolution (e.g. one source has TO=Man_City, another TO=unknown).
+
+    Returns the canonical key to use. Strategy:
+      - Build the natural key for this story.
+      - Look across the given dicts (in-run story_map, saved stories, pending)
+        for an EXISTING key with the same player and event family.
+      - If found, prefer the variant that has a REAL club over an 'unknown'
+        one, so an "Anderson interest" (unknown) folds into an existing
+        "Anderson to Man City" saga rather than spawning a duplicate.
+    """
+    p = (player or "unknown").lower().replace(" ", "_")
+    fam = _event_family(event)
+    natural = build_story_key(player, anchor, event)
+    natural_is_unknown = natural.endswith(f"_unknown_{fam}")
+
+    prefix = f"{p}_"
+    suffix = f"_{fam}"
+    candidates = set()
+    for mp in maps:
+        if not mp:
+            continue
+        for k in mp.keys():
+            if k.startswith(prefix) and k.endswith(suffix):
+                candidates.add(k)
+    candidates.discard(natural)
+
+    # Prefer an existing key that carries a real (non-unknown) club.
+    real_club_keys = [k for k in candidates if not k.endswith(f"_unknown{suffix}")]
+
+    if natural_is_unknown and real_club_keys:
+        # this vague story folds into the established saga
+        return sorted(real_club_keys)[0]
+    if not natural_is_unknown:
+        # this story HAS a club; if an 'unknown' variant already exists, we will
+        # absorb it (handled by the caller merging sources), but our key wins.
+        return natural
+    # natural is unknown and no real-club variant exists yet
+    if candidates:
+        return sorted(candidates)[0]
+    return natural
+
+
+def absorb_unknown_variant(player, event, canonical_key, *maps):
+    """If an 'unknown'-club variant of this same player+event exists in any map,
+    return its key so the caller can fold its sources into the canonical entry."""
+    p = (player or "unknown").lower().replace(" ", "_")
+    fam = _event_family(event)
+    unknown_key = f"{p}_unknown_{fam}"
+    if unknown_key == canonical_key:
+        return None
+    for mp in maps:
+        if mp and unknown_key in mp:
+            return unknown_key
+    return None
+
+
 def should_post(data, key, new_stage, collapsed):
     existing = data["stories"].get(key)
     if collapsed:
@@ -1598,7 +1660,11 @@ async def scrape(data, read_client):
                 print(f"   invalid ({vwhy}): {text[:70]!r}")
                 continue
             anchor = story.get("to_key") or story.get("from_key") or "unknown"
-            key = build_story_key(story["player"], anchor, story["event"])
+            # Reconcile against same-player+event stories that differ only by
+            # club resolution, so "Anderson interest" (unknown) folds into an
+            # existing "Anderson to Man City" saga instead of duplicating.
+            key = reconcile_key(story["player"], anchor, story["event"],
+                                story_map, data.get("stories", {}), data.get("pending", {}))
             ok, reason = should_post(data, key, story["stage"], story["collapsed"])
             if not ok:
                 print(f"   skip ({reason}): {key}")
@@ -1612,6 +1678,15 @@ async def scrape(data, read_client):
                 ex["sources"] = list(dict.fromkeys(ex["sources"]))
             else:
                 prior = data.get("pending", {}).get(key, {}).get("sources", [])
+                # Fold in any pre-existing 'unknown'-club variant's sources.
+                unk = absorb_unknown_variant(story["player"], story["event"], key,
+                                             story_map, data.get("pending", {}))
+                if unk and unk in story_map:
+                    prior = list(dict.fromkeys(prior + story_map[unk].get("sources", [])))
+                    del story_map[unk]
+                elif unk and unk in data.get("pending", {}):
+                    prior = list(dict.fromkeys(prior + data["pending"][unk].get("sources", [])))
+                    data["pending"].pop(unk, None)
                 story.update({
                     "id": tid, "key": key, "text": text,
                     "sources": list(dict.fromkeys(prior + [username])), "reason": reason,
