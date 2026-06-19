@@ -230,7 +230,8 @@ def init_club_data():
     CLUB_NAME_SET = set(CLUB_HASHTAGS.keys()) | set((d.get("short_names", {}) or {}).keys())
     CLUB_NAME_SET |= set(CLUB_ALIASES.keys())
     _build_club_word_fragments()
-  def _build_club_word_fragments():
+
+def _build_club_word_fragments():
     SKIP = {"fc", "the", "de", "af", "sc", "if", "bk", "ac", "as", "vv",
             "rb", "al", "el", "cf", "sk", "fk", "&", "and", "du", "us"}
     for alias in CLUB_ALIASES:
@@ -435,7 +436,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     # Pass 1 — multi-word with Dutch/Spanish/Portuguese connectors
     # e.g. "Jan Paul van Hecke", "Virgil van Dijk", "Bruno Fernandes"
     for m in re.findall(
-        r'\b([A-Z][a-zà-ÿ]+(?:(?:\s+(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-Z][a-zà-ÿ]+)+)\b',
+        r'\b([A-Z][a-zà-ÿ]+(?:\s+(?:(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-Z][a-zà-ÿ]+)+)\b',
         tweet_text
     ):
         if not _is_bad_name(m.lower()):
@@ -466,29 +467,6 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             if is_big_name_player(m):
                 name = m
                 break
-    name = None
-    for m in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:[-\' ][A-Z][a-zà-ÿ]+)+)\b', tweet_text):
-        low = m.lower()
-        if looks_like_club(m):
-            continue
-        if any(w in FILLER for w in low.split()):
-            continue
-        name = m
-        break
-
-    # Many journalist tweets refer to players by surname only (e.g. "Cucurella",
-    # "Rashford"), which the two-word regex above never catches. As a second
-    # pass, try single capitalised words — but only accept one that matches a
-    # real FPL player's web_name, so we don't grab "Brighton" or "Exclusive".
-    if not name and fpl_data:
-        for m in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', tweet_text):
-            low = m.lower()
-            if low in FILLER or looks_like_club(m):
-                continue
-            if find_player_in_fpl(m, fpl_data):
-                name = m
-                break
-
     clean = re.sub(r'\s+', ' ', tweet_text).strip()
 
     # Determine from/to direction. Only trust it when the tweet clearly anchors
