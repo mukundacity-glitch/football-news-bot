@@ -1741,7 +1741,7 @@ async def main():
     client = Client("en-US")
     client.set_cookies({"auth_token": X_POST_AUTH_TOKEN, "ct0": X_POST_CT0_TOKEN})
     remaining = data["daily"]["limit"] - data["daily"]["count"]
-    batch = queue[:max(0, min(3, remaining))]
+    batch = queue[:max(0, min(2, remaining))]
     for i, item in enumerate(batch):
         try:
             await post_item(client, item, data)
