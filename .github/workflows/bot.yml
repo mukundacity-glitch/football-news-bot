@@ -2,9 +2,9 @@ name: Run FPL Vortex Bot Daily
 
 on:
   schedule:
-    # 13:00 UTC is exactly 9:00 AM Eastern Time (US)
+    # Runs at 13:00 UTC (9:00 AM Eastern Time)
     - cron: '0 13 * * *'
-  workflow_dispatch: # This button lets us start it manually right now!
+  workflow_dispatch:
 
 jobs:
   run-bot:
