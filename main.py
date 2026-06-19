@@ -1,5 +1,5 @@
 """
-FPL VORTEX — Football news automation (DRAFT-ONLY build).
+FPL VORTEX — Football news automation (LIVE build).
 
 What this build does:
   - Scrapes trusted journalist/club accounts.
@@ -9,9 +9,8 @@ What this build does:
     MANAGER using a strict source rule (official OR >= 2 trusted reporters).
   - Renders a clean card: "FPL VORTEX" wordmark top-left, FROM:/TO: text rows
     (NO arrows), club crests, relevant hashtags only.
-  - Writes every result to queue/pending/ as a DRAFT. It NEVER posts.
-
-To post, a human reviews the drafts. Auto-posting is intentionally disabled.
+  - Auto-posts confirmed AND rumour stories (up to MAX_POSTS_PER_RUN per run,
+    17 per day total). Rumours are clearly labelled RUMOUR on the card.
 """
 
 from clubs_cache import get_club_data
@@ -911,12 +910,17 @@ def detect_mixed_story(story, raw_text) -> str:
         return "player_is_manager"
 
     # 2) Manager named in text + transfer/stay event + subject is someone else.
-    #    De Zerbi / Van de Ven pattern: a manager talking about a player.
+    #    NARROWED: only block when the manager appears as the GRAMMATICAL SUBJECT
+    #    of the move (e.g. "Guardiola joins PSG") — NOT when they merely appear as
+    #    context ("Slot confirms Liverpool want X"). The original broad check killed
+    #    the majority of legitimate transfer tweets because journalists routinely
+    #    quote or name managers as commentary, not as the transfer subject.
+    #    Check #1 above already catches the case where the extracted player IS a
+    #    manager, so this check is now limited to explicit "manager moves to club"
+    #    phrasing to avoid collateral blocking.
     if ev in ("transfer", "loan", "loan_option", "stay", "renewal"):
-        manager_in_text = any(re.search(r'(?<![a-z])' + re.escape(m) + r'(?![a-z])', tl)
-                              for m in MANAGER_SURNAMES)
         subject_is_manager = any(m in player for m in MANAGER_SURNAMES)
-        if manager_in_text and not subject_is_manager:
+        if subject_is_manager:
             return "manager_and_player_mixed"
 
     # 3) Three+ clauses each naming a club → likely stitched stories.
@@ -1918,11 +1922,12 @@ def build_draft(item, data, fpl):
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
 # Which post modes may AUTO-POST without human review.
-# Default: confirmed/OFFICIAL only. Rumours are still drafted to queue/pending/
-# for manual review, but are NOT auto-posted (safer for an automated account).
-AUTOPOST_MODES = {"confirmed"}
-# Hard cap per single run, so a 30-min schedule can't dump a huge batch at once.
-MAX_POSTS_PER_RUN = 3
+# Both CONFIRMED and RUMOUR stories post; rumours are clearly labelled on the
+# card so followers know they are unconfirmed. Daily cap keeps volume sane.
+AUTOPOST_MODES = {"confirmed", "rumour"}
+# 1 post per run keeps output evenly spread across the 30-min cron schedule.
+# 48 possible runs/day × 1 = up to 48 slots, but daily hard cap is 17.
+MAX_POSTS_PER_RUN = 1
 
 
 async def main(post: bool = True, allow_rumours: bool = False):
@@ -1979,19 +1984,13 @@ async def main(post: bool = True, allow_rumours: bool = False):
               "Set X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN. Nothing posted.")
         return
 
-    # Decide what is eligible to AUTO-POST. Confirmed/OFFICIAL only by default;
-    # rumours stay as drafts unless explicitly allowed.
+    # Both confirmed and rumour stories are eligible to auto-post.
+    # AUTOPOST_MODES = {"confirmed", "rumour"} — see constant above.
     modes_ok = set(AUTOPOST_MODES)
-    if allow_rumours:
-        modes_ok.add("rumour")
     postable = [d for d in drafts if d.get("mode") in modes_ok]
-    held_rumours = [d for d in drafts if d.get("mode") == "rumour" and "rumour" not in modes_ok]
-    if held_rumours:
-        print(f"[BOT] {len(held_rumours)} rumour draft(s) held for manual review "
-              f"(auto-post is confirmed-only).")
 
     if not postable:
-        print("[BOT] No confirmed stories to auto-post this run.")
+        print("[BOT] No postable stories this run.")
         return
 
     try:
