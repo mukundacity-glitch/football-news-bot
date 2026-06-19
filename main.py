@@ -233,13 +233,8 @@ def init_club_data():
 
 def _build_club_word_fragments():
     SKIP = {"fc", "the", "de", "af", "sc", "if", "bk", "ac", "as", "vv",
-            "rb", "al", "el", "cf", "sk", "fk", "&", "and", "du", "us"}
-    for alias in CLUB_ALIASES:
-        for word in re.split(r'[\s\-&]+', alias):
-            w = word.lower().strip("'")
-            if w and w not in SKIP and len(w) >= 3:
-                CLUB_WORD_FRAGMENTS.add(w)
-    for name in CLUB_NAME_SET:
+            "rb", "al", "el", "cf", "sk", "fk", "and", "du", "us"}
+    for name in (set(CLUB_ALIASES.keys()) | CLUB_NAME_SET):
         for word in re.split(r'[\s\-&]+', name):
             w = word.lower().strip("'")
             if w and w not in SKIP and len(w) >= 3:
