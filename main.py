@@ -202,14 +202,14 @@ def init_club_data():
         for t in fpl["teams"]:
             name = t["name"]
             safe_key = name.replace(" ", "_").replace("'", "")
-            
+
             # Auto-map the official badge code
             FPL_LOGO_IDS[safe_key] = str(t["code"])
-            
+
             # Auto-generate aliases
             base = name.lower()
             variants = {base, t.get("short_name", "").lower()}
-            
+
             # Smart expansions to catch all journalist spelling habits
             if "man " in base: variants.add(base.replace("man ", "manchester "))
             if "utd" in base: variants.add(base.replace("utd", "united"))
@@ -226,7 +226,7 @@ def init_club_data():
                 if " city" in v: CLUB_ALIASES[v.replace(" city", "")] = safe_key
                 if " united" in v: CLUB_ALIASES[v.replace(" united", "")] = safe_key
                 if " town" in v: CLUB_ALIASES[v.replace(" town", "")] = safe_key
-                
+
     _SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
 
     # 2. Map international clubs cache
@@ -240,7 +240,8 @@ def init_club_data():
     CLUB_NAME_SET = set(CLUB_HASHTAGS.keys()) | set((d.get("short_names", {}) or {}).keys())
     CLUB_NAME_SET |= set(CLUB_ALIASES.keys())
     _build_club_word_fragments()
-  def _build_club_word_fragments():
+
+def _build_club_word_fragments():
     SKIP = {"fc", "the", "de", "af", "sc", "if", "bk", "ac", "as", "vv",
             "rb", "al", "el", "cf", "sk", "fk", "&", "and", "du", "us"}
     for alias in CLUB_ALIASES:
