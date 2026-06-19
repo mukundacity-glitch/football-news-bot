@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import requests
 import urllib.request
+import shutil
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
