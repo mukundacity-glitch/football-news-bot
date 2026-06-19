@@ -23,6 +23,7 @@ import os
 import re
 import json
 import asyncio
+import unicodedata 
 import requests
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -580,17 +581,24 @@ def fetch_fpl_data():
     except Exception:
         return None
 
+def _norm(s: str) -> str:
+    """Lowercase + strip accents so 'Koné' matches 'Kone', 'Múñoz' matches 'Munoz'."""
+    s = unicodedata.normalize('NFKD', s or '')
+    s = ''.join(c for c in s if not unicodedata.combining(c))
+    return s.lower().strip()
+
+
 def find_player_in_fpl(player_name, data):
-    """STRICT match. Returns an element only when the name clearly lines up."""
+    """STRICT match, accent-insensitive. Returns an element only when the name clearly lines up."""
     if not data or not player_name:
         return None
-    q = player_name.lower().strip()
+    q = _norm(player_name)
     tokens = [t for t in re.split(r'[\s\-]+', q) if t]
     if not tokens:
         return None
     for el in data.get("elements", []):
-        web = el["web_name"].lower()
-        full = (el["first_name"] + " " + el["second_name"]).lower()
+        web = _norm(el["web_name"])
+        full = _norm(el["first_name"] + " " + el["second_name"])
         if q == full or q == web:
             return el
         if len(tokens) >= 2 and all(
@@ -600,11 +608,13 @@ def find_player_in_fpl(player_name, data):
             return el
     return None
 
+
 def is_big_player(player, fpl_data) -> bool:
     el = find_player_in_fpl(player, fpl_data)
     if not el:
         return False
     return el.get("now_cost", 0) >= 65 or el.get("total_points", 0) >= 90  # £6.5m or 90+ pts
+
 
 def fpl_team_key(el, fpl_data):
     """The PL key (e.g. 'Man_Utd') of an FPL element's current club, or None."""
