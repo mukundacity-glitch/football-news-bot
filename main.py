@@ -111,6 +111,23 @@ CLUB_ALIASES = {
     "wolves": "Wolves", "wolverhampton": "Wolves",
 }
 _SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
+# Auto-built at startup from CLUB_ALIASES + clubs_cache — no hardcoding needed
+CLUB_WORD_FRAGMENTS: set = set()
+
+# Only these three small lists genuinely have no auto source in your stack
+NATIONALITY_ADJECTIVES = {
+    "english", "french", "german", "spanish", "italian", "portuguese", "dutch",
+    "brazilian", "argentinian", "belgian", "croatian", "danish", "swedish",
+    "norwegian", "scottish", "welsh", "irish", "austrian", "swiss", "polish",
+    "ukrainian", "turkish", "greek", "serbian", "canadian", "american", "mexican",
+    "japanese", "korean", "senegalese", "nigerian", "ghanaian", "moroccan",
+    "egyptian", "cameroonian", "colombian", "uruguayan", "chilean", "australian",
+    "algerian", "tunisian", "ivorian", "congolese", "zambiani",
+}
+POSITION_WORDS = {
+    "goalkeeper", "defender", "midfielder", "striker", "winger",
+    "forward", "keeper", "playmaker", "captain", "international",
+}
 
 FPL_LOGO_IDS = {
     "Arsenal": "3", "Aston_Villa": "7", "Bournemouth": "91", "Brentford": "94",
@@ -212,6 +229,32 @@ def init_club_data():
     PL_CLUB_NAMES = set(d.get("pl_clubs", []) or [])
     CLUB_NAME_SET = set(CLUB_HASHTAGS.keys()) | set((d.get("short_names", {}) or {}).keys())
     CLUB_NAME_SET |= set(CLUB_ALIASES.keys())
+    _build_club_word_fragments()
+  def _build_club_word_fragments():
+    SKIP = {"fc", "the", "de", "af", "sc", "if", "bk", "ac", "as", "vv",
+            "rb", "al", "el", "cf", "sk", "fk", "&", "and", "du", "us"}
+    for alias in CLUB_ALIASES:
+        for word in re.split(r'[\s\-&]+', alias):
+            w = word.lower().strip("'")
+            if w and w not in SKIP and len(w) >= 3:
+                CLUB_WORD_FRAGMENTS.add(w)
+    for name in CLUB_NAME_SET:
+        for word in re.split(r'[\s\-&]+', name):
+            w = word.lower().strip("'")
+            if w and w not in SKIP and len(w) >= 3:
+                CLUB_WORD_FRAGMENTS.add(w)
+
+# Auto-built from FPL bootstrap nationality field
+COUNTRY_NAMES: set = set()
+
+def _build_country_block(fpl_data):
+    global COUNTRY_NAMES
+    if not fpl_data:
+        return
+    for el in fpl_data.get("elements", []):
+        nat = (el.get("nationality") or "").lower().strip()
+        if nat:
+            COUNTRY_NAMES.add(nat)
 
 def looks_like_club(name: str) -> bool:
     """True if a candidate 'player' string is actually a known club (any league)."""
@@ -351,8 +394,78 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     stage = 4 if has_word(["here we go", "official", "confirmed", "completed", "medical", "joins"], tl) else \
             2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
 
-    FILLER = {"excl", "exclusive", "breaking", "official", "understand", "update",
-              "here", "done", "deal", "medical", "nothing", "all", "source", "news"}
+    FILLER = {
+        "excl", "exclusive", "breaking", "official", "understand", "understands",
+        "update", "here", "done", "deal", "medical", "nothing", "all", "source",
+        "news", "report", "reports", "told", "says", "said", "claim", "claims",
+        "today", "tonight", "tomorrow", "now", "latest", "just", "also",
+        "full", "free", "new", "big", "top", "key", "real", "transfer",
+        "window", "deadline", "fee", "bid", "offer", "loan", "agree", "agreed",
+        "talks", "interest", "signed", "signing", "joins", "joined", "move",
+        "permanent", "option", "clause", "release", "extension", "premier",
+        "league", "champions", "europa", "conference", "sport", "press",
+    }
+
+    # Auto-derive role words from your existing STAFF_BLOCK_KW
+    ROLE_WORDS = set()
+    for phrase in STAFF_BLOCK_KW:
+        for word in phrase.split():
+            if len(word) > 3:
+                ROLE_WORDS.add(word)
+    ROLE_WORDS |= POSITION_WORDS   # merge in the small hardcoded position list
+
+    def _is_bad_name(low: str) -> bool:
+        words = low.split()
+        if any(w in FILLER for w in words):
+            return True
+        if any(w in CLUB_WORD_FRAGMENTS for w in words):
+            return True
+        if any(w in COUNTRY_NAMES for w in words):
+            return True
+        if any(w in NATIONALITY_ADJECTIVES for w in words):
+            return True
+        if any(w in ROLE_WORDS for w in words):
+            return True
+        if looks_like_club(low):
+            return True
+        return False
+
+    name = None
+
+    # Pass 1 — multi-word with Dutch/Spanish/Portuguese connectors
+    # e.g. "Jan Paul van Hecke", "Virgil van Dijk", "Bruno Fernandes"
+    for m in re.findall(
+        r'\b([A-Z][a-zà-ÿ]+(?:(?:\s+(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-Z][a-zà-ÿ]+)+)\b',
+        tweet_text
+    ):
+        if not _is_bad_name(m.lower()):
+            name = m
+            break
+
+    # Pass 2 — plain two-capitalised-word spans (catches what pass 1 misses)
+    if not name:
+        for m in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:[-\' ][A-Z][a-zà-ÿ]+)+)\b', tweet_text):
+            if not _is_bad_name(m.lower()):
+                name = m
+                break
+
+    # Pass 3 — single surname, must match FPL web_name exactly
+    if not name and fpl_data:
+        for m in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', tweet_text):
+            if _is_bad_name(m.lower()):
+                continue
+            if find_player_in_fpl(m, fpl_data):
+                name = m
+                break
+
+    # Pass 4 — single surname matching global star list
+    if not name:
+        for m in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', tweet_text):
+            if _is_bad_name(m.lower()):
+                continue
+            if is_big_name_player(m):
+                name = m
+                break
     name = None
     for m in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:[-\' ][A-Z][a-zà-ÿ]+)+)\b', tweet_text):
         low = m.lower()
@@ -491,6 +604,7 @@ def fetch_fpl_data():
             data = json.loads(resp.read())
             with open(cache, "w") as f:
                 json.dump(data, f)
+            _build_country_block(data)
             return data
     except Exception:
         return None
