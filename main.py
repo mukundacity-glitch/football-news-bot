@@ -33,10 +33,12 @@ from pilmoji import Pilmoji
 from twikit import Client
 
 try:
-    import anthropic
-    _ANTHROPIC_OK = bool(os.getenv("ANTHROPIC_API_KEY"))
+    import google.generativeai as genai
+    _GEMINI_OK = bool(os.getenv("GEMINI_API_KEY"))
+    if _GEMINI_OK:
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 except Exception:
-    _ANTHROPIC_OK = False
+    _GEMINI_OK = False
 
 # ── SECRETS ──────────────────────────────────────────────────────────────────
 X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
@@ -343,16 +345,12 @@ Tweet:
 \"\"\"{tweet}\"\"\""""
 
 def extract_story_llm(tweet_text: str):
-    if not _ANTHROPIC_OK:
+    if not _GEMINI_OK:
         return None
     try:
-        client = anthropic.Anthropic()
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=600,
-            messages=[{"role": "user", "content": _EXTRACT_PROMPT.format(tweet=tweet_text)}],
-        )
-        raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        resp = model.generate_content(_EXTRACT_PROMPT.format(tweet=tweet_text))
+        raw = resp.text
         return json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
     except Exception as e:
         print(f"  [LLM] extraction failed, using fallback: {e}")
@@ -1693,7 +1691,7 @@ async def post_item(client, item, data):
 
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 async def main():
-    print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()}  (LLM={'Haiku' if _ANTHROPIC_OK else 'off/fallback'})")
+    print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()}  (LLM={'Gemini' if _GEMINI_OK else 'off/fallback'})")
     init_club_data()
     data = load_data()
     if not check_daily_limit(data):
