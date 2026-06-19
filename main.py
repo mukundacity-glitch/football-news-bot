@@ -149,6 +149,53 @@ def resolve_club_key(name: str):
             return CLUB_ALIASES[alias]
     return None
 
+# Club whitelist scope, per product decision: Bundesliga, La Liga, and
+# Champions League regulars (UCL is on the "always relevant" competition
+# list, so its usual elite participants count even when not in Bundesliga/
+# La Liga, e.g. PSG, Inter, Milan, Juventus).
+BUNDESLIGA_BIG_CLUBS = {
+    "bayern munich", "bayern", "borussia dortmund", "dortmund",
+    "bayer leverkusen", "leverkusen", "rb leipzig",
+}
+LA_LIGA_BIG_CLUBS = {
+    "real madrid", "barcelona", "atletico madrid", "atletico de madrid",
+}
+UCL_REGULAR_CLUBS = {
+    "psg", "paris saint-germain", "paris saint germain",
+    "inter milan", "inter", "ac milan", "milan", "juventus", "napoli", "roma",
+}
+BIG_CLUBS_NON_PL = BUNDESLIGA_BIG_CLUBS | LA_LIGA_BIG_CLUBS | UCL_REGULAR_CLUBS
+
+def is_big_club_name(name: str) -> bool:
+    if not name:
+        return False
+    n = name.lower().strip()
+    return any(n == c or c in n for c in BIG_CLUBS_NON_PL)
+
+def is_bundesliga_or_laliga_club(name: str) -> bool:
+    """Stricter check used for injuries/managers: Bundesliga or La Liga only,
+    no UCL-only clubs like PSG/Inter/Milan that aren't in those two leagues."""
+    if not name:
+        return False
+    n = name.lower().strip()
+    return any(n == c or c in n for c in (BUNDESLIGA_BIG_CLUBS | LA_LIGA_BIG_CLUBS))
+
+# Globally recognizable stars who are unlikely to ever be FPL-eligible (so
+# is_big_player()'s FPL-cost/points check can't catch them). Surname-keyed,
+# lowercase. Keep this to genuinely A-list names — it's a deliberate
+# whitelist, not a general celebrity filter.
+BIG_NAMES_NON_FPL = {
+    "mbappe", "mbappé", "vinicius", "vinícius", "bellingham", "rodrygo",
+    "haaland", "lewandowski", "messi", "neymar", "ronaldo", "modric", "kroos",
+    "benzema", "pedri", "gavi", "yamal", "kane", "musiala", "wirtz", "kvaratskhelia",
+}
+
+def is_big_name_player(name: str) -> bool:
+    if not name:
+        return False
+    n = name.lower().strip()
+    return any(part in BIG_NAMES_NON_FPL for part in re.split(r'[\s\-]+', n))
+
 # ── CLUBS_CACHE WIRING (all leagues, not just PL) ────────────────────────────
 CLUB_NAME_SET = set()        # every known club name/alias, lowercased
 CLUB_HASHTAGS = {}           # name/alias -> hashtag (all leagues)
@@ -272,7 +319,7 @@ def extract_story_llm(tweet_text: str):
         print(f"  [LLM] extraction failed, using fallback: {e}")
         return None
 
-def extract_story_fallback(tweet_text: str) -> dict:
+def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     """No-LLM path: still TRUTHFUL — uses the tweet's own words as the body
     instead of a fabricated template. Crude club/stage guesses only."""
     tl = tweet_text.lower()
@@ -316,25 +363,61 @@ def extract_story_fallback(tweet_text: str) -> dict:
         name = m
         break
 
+    # Many journalist tweets refer to players by surname only (e.g. "Cucurella",
+    # "Rashford"), which the two-word regex above never catches. As a second
+    # pass, try single capitalised words — but only accept one that matches a
+    # real FPL player's web_name, so we don't grab "Brighton" or "Exclusive".
+    if not name and fpl_data:
+        for m in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', tweet_text):
+            low = m.lower()
+            if low in FILLER or looks_like_club(m):
+                continue
+            if find_player_in_fpl(m, fpl_data):
+                name = m
+                break
+
     clean = re.sub(r'\s+', ' ', tweet_text).strip()
 
-    # Determine from/to: look for an explicit "from <club>" anchor first.
+    # Determine from/to direction. Only trust it when the tweet clearly anchors
+    # direction with "from X" / "to Y" / "joins Y" / "leaves X". Multi-club or
+    # unanchored tweets are marked direction_confident=False so the card avoids
+    # a misleading FROM→TO arrow.
     from_key = None
     to_key = None
-    if clubs:
-        from_match = None
+    direction_confident = False
+
+    def _alias_after(keyword):
         for alias in _SORTED_ALIASES:
-            if re.search(r'\bfrom\s+' + re.escape(alias) + r'\b', tl):
-                from_match = CLUB_ALIASES[alias]
-                break
-        if from_match and from_match in clubs:
-            from_key = from_match
-            remaining = [c for c in clubs if c != from_key]
-            to_key = remaining[0] if remaining else None
-        else:
-            # Heuristic: first club = destination (buying), last = current/selling.
-            to_key = clubs[0]
-            from_key = clubs[-1] if len(clubs) >= 2 else None
+            if re.search(r'\b' + keyword + r'\s+(?:the\s+)?' + re.escape(alias) + r'\b', tl):
+                return CLUB_ALIASES[alias]
+        return None
+
+    from_anchor = _alias_after("from") or _alias_after("leaves") or _alias_after("leaving")
+    to_anchor = (_alias_after("to") or _alias_after("joins") or _alias_after("join")
+                 or _alias_after("sign for") or _alias_after("signs for") or _alias_after("moves to")
+                 or _alias_after("set to join") or _alias_after("close to joining"))
+
+    if from_anchor and to_anchor and from_anchor != to_anchor:
+        from_key, to_key = from_anchor, to_anchor
+        direction_confident = True
+    elif from_anchor and len(clubs) == 2:
+        from_key = from_anchor
+        other = [c for c in clubs if c != from_anchor]
+        to_key = other[0] if other else None
+        direction_confident = bool(to_key)
+    elif to_anchor and len(clubs) == 2:
+        to_key = to_anchor
+        other = [c for c in clubs if c != to_anchor]
+        from_key = other[0] if other else None
+        direction_confident = bool(from_key)
+    elif len(clubs) == 1:
+        # single club named, no clear direction → treat as "linked with" club
+        to_key = clubs[0]
+        direction_confident = False
+    else:
+        # ambiguous (0 or 3+ clubs, no clean anchor) → don't assert a direction
+        to_key = clubs[0] if clubs else None
+        direction_confident = False
 
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
 
@@ -347,12 +430,13 @@ def extract_story_fallback(tweet_text: str) -> dict:
         "from_key": from_key, "to_key": to_key,
         "fee": None, "contract": None, "conditional": None, "fpl_impact": None,
         "stage": stage, "collapsed": is_collapsed,
+        "direction_confident": direction_confident,
         "headline": name if name else "Transfer update",
         "body": clean[:240], "confidence": 0.5,
     }
 
-def build_story(tweet_text: str) -> dict:
-    s = extract_story_llm(tweet_text) or extract_story_fallback(tweet_text)
+def build_story(tweet_text: str, fpl_data=None) -> dict:
+    s = extract_story_llm(tweet_text) or extract_story_fallback(tweet_text, fpl_data)
     s["from_key"] = s.get("from_key") or resolve_club_key(s.get("from_club"))
     s["to_key"]   = s.get("to_key") or resolve_club_key(s.get("to_club"))
     try:
@@ -360,6 +444,37 @@ def build_story(tweet_text: str) -> dict:
     except Exception:
         s["stage"] = 1
     s["collapsed"] = bool(s.get("collapsed"))
+
+    # Direction confidence: verify the from/to against the tweet text itself.
+    # The card only shows a FROM→TO arrow when we can ANCHOR the direction in
+    # the words "from X" / "to Y" / "joins Y" etc. This prevents reversed-club
+    # cards on multi-club or vaguely-worded tweets, regardless of LLM/fallback.
+    if "direction_confident" not in s:
+        tl = tweet_text.lower()
+        fk, tk = s.get("from_key"), s.get("to_key")
+        fc = (s.get("from_club") or "").lower()
+        tc = (s.get("to_club") or "").lower()
+
+        def _named_after(keyword, key, club):
+            # does "keyword <club>" appear, for either the PL alias or raw name?
+            cands = []
+            if club:
+                cands.append(club)
+            if key:
+                cands.append(key.replace("_", " ").lower())
+            return any(re.search(r'\b' + keyword + r'\s+(?:the\s+)?' + re.escape(c) + r'\b', tl)
+                       for c in cands if c)
+
+        from_ok = _named_after("from", fk, fc) or _named_after("leaves", fk, fc)
+        to_ok = (_named_after("to", tk, tc) or _named_after("joins", tk, tc)
+                 or _named_after("join", tk, tc) or _named_after("sign for", tk, tc)
+                 or _named_after("moves to", tk, tc))
+        s["direction_confident"] = bool((from_ok and to_ok) or
+                                        (from_ok and not (s.get("to_key") and s.get("from_key"))) or
+                                        (to_ok and from_ok))
+        # require BOTH ends anchored when both clubs are present
+        if s.get("from_key") and s.get("to_key"):
+            s["direction_confident"] = bool(from_ok and to_ok)
     return s
 
 # ── FPL DATA ─────────────────────────────────────────────────────────────────
@@ -425,7 +540,7 @@ def build_story_key(player, club_key, event) -> str:
 def should_post(data, key, new_stage, collapsed):
     existing = data["stories"].get(key)
     if collapsed:
-        if existing and existing["status"] == "active":
+        if not existing or existing["status"] == "active":
             return True, "collapse"
         return False, "already_collapsed"
     if not existing:
@@ -459,13 +574,24 @@ def passes_safety_gate(story, raw_text, fpl_data):
     if not story.get("player"):
         return False, "no_player"
     if story["event"] == "manager":
-        if not (story.get("to_key") or story.get("to_club")):
+        to_key = story.get("to_key")
+        to_club = story.get("to_club")
+        pl_club = bool(to_key) or (to_club and to_club.lower() in PL_CLUB_NAMES)
+        bl_club = is_bundesliga_or_laliga_club(to_club)
+        if not (pl_club or bl_club):
             return False, "manager_no_club"
         return True, "ok_manager"
     if story["event"] == "injury":
-        if find_player_in_fpl(story["player"], fpl_data) is None:
-            return False, "injury_player_not_in_fpl"
-        return True, "ok_injury"
+        pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
+        # to_club/to_key are always null for injury events (the extraction
+        # prompt leaves transfer fields blank here), so there's no structured
+        # club field to check. There's also no Bundesliga/La Liga player
+        # database to verify against, so fall back to scanning the raw tweet
+        # text for a Bundesliga/La Liga club name.
+        bl_club_in_text = any(c in tl for c in (BUNDESLIGA_BIG_CLUBS | LA_LIGA_BIG_CLUBS))
+        if pl_player or bl_club_in_text:
+            return True, "ok_injury"
+        return False, "injury_not_pl_bundesliga_laliga"
     pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
     pl_club = bool(story.get("to_key") or story.get("from_key"))
     if not pl_club:
@@ -473,9 +599,16 @@ def passes_safety_gate(story, raw_text, fpl_data):
             if nm and nm.lower() in PL_CLUB_NAMES:
                 pl_club = True
                 break
-    if not pl_player and not pl_club:
-        return False, "not_fpl_relevant"
-    return True, "ok"
+    if pl_player or pl_club:
+        return True, "ok"
+    # Not a PL player/club — still post if it's a big enough story for an FPL
+    # audience to care about: a recognizable star, or a move to/from an elite
+    # European club (Real Madrid, Bayern, PSG, etc.).
+    big_player = is_big_player(story["player"], fpl_data) or is_big_name_player(story["player"])
+    big_club = is_big_club_name(story.get("to_club")) or is_big_club_name(story.get("from_club"))
+    if big_player or big_club:
+        return True, "ok_big_name"
+    return False, "not_fpl_relevant"
 
 def classify_post(story, sources):
     """'confirmed' -> post as fact | 'rumour' -> labelled unconfirmed | None -> hold."""
@@ -677,6 +810,19 @@ def _safe_emoji_text(img, xy, text, font, fill):
         plain = _EMOJI_RE.sub("", text).strip()
         ImageDraw.Draw(img).text(xy, plain, font=font, fill=fill)
 
+def _photo_verified(player_el, fpl, from_key, to_key) -> bool:
+    """STRICT: only trust the FPL photo when the player's actual FPL club
+    EXACTLY matches a club named in the story (from or to). If the player's club
+    can't be determined, or doesn't match, we do NOT show the photo — a
+    silhouette is shown instead. This prevents pasting the wrong player's face
+    (e.g. a Southampton photo on a West Ham move)."""
+    if not player_el:
+        return False
+    cur = fpl_team_key(player_el, fpl)
+    if cur is None:
+        return False
+    return cur == from_key or cur == to_key
+
 def _load_crest(club_key, box=132):
     if not club_key:
         return None
@@ -728,11 +874,8 @@ def create_injury_image(story, sources, filename):
     DARK = (12, 14, 18)
 
     # face verified the same way as the main card
-    face_verified = False
-    if player_el:
-        cur = fpl_team_key(player_el, fpl)
-        if cur is None or cur == club_key or club_key is None:
-            face_verified = True
+    # Strict: only show the photo if the player's FPL club matches the story club.
+    face_verified = _photo_verified(player_el, fpl, club_key, club_key)
 
     img = Image.new("RGB", (W, H), DARK)
 
@@ -890,11 +1033,8 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     accent = (120, 30, 34) if collapsed else (30, 55, 110)
     head_col = (200, 30, 34) if collapsed else RED
 
-    face_verified = False
-    if player_el:
-        cur = fpl_team_key(player_el, fpl)
-        if cur is None or cur == from_key or cur == to_key or (not from_key and not to_key):
-            face_verified = True
+    # Strict: only show the photo if the player's FPL club matches a story club.
+    face_verified = _photo_verified(player_el, fpl, from_key, to_key)
 
     img = Image.new("RGB", (W, H), NAVY)
     # vertical sheen
@@ -976,36 +1116,56 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     draw.text((px, name_y), name_up, font=nf, fill=INK)
     y = name_y + nf.size + 18
 
-    # FROM [crest] TO [crest] row — auto-fit so long names stay inside the panel
-    from_im = _load_crest(from_key, 64); to_im = _load_crest(to_key, 64)
+    # Club row. Only show a directional FROM→TO when we're confident of the
+    # direction; otherwise show a neutral "LINKED WITH [club]" to avoid the
+    # reversed-clubs problem on ambiguous/multi-club tweets.
+    direction_ok = bool(story.get("direction_confident")) and bool(from_key) and bool(to_key)
     fn = (story.get("from_club") or (from_key or "").replace("_", " ")).upper()
     tn = (story.get("to_club") or (to_key or "").replace("_", " ")).upper()
 
-    def _row_width(font, crest_px):
-        w = font.getlength("FROM ")
-        w += (crest_px + 8) if from_im is not None else 0
-        w += font.getlength(fn + " TO ")
-        w += (crest_px + 8) if to_im is not None else 0
-        w += font.getlength(tn)
-        return w
+    if direction_ok:
+        from_im = _load_crest(from_key, 64); to_im = _load_crest(to_key, 64)
 
-    row_f = get_premium_font(36, "Black")
-    crest_px = 64
-    while _row_width(row_f, crest_px) > (LP_W - 72) and row_f.size > 20:
-        row_f = get_premium_font(row_f.size - 2, "Black")
-        crest_px = max(40, int(row_f.size * 1.6))
-    fi = _load_crest(from_key, crest_px); ti = _load_crest(to_key, crest_px)
-    crest_top_off = max(0, (row_f.size - crest_px) // 2)
+        def _row_width(font, crest_px):
+            w = font.getlength("FROM ")
+            w += (crest_px + 8) if from_im is not None else 0
+            w += font.getlength(fn + " TO ")
+            w += (crest_px + 8) if to_im is not None else 0
+            w += font.getlength(tn)
+            return w
 
-    cx = px
-    draw.text((cx, y + 14), "FROM ", font=row_f, fill=INK); cx += row_f.getlength("FROM ")
-    if fi is not None:
-        img.paste(fi, (int(cx), y + 14 + crest_top_off), fi); cx += crest_px + 8
-    draw.text((cx, y + 14), fn + " ", font=row_f, fill=INK); cx += row_f.getlength(fn + " ")
-    draw.text((cx, y + 14), "TO ", font=row_f, fill=INK); cx += row_f.getlength("TO ")
-    if ti is not None:
-        img.paste(ti, (int(cx), y + 14 + crest_top_off), ti); cx += crest_px + 8
-    draw.text((cx, y + 14), tn, font=row_f, fill=(20, 30, 90))
+        row_f = get_premium_font(36, "Black")
+        crest_px = 64
+        while _row_width(row_f, crest_px) > (LP_W - 72) and row_f.size > 20:
+            row_f = get_premium_font(row_f.size - 2, "Black")
+            crest_px = max(40, int(row_f.size * 1.6))
+        fi = _load_crest(from_key, crest_px); ti = _load_crest(to_key, crest_px)
+        crest_top_off = max(0, (row_f.size - crest_px) // 2)
+
+        cx = px
+        draw.text((cx, y + 14), "FROM ", font=row_f, fill=INK); cx += row_f.getlength("FROM ")
+        if fi is not None:
+            img.paste(fi, (int(cx), y + 14 + crest_top_off), fi); cx += crest_px + 8
+        draw.text((cx, y + 14), fn + " ", font=row_f, fill=INK); cx += row_f.getlength(fn + " ")
+        draw.text((cx, y + 14), "TO ", font=row_f, fill=INK); cx += row_f.getlength("TO ")
+        if ti is not None:
+            img.paste(ti, (int(cx), y + 14 + crest_top_off), ti); cx += crest_px + 8
+        draw.text((cx, y + 14), tn, font=row_f, fill=(20, 30, 90))
+    else:
+        # neutral: show the one club we're sure is involved (destination/link)
+        link_key = to_key or from_key
+        link_name = (story.get("to_club") or story.get("from_club")
+                     or (link_key or "").replace("_", " ")).upper()
+        link_im = _load_crest(link_key, 64)
+        row_f = get_premium_font(36, "Black")
+        label = "LINKED WITH "
+        while (row_f.getlength(label) + 72 + row_f.getlength(link_name)) > (LP_W - 72) and row_f.size > 22:
+            row_f = get_premium_font(row_f.size - 2, "Black")
+        cx = px
+        draw.text((cx, y + 14), label, font=row_f, fill=INK); cx += row_f.getlength(label)
+        if link_im is not None:
+            img.paste(link_im, (int(cx), y + 14), link_im); cx += 72
+        draw.text((cx, y + 14), link_name, font=row_f, fill=(20, 30, 90))
     y += 96
 
     # divider
@@ -1122,17 +1282,8 @@ def create_image(story, sources, filename, rumour=False):
     collapsed = story.get("collapsed")
     GREEN = (40, 210, 90)
 
-    # CLUB-VERIFIED FACE: trust the photo only when the FPL player's actual club
-    # lines up with the story's clubs. Avoids pasting the wrong person's face.
-    face_verified = False
-    if player_el:
-        cur = fpl_team_key(player_el, fpl)
-        if cur is None:
-            face_verified = True
-        elif cur == from_key or cur == to_key:
-            face_verified = True
-        elif not from_key and not to_key:
-            face_verified = True
+    # Strict: only show the photo if the player's FPL club matches a story club.
+    face_verified = _photo_verified(player_el, fpl, from_key, to_key)
 
     stats = None
     player_img = Path("players/silhouette.png")
@@ -1353,7 +1504,7 @@ async def scrape(data, read_client):
             if tid in data["extracted"]:
                 story = dict(data["extracted"][tid])
             else:
-                story = build_story(text)
+                story = build_story(text, fpl)
                 data["extracted"][tid] = dict(story)
 
             safe, why = passes_safety_gate(story, text, fpl)
