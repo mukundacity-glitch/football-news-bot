@@ -27,6 +27,75 @@ from datetime import datetime, timezone
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pilmoji import Pilmoji
+
+# ── TWIKIT PATCH (inline) ────────────────────────────────────────────────
+# X changed the layout of their ondemand.s.js bundle around March 2026,
+# which broke twikit 2.3.3's regexes for (a) locating that bundle and
+# (b) parsing its KEY_BYTE indices. This is what produces:
+#     twikit failed for @handle: 'ClientTransaction' object has no attribute 'key'
+# No upstream fix has shipped on PyPI yet (still 2.3.3 as of June 2026) — see
+# https://github.com/d60/twikit/issues/408. This patches the broken regexes
+# + method at import time using the community-verified fix from that thread,
+# BEFORE `from twikit import Client` runs below (must stay in this order).
+# Remove this whole block once twikit ships an official fix for #408.
+try:
+    _tx_mod = __import__(
+        "twikit.x_client_transaction.transaction", fromlist=["ClientTransaction"]
+    )
+except Exception as e:  # pragma: no cover
+    _tx_mod = None
+    print(f"[PATCH] twikit transaction module not found, skipping patch: {e}")
+
+if _tx_mod is not None:
+    # Twitter now prefixes the ondemand.s filename index with a comma instead
+    # of quoting it the old way, and the hash lookup needs a matching pattern.
+    _tx_mod.ON_DEMAND_FILE_REGEX = re.compile(
+        r""",(\d+):["']ondemand\.s["']""", flags=(re.VERBOSE | re.MULTILINE)
+    )
+    _tx_mod.ON_DEMAND_HASH_PATTERN = r',{}:"([0-9a-f]+)"'
+    # The KEY_BYTE indices are now wrapped in a slightly different JS
+    # expression; this pattern captures just the bare digit again instead of
+    # picking up trailing ",16" garbage.
+    _tx_mod.INDICES_REGEX = re.compile(
+        r"""(\(\w{1,2}\[(\d{1,2})\],\s*16\))+""", flags=(re.VERBOSE | re.MULTILINE)
+    )
+
+    async def _patched_get_indices(self, home_page_response, session, headers):
+        key_byte_indices = []
+        response = self.validate_response(home_page_response) or self.home_page_response
+        response_str = str(response)
+
+        on_demand_file = _tx_mod.ON_DEMAND_FILE_REGEX.search(response_str)
+        if on_demand_file:
+            on_demand_file_index = on_demand_file.group(1)
+            hash_regex = re.compile(
+                _tx_mod.ON_DEMAND_HASH_PATTERN.format(on_demand_file_index)
+            )
+            hash_match = hash_regex.search(response_str)
+            if hash_match:
+                filename = hash_match.group(1)
+                on_demand_file_url = (
+                    "https://abs.twimg.com/responsive-web/client-web/"
+                    f"ondemand.s.{filename}a.js"
+                )
+                on_demand_file_response = await session.request(
+                    method="GET", url=on_demand_file_url, headers=headers
+                )
+                key_byte_indices_match = _tx_mod.INDICES_REGEX.finditer(
+                    str(on_demand_file_response.text)
+                )
+                for item in key_byte_indices_match:
+                    key_byte_indices.append(item.group(2))
+
+        if not key_byte_indices:
+            raise Exception("Couldn't get KEY_BYTE indices")
+        key_byte_indices = list(map(int, key_byte_indices))
+        return key_byte_indices[0], key_byte_indices[1:]
+
+    _tx_mod.ClientTransaction.get_indices = _patched_get_indices
+    print("[PATCH] twikit ClientTransaction.get_indices patched (issue #408 workaround).")
+# ── END TWIKIT PATCH ─────────────────────────────────────────────────────
+
 from twikit import Client
 
 try:
@@ -1856,7 +1925,7 @@ AUTOPOST_MODES = {"confirmed"}
 MAX_POSTS_PER_RUN = 3
 
 
-async def main(post: bool = False, allow_rumours: bool = False):
+async def main(post: bool = True, allow_rumours: bool = False):
     mode_str = "POST" if post else "DRAFT-ONLY"
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
           f"(LLM={'Gemini' if _GEMINI_OK else 'off/fallback'}, mode={mode_str})")
@@ -1963,9 +2032,10 @@ async def main(post: bool = False, allow_rumours: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FPL VORTEX news bot.")
-    parser.add_argument("--post", action="store_true",
-                        help="Publish confirmed/OFFICIAL stories to X. Without this, drafts only.")
+    parser.add_argument("--draft-only", action="store_true",
+                        help="Force draft-only mode (no posting). Default is LIVE "
+                             "(auto-posts confirmed/OFFICIAL stories, capped per run/day).")
     parser.add_argument("--allow-rumours", action="store_true",
                         help="Also auto-post RUMOUR-labelled stories (NOT recommended).")
     args = parser.parse_args()
-    asyncio.run(main(post=args.post, allow_rumours=args.allow_rumours))
+    asyncio.run(main(post=not args.draft_only, allow_rumours=args.allow_rumours))
