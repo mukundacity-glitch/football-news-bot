@@ -15,7 +15,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -38,7 +38,7 @@ jobs:
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
           X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
           FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python main.py
 
       - name: Save State
