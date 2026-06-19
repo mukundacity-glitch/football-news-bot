@@ -1842,6 +1842,7 @@ async def main(post: bool = False):
     if not queue:
         rh = data.get("last_read_health", {})
         if rh.get("fail_ratio", 0) >= 0.5:
+          
             print("[BOT] No drafts — but over half of sources failed to read. "
                   "This is likely a READ/access problem, not a quiet news day. "
                   "Verify X cookies and Nitter, then re-run.")
@@ -1854,14 +1855,25 @@ async def main(post: bool = False):
     for item in queue:
         if build_draft(item, data, fpl):
             drafted += 1
+            # Add state tracking to prevent duplicate extraction on next run
+            if item.get("id") and item["id"] not in data["posted_ids"]:
+                data["posted_ids"].append(item["id"])
+            
+            data["stories"][item["key"]] = {
+                "stage": item["stage"],
+                "status": "collapsed" if item.get("collapsed") else "active"
+            }
     save_data(data)
 
-    print(f"\n[BOT] {drafted} draft(s) written to {PENDING_DIR}/ for review.")
+print(f"\n[BOT] {drafted} draft(s) written to {PENDING_DIR}/.")
     if post:
-        # Auto-posting is intentionally NOT implemented in this build.
-        # Review drafts in queue/pending/ and publish manually.
-        print("[BOT] --post was requested, but auto-posting is disabled in this build. "
-              "Review and publish drafts manually.")
+        if read_client:
+            print("\n[BOT] Auto-posting is ENABLED. Publishing drafts...")
+            await post_drafts(read_client)
+        else:
+            print("\n[BOT] Cannot post: No authenticated X client available. Ensure variables match active cookies.")
+    else:
+        print("\n[BOT] --post flag omitted. Run complete.")
 
 
 if __name__ == "__main__":
