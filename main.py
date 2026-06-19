@@ -1780,7 +1780,43 @@ def build_draft(item, data, fpl):
     return True
 
 
-# ── MAIN (DRAFT-ONLY) ────────────────────────────────────────────────────
+async def post_drafts(client: Client):
+    """Iterate through pending drafts, post them to X, and move to posted/"""
+    pending_files = list(PENDING_DIR.glob("*.json"))
+    if not pending_files:
+        print("[POST] No drafts available to post.")
+        return
+
+    for draft_file in pending_files:
+        try:
+            with open(draft_file, "r") as f:
+                draft = json.load(f)
+
+            caption = draft.get("draft_caption", "")
+            image_path = draft.get("draft_image")
+
+            media_ids = None
+            if image_path and os.path.exists(image_path):
+                print(f"[POST] Uploading media: {image_path}")
+                media_id = await client.upload_media(image_path)
+                media_ids = [media_id]
+
+            print(f"[POST] Publishing tweet for: {draft.get('player')}")
+            await client.create_tweet(text=caption, media_ids=media_ids)
+
+            # Move files out of pending queue to finalize state
+            shutil.move(draft_file, POSTED_DIR / draft_file.name)
+            if image_path and os.path.exists(image_path):
+                img_name = Path(image_path).name
+                shutil.move(image_path, POSTED_DIR / img_name)
+
+            print("[POST] Success.")
+            await asyncio.sleep(5)
+
+        except Exception as e:
+            print(f"[POST] Failed to post draft {draft_file.name}: {e}")
+
+# ── MAIN (AUTO-POST BUILD) ───────────────────────────────────────────────
 async def main(post: bool = False):
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
           f"(LLM={'Gemini' if _GEMINI_OK else 'off/fallback'}, mode={'POST' if post else 'DRAFT-ONLY'})")
