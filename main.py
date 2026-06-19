@@ -445,7 +445,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     # Pass 1 — multi-word with Dutch/Spanish/Portuguese connectors
     # e.g. "Jan Paul van Hecke", "Virgil van Dijk", "Bruno Fernandes"
     for m in re.findall(
-        r'\b([A-Z][a-zà-ÿ]+(?:(?:\s+(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-Z][a-zà-ÿ]+)+)\b',
+        r'\b([A-Z][a-zà-ÿ]+(?:\s+(?:(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-Z][a-zà-ÿ]+)+)\b',
         tweet_text
     ):
         if not _is_bad_name(m.lower()):
