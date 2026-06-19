@@ -476,28 +476,6 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             if is_big_name_player(m):
                 name = m
                 break
-    name = None
-    for m in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:[-\' ][A-Z][a-zà-ÿ]+)+)\b', tweet_text):
-        low = m.lower()
-        if looks_like_club(m):
-            continue
-        if any(w in FILLER for w in low.split()):
-            continue
-        name = m
-        break
-
-    # Many journalist tweets refer to players by surname only (e.g. "Cucurella",
-    # "Rashford"), which the two-word regex above never catches. As a second
-    # pass, try single capitalised words — but only accept one that matches a
-    # real FPL player's web_name, so we don't grab "Brighton" or "Exclusive".
-    if not name and fpl_data:
-        for m in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', tweet_text):
-            low = m.lower()
-            if low in FILLER or looks_like_club(m):
-                continue
-            if find_player_in_fpl(m, fpl_data):
-                name = m
-                break
 
     clean = re.sub(r'\s+', ' ', tweet_text).strip()
 
