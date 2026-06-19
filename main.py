@@ -1832,22 +1832,29 @@ async def main(post: bool = False):
         try:
             read_client = Client("en-US")
             read_client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
+            print("[READ] X client authenticated successfully.")
         except Exception as e:
-            print(f"[READ] could not init twikit read client: {e}")
+            print(f"[READ] CRITICAL: Could not authenticate X client: {e}")
+            if post:
+                raise RuntimeError("Authentication tokens rejected by X. Auto-posting aborted.")
             read_client = None
     else:
-        print("[READ] no read cookies set — using Nitter fallback only.")
+        print("[READ] No authentication tokens found.")
+        if post:
+            raise ValueError("X_AUTH_TOKEN and X_CT0_TOKEN environment variables are missing.")
 
     queue = await scrape(data, read_client)
     if not queue:
         rh = data.get("last_read_health", {})
         if rh.get("fail_ratio", 0) >= 0.5:
-          
-            print("[BOT] No drafts — but over half of sources failed to read. "
-                  "This is likely a READ/access problem, not a quiet news day. "
-                  "Verify X cookies and Nitter, then re-run.")
+            print("[BOT] WARNING: More than half of your sources failed to read. Your X cookies are likely invalid or expired.")
         else:
-            print("[BOT] Quiet run. No new stories found (sources read OK).")
+            print("[BOT] Scrape complete. No new stories found matching football keywords.")
+        
+        # Force the bot to check and post any pending drafts even if this scrape run was quiet
+        if post and read_client:
+            print("[BOT] Processing auto-post routine for existing queue files...")
+            await post_drafts(read_client)
         save_data(data)
         return
 
