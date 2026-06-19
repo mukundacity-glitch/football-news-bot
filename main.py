@@ -88,30 +88,9 @@ STAFF_BLOCK_KW = [
 ]
 
 # ── CLUB MAPS ────────────────────────────────────────────────────────────────
-CLUB_ALIASES = {
-    "arsenal": "Arsenal",
-    "aston villa": "Aston_Villa", "villa": "Aston_Villa",
-    "bournemouth": "Bournemouth",
-    "brentford": "Brentford",
-    "brighton": "Brighton",
-    "chelsea": "Chelsea",
-    "crystal palace": "Crystal_Palace", "palace": "Crystal_Palace",
-    "everton": "Everton",
-    "fulham": "Fulham",
-    "ipswich": "Ipswich", "ipswich town": "Ipswich",
-    "leicester": "Leicester", "leicester city": "Leicester",
-    "liverpool": "Liverpool",
-    "manchester city": "Man_City", "man city": "Man_City",
-    "manchester united": "Man_Utd", "man united": "Man_Utd", "man utd": "Man_Utd",
-    "newcastle": "Newcastle", "newcastle united": "Newcastle",
-    "nottingham forest": "Nottm_Forest", "nott'm forest": "Nottm_Forest", "forest": "Nottm_Forest",
-    "southampton": "Southampton",
-    "tottenham": "Spurs", "spurs": "Spurs", "tottenham hotspur": "Spurs",
-    "west ham": "West_Ham", "west ham united": "West_Ham",
-    "wolves": "Wolves", "wolverhampton": "Wolves",
-}
-_SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
-# Auto-built at startup from CLUB_ALIASES + clubs_cache — no hardcoding needed
+# These are now dynamically populated from the FPL API at startup
+CLUB_ALIASES = {}
+_SORTED_ALIASES = []
 CLUB_WORD_FRAGMENTS: set = set()
 
 # Only these three small lists genuinely have no auto source in your stack
@@ -129,13 +108,8 @@ POSITION_WORDS = {
     "forward", "keeper", "playmaker", "captain", "international",
 }
 
-FPL_LOGO_IDS = {
-    "Arsenal": "3", "Aston_Villa": "7", "Bournemouth": "91", "Brentford": "94",
-    "Brighton": "36", "Chelsea": "8", "Crystal_Palace": "31", "Everton": "11",
-    "Fulham": "54", "Ipswich": "40", "Leicester": "13", "Liverpool": "14",
-    "Man_City": "43", "Man_Utd": "1", "Newcastle": "4", "Nottm_Forest": "17",
-    "Southampton": "20", "Spurs": "6", "West_Ham": "21", "Wolves": "39",
-}
+# Dynamically populated from FPL badge codes at startup
+FPL_LOGO_IDS = {}
 CLUB_COLORS = {
     "Arsenal": (239, 1, 7), "Aston_Villa": (103, 14, 54), "Bournemouth": (181, 14, 18),
     "Brentford": (227, 6, 19), "Brighton": (0, 87, 184), "Chelsea": (3, 70, 148),
@@ -220,13 +194,49 @@ PL_CLUB_NAMES = set()        # PL club names/aliases, lowercased
 
 def init_club_data():
     global CLUB_NAME_SET, CLUB_HASHTAGS, PL_CLUB_NAMES
+    global CLUB_ALIASES, _SORTED_ALIASES, FPL_LOGO_IDS
+
+    # 1. Fetch live API data to auto-build clubs and logos for the current season
+    fpl = fetch_fpl_data()
+    if fpl and "teams" in fpl:
+        for t in fpl["teams"]:
+            name = t["name"]
+            safe_key = name.replace(" ", "_").replace("'", "")
+            
+            # Auto-map the official badge code
+            FPL_LOGO_IDS[safe_key] = str(t["code"])
+            
+            # Auto-generate aliases
+            base = name.lower()
+            variants = {base, t.get("short_name", "").lower()}
+            
+            # Smart expansions to catch all journalist spelling habits
+            if "man " in base: variants.add(base.replace("man ", "manchester "))
+            if "utd" in base: variants.add(base.replace("utd", "united"))
+            if "nott'm" in base: variants.add(base.replace("nott'm", "nottingham"))
+            if "spurs" in base: variants.update(["tottenham", "tottenham hotspur"])
+            if "brighton" in base: variants.update(["brighton & hove albion", "brighton and hove albion", "hove albion"])
+            if "wolves" in base: variants.update(["wolverhampton", "wolverhampton wanderers"])
+            if "villa" in base: variants.add("villa")
+            if "palace" in base: variants.add("palace")
+
+            for v in variants:
+                CLUB_ALIASES[v] = safe_key
+                # Auto-generate stripped suffix variants (e.g., "Leicester City" -> "Leicester")
+                if " city" in v: CLUB_ALIASES[v.replace(" city", "")] = safe_key
+                if " united" in v: CLUB_ALIASES[v.replace(" united", "")] = safe_key
+                if " town" in v: CLUB_ALIASES[v.replace(" town", "")] = safe_key
+                
+    _SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
+
+    # 2. Map international clubs cache
     try:
         d = get_club_data()
     except Exception as e:
         print(f"[CLUBS] get_club_data failed: {e}")
         return
     CLUB_HASHTAGS = d.get("club_hashtags", {}) or {}
-    PL_CLUB_NAMES = set(d.get("pl_clubs", []) or [])
+    PL_CLUB_NAMES = set(d.get("pl_clubs", []) or []) | set(CLUB_ALIASES.keys())
     CLUB_NAME_SET = set(CLUB_HASHTAGS.keys()) | set((d.get("short_names", {}) or {}).keys())
     CLUB_NAME_SET |= set(CLUB_ALIASES.keys())
     _build_club_word_fragments()
