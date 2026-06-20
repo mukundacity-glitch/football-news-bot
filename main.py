@@ -1660,6 +1660,14 @@ async def scrape(data, read_client):
         if not tweets and src in ("none", "error"):
             accounts_failed += 1
             print(f"  [WARN] @{username}: ALL sources failed — X tokens may be expired or Nitter is down")
+        elif not tweets:
+            # twikit/nitter "succeeded" at the transport level but returned ZERO
+            # tweets. This is what stale-but-not-dead X cookies or rate-limiting
+            # look like. Count it as a failed read so the health check is honest
+            # instead of reporting "sources read OK" on an empty pull.
+            accounts_failed += 1
+            print(f"  [WARN] @{username}: read via {src} but returned 0 tweets "
+                  f"— likely stale X cookies or rate limit (not necessarily a quiet day)")
         else:
             print(f"  [READ] @{username}: {len(tweets)} tweets via {src}")
         for t in tweets:
