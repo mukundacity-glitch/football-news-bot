@@ -1,5 +1,5 @@
 """
-FPL VORTEX — Football news automation (DRAFT-ONLY build).
+FPL VORTEX — Football news automation.
 
 What this build does:
   - Scrapes trusted journalist/club accounts.
@@ -9,9 +9,11 @@ What this build does:
     MANAGER using a strict source rule (official OR >= 2 trusted reporters).
   - Renders a clean card: "FPL VORTEX" wordmark top-left, FROM:/TO: text rows
     (NO arrows), club crests, relevant hashtags only.
-  - Writes every result to queue/pending/ as a DRAFT. It NEVER posts.
+  - DEFAULT IS LIVE: it AUTO-POSTS confirmed/rumour stories to X, capped per
+    run, per hour and per day. Every post is guaranteed an image card.
 
-To post, a human reviews the drafts. Auto-posting is intentionally disabled.
+Pass --draft-only to only build cards into queue/pending/ (no posting), or
+--dry-run to test the whole pipeline offline.
 """
 
 from clubs_cache import get_club_data
@@ -28,7 +30,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pilmoji import Pilmoji
 
 # ── TWIKIT PATCH (inline) ────────────────────────────────────────────────
@@ -110,20 +112,11 @@ except Exception as _e:
 _GEMINI_LAST_MODEL = None
 
 # ── SECRETS ──────────────────────────────────────────────────────────────
-def _clean_secret(name):
-    """Read an env secret and strip ALL surrounding whitespace/newlines.
-    A trailing '\n' (very common when pasting into GitHub Secrets) makes twikit
-    raise 'Illegal header value' because HTTP headers cannot contain newlines.
-    Stripping here fixes it permanently regardless of how the secret was pasted.
-    """
-    v = os.getenv(name)
-    return v.strip() if isinstance(v, str) else v
-
-X_AUTH_TOKEN = _clean_secret("X_AUTH_TOKEN")
-X_CT0_TOKEN = _clean_secret("X_CT0_TOKEN")
-X_POST_AUTH_TOKEN = _clean_secret("X_POST_AUTH_TOKEN")
-X_POST_CT0_TOKEN = _clean_secret("X_POST_CT0_TOKEN")
-FOOTBALL_API_KEY = _clean_secret("FOOTBALL_API_KEY")
+X_AUTH_TOKEN = os.getenv("X_AUTH_TOKEN")
+X_CT0_TOKEN = os.getenv("X_CT0_TOKEN")
+X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
+X_POST_CT0_TOKEN = os.getenv("X_POST_CT0_TOKEN")
+FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
 # ── PATHS ────────────────────────────────────────────────────────────────
 POSTED_FILE = Path("posted_news.json")
@@ -963,22 +956,12 @@ def validate_story(story, fpl_data=None):
     if looks_like_club(player): return False, "player_is_club"
     if re.search(r'\bRT\s+@|@\w+|https?://', story.get("body", "")): return False, "raw_source_text_in_body"
     if player_already_at_club(story, fpl_data): return False, "already_at_destination"
-    # Regex-only (no-LLM) "set to stay" / renewal with no resolved club is filler,
-    # not news. Block it so the fallback stops manufacturing contract non-stories.
-    if ev in ("renewal", "stay") and story.get("from_fallback") and not (
-            story.get("from_key") or story.get("to_key")):
-        return False, "fallback_stay_no_resolved_club"
     if ev in ("transfer", "loan", "loan_option"):
         fk = story.get("from_key"); tk = story.get("to_key")
         fc = (story.get("from_club") or "").strip().lower()
         tc = (story.get("to_club") or "").strip().lower()
         if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
         if not (tk or story.get("to_club") or fk or story.get("from_club")): return False, "no_clubs"
-        # Regex-only (no-LLM) transfers must have at least one RESOLVED PL club key.
-        # A loose club-name string alone is not enough to ship a fallback transfer
-        # card — this stops contentless "TRANSFER UPDATE" cards with no real move
-        # (e.g. a stray big name picked up with no destination).
-        if story.get("from_fallback") and not (fk or tk): return False, "fallback_transfer_no_resolved_club"
         if story.get("from_fallback") and not story.get("direction_confident"): return False, "direction_unconfident"
         leak = (story.get("body", "") + " " + story.get("headline", "")).lower()
         if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak): return False, "event_data_mismatch"
@@ -1178,65 +1161,6 @@ def _load_crest(club_key, box=120):
         if src is not None: return _fit_contain(src, box, box)
     return None
 
-def _draw_right_visual_fallback(img, draw, W, H, story):
-    """Right-side visual when there is NO usable player/clean photo.
-    Priority: large club crest (destination club, else origin club) -> glowing V
-    emblem. Crests exist only for PL clubs (FPL badge API); for non-PL clubs no
-    badge is available, so we fall through to the emblem rather than show a
-    wrong/placeholder badge.
-    """
-    crest_key = story.get("to_key") or story.get("from_key")
-    big_crest = _load_crest(crest_key, box=420) if crest_key else None
-    if big_crest is not None:
-        zone_left = 820
-        zone_cx = zone_left + (W - zone_left) // 2
-        zone_cy = (H - 90) // 2 + 40
-        for r in range(int(big_crest.width * 0.62), 20, -60):
-            draw.ellipse([zone_cx - r, zone_cy - r, zone_cx + r, zone_cy + r],
-                         outline=(255, 255, 255, 12), width=2)
-        img.paste(big_crest,
-                  (zone_cx - big_crest.width // 2, zone_cy - big_crest.height // 2),
-                  big_crest)
-        return
-    cx, cy = W - 320, H // 2 - 20
-    for r in range(220, 20, -50):
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 15), width=2)
-    f_emblem = get_premium_font(160, "Black")
-    draw.text((cx - 60, cy - 100), "V", font=f_emblem, fill=(84, 224, 124, 50))
-
-def _looks_like_clean_photo(im) -> bool:
-    """Return True only if the image looks like a real player PHOTO, not a
-    pre-made graphic/card with text baked in (which would bleed/overlap when
-    pasted). Heuristic, no OCR needed:
-      1. Aspect ratio: player headshots are square or portrait. Journalist
-         transfer cards are wide landscape banners — reject those.
-      2. Edge density: text-heavy graphics have far more hard edges than a
-         photo of a face/kit. High edge density => likely a text card.
-    On any error we are conservative and return False (skip the image).
-    """
-    try:
-        w, h = im.size
-        if w < 80 or h < 80:
-            return False
-        ar = w / float(h)
-        # Wide landscape (banner / pre-made card) — not a portrait photo.
-        if ar > 1.35:
-            return False
-        # Edge-density check on a downscaled grayscale copy.
-        small = im.convert("L").resize((128, 128))
-        edges = small.filter(ImageFilter.FIND_EDGES)
-        import numpy as _np
-        arr = _np.asarray(edges, dtype=_np.uint8)
-        # Fraction of pixels that are strong edges. Text => many strong edges.
-        # Clean photos measure ~0.01-0.03; text/graphic cards measure ~0.06+.
-        strong = float((arr > 60).mean())
-        if strong > 0.05:
-            return False
-        return True
-    except Exception:
-        return False
-
-
 def _draw_diagonal_accents(img, accent, gold=(212, 175, 55)):
     W, H = img.size
     ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -1256,6 +1180,30 @@ def _draw_wordmark(draw, xy):
     fpl_w = draw.textlength("FPL ", font=f)
     _draw_text_shadow(draw, (x + fpl_w, y), "VORTEX", f, (84, 224, 124), offset=2)
 
+def _draw_right_visual_fallback(img, draw, W, H, story):
+    """Right-side visual when no verifiable player photo exists.
+    Priority: big destination/origin club crest -> glowing V emblem.
+    Crests come from the FPL badge API (PL clubs only); non-PL clubs fall
+    through to the emblem rather than show a wrong/placeholder badge."""
+    crest_key = story.get("to_key") or story.get("from_key")
+    big_crest = _load_crest(crest_key, box=420) if crest_key else None
+    if big_crest is not None:
+        zone_left = 820
+        zone_cx = zone_left + (W - zone_left) // 2
+        zone_cy = (H - 90) // 2 + 40
+        for r in range(int(big_crest.width * 0.62), 20, -60):
+            draw.ellipse([zone_cx - r, zone_cy - r, zone_cx + r, zone_cy + r],
+                         outline=(255, 255, 255, 12), width=2)
+        img.paste(big_crest,
+                  (zone_cx - big_crest.width // 2, zone_cy - big_crest.height // 2),
+                  big_crest)
+        return
+    cx, cy = W - 320, H // 2 - 20
+    for r in range(220, 20, -50):
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 15), width=2)
+    f_emblem = get_premium_font(160, "Black")
+    draw.text((cx - 60, cy - 100), "V", font=f_emblem, fill=(84, 224, 124, 50))
+
 def create_transfer_image(story, sources, filename, collapsed=False):
     W, H = 1380, 776
     fpl = fetch_fpl_data()
@@ -1267,7 +1215,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     NAVY = (11, 18, 32)
     GOLD = (212, 175, 55)
     accent = (120, 30, 34) if collapsed else (30, 55, 110)
-    face_verified = _photo_verified(player_el, fpl, from_key, to_key)
 
     img = Image.new("RGB", (W, H), NAVY)
     sheen = Image.new("L", (1, H), 0)
@@ -1343,13 +1290,18 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         _safe_emoji_text(img, (TEXT_X, y + 8), detail.upper()[:60],
                          get_premium_font(28, "Bold"), (160, 255, 120))
 
-    # portrait (only if verified — never the wrong face)
-    # 1. Hardcode old FPL player codes for legends so their official headshots load
+    # PORTRAIT / RIGHT-SIDE VISUAL — always renders something on-brand.
+    # 1. If the player resolves in FPL, the official headshot is keyed on the
+    #    player code, so it is correct by definition — show it. (Relaxed: no
+    #    longer requires the from/to club to match, which was suppressing many
+    #    valid photos and leaving cards empty.)
+    # 2. Else a big club crest (destination, then origin).
+    # 3. Else the glowing V emblem.
     LEGENDS = {"harry kane": "78830"}
     legend_pid = LEGENDS.get(player_name.lower())
-
-    if (face_verified and player_el) or legend_pid:
-        pid = legend_pid or player_el.get("code")
+    drew_player = False
+    if player_el or legend_pid:
+        pid = legend_pid or (player_el.get("code") if player_el else None)
         if pid:
             pp = Path(f"players/{pid}.png")
             if not pp.exists():
@@ -1358,32 +1310,8 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             if portrait is not None:
                 portrait = _fit_contain(portrait, 520, 600)
                 img.paste(portrait, (W - portrait.width - 60, H - portrait.height - 100), portrait)
-    elif story.get("media_url"):
-        # 2. Grab the image directly from the journalist's tweet — but ONLY if it
-        #    looks like a clean photo, never a pre-made card with text baked in
-        #    (which caused text bleed/overlap). Also confine it to the RIGHT side
-        #    so it can never cover the FROM/TO text on the left.
-        tweet_img_path = Path(f"players/tweet_{story.get('id')}.jpg")
-        if not tweet_img_path.exists():
-            _download_asset(story["media_url"], tweet_img_path)
-        tweet_pic = _safe_open_rgba(tweet_img_path)
-        if tweet_pic is not None and _looks_like_clean_photo(tweet_pic):
-            # Right-hand photo zone only: starts at x=820, never enters text area.
-            PHOTO_ZONE_X = 820
-            zone_w = W - PHOTO_ZONE_X - 40
-            zone_h = H - 90 - 60  # keep clear of the bottom source bar
-            tweet_pic = _fit_contain(tweet_pic, zone_w, zone_h)
-            px = W - tweet_pic.width - 40
-            if px < PHOTO_ZONE_X:
-                px = PHOTO_ZONE_X
-            py = (H - 90) - tweet_pic.height - 10
-            img.paste(tweet_pic, (px, py), tweet_pic)
-        else:
-            # Image was missing, or was a text-graphic we refuse to paste:
-            # fall back to club crest, then emblem.
-            _draw_right_visual_fallback(img, draw, W, H, story)
-    else:
-        # 3. No portrait and no tweet image: club crest, then emblem.
+                drew_player = True
+    if not drew_player:
         _draw_right_visual_fallback(img, draw, W, H, story)
 
     draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
@@ -1474,20 +1402,209 @@ def _create_fallback_card(story, sources, filename):
     draw.text((60, H - 64), f"Source: {src}  |  {CHANNEL_HANDLE}", font=bf, fill=(190, 200, 220))
     img.save(filename)
 
-def create_image(story, sources, filename, rumour=False):
-    def _ok(): return os.path.exists(filename) and os.path.getsize(filename) >= 1000
-    try:
-        if story.get("event") == "injury" and not rumour and not story.get("collapsed"):
-            try: create_injury_image(story, sources, filename)
-            except Exception as e:
-                print(f"  [IMG] injury card failed, using transfer card: {e}")
-                create_transfer_image(story, sources, filename, collapsed=bool(story.get("collapsed")))
+# ── UNIFIED PLAYER CARD (Doku-style, image LEFT) ─────────────────────────
+_LBL_RED = (227, 30, 36)
+_LBL_GREEN = (84, 224, 124)
+
+def _draw_player_silhouette(img, draw, cx, top, box_w, box_h):
+    """Built-in head-and-shoulders silhouette IMAGE used only when neither an
+    FPL headshot nor a journalist photo is available. Keeps a player-shaped
+    visual in the exact image-slot position so the panel is never empty and the
+    card never looks broken — no text/emblem fallback."""
+    size = min(box_w, box_h)
+    # soft rounded backdrop inside the slot
+    pad = int(size * 0.06)
+    draw.rounded_rectangle([cx - box_w // 2 + pad, top + pad,
+                            cx + box_w // 2 - pad, top + box_h - pad],
+                           radius=int(size * 0.10), fill=(26, 38, 64, 255))
+    fill = (150, 168, 196, 255)
+    # head
+    head_r = int(size * 0.16)
+    head_cy = top + int(box_h * 0.30)
+    draw.ellipse([cx - head_r, head_cy - head_r, cx + head_r, head_cy + head_r], fill=fill)
+    # shoulders dome (ellipse rising from the slot bottom)
+    sw = int(size * 0.36)
+    sh_top = top + int(box_h * 0.50)
+    sh_bot = top + box_h - pad
+    draw.ellipse([cx - sw, sh_top, cx + sw, sh_bot], fill=fill)
+
+def _label_lines(story, mode):
+    """Two-line badge: TOP = category (red), BOTTOM = status (green).
+    Injury / suspension / historical render as a single red line.
+    NOTE: 'manager' is interpreted here as MANAGER / NEWS; adjust if you
+    meant the (garbled) 'Transfer STAFF' wording for staff/official moves."""
+    ev = story.get("event")
+    if story.get("historical"):
+        return ("HISTORICAL", _LBL_RED, None, None)
+    if story.get("collapsed"):
+        return ("TRANSFER", _LBL_RED, "OFF", _LBL_GREEN)
+    if ev == "injury":
+        return ("INJURY", _LBL_RED, None, None)
+    if ev == "suspension":
+        return ("SUSPENSION", _LBL_RED, None, None)
+    if ev == "manager":
+        return ("MANAGER", _LBL_RED, "NEWS", _LBL_GREEN)
+    if ev in ("renewal", "stay"):
+        return ("CONTRACT", _LBL_RED, "EXTENSION", _LBL_GREEN)
+    top = "LOAN" if ev in ("loan", "loan_option") else "TRANSFER"
+    if mode == "rumour":
+        return (top, _LBL_RED, "RUMOUR", _LBL_GREEN)
+    tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
+    if story.get("stage", 1) >= 4 or any(
+            w in tl for w in ("official", "here we go", "completed", "confirmed")):
+        return (top, _LBL_RED, "OFFICIAL", _LBL_GREEN)
+    return (top, _LBL_RED, "CONFIRMED", _LBL_GREEN)
+
+
+def _pretty_club(s):
+    """Title-case lowercase club strings but preserve acronyms (PSG, MCFC)
+    and already-cased names (Real Madrid, Man City)."""
+    s = (s or "").strip()
+    return s.title() if s.islower() else s
+
+def create_player_card(story, sources, filename, mode="confirmed"):
+    """One card for EVERY post type. RIGHT = framed (crest on top + headshot
+    below), Doku-style. LEFT = two-line red/green label, name, type info.
+
+    Framed image slot, in priority order:
+      1. FPL 250x250 head-and-shoulders mugshot (current PL players only)
+      2. the source tweet's own image (journalist photo) if no FPL mugshot
+      3. a clean emblem so the layout never breaks
+    """
+    W, H = 1380, 776
+    fpl = fetch_fpl_data()
+    player_el = find_player_in_fpl(story.get("player"), fpl)
+    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
+    to_key = story.get("to_key"); from_key = story.get("from_key")
+    ev = story.get("event", "transfer"); collapsed = bool(story.get("collapsed"))
+
+    NAVY = (11, 18, 32); GOLD = (212, 175, 55)
+    accent = (120, 30, 34) if collapsed else (30, 55, 110)
+    img = Image.new("RGB", (W, H), NAVY)
+    sheen = Image.new("L", (1, H), 0)
+    for yy in range(H):
+        sheen.putpixel((0, yy), int(30 * (1 - abs(yy - H / 2) / (H / 2))))
+    img.paste(Image.new("RGB", (W, H), (28, 40, 70)), (0, 0), sheen.resize((W, H)))
+    _draw_diagonal_accents(img, accent, GOLD)
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    # ---------- RIGHT: framed crest (top) + headshot (below) ----------
+    FX0, FY0, FX1, FY1 = 840, 150, 1320, H - 112
+    draw.rounded_rectangle([FX0, FY0, FX1, FY1], radius=26,
+                           fill=(17, 26, 44), outline=(255, 255, 255, 32), width=3)
+    fcx = (FX0 + FX1) // 2; fw = FX1 - FX0
+    crest_key = to_key or from_key
+    crest = _load_crest(crest_key, box=170) if crest_key else None
+    crest_top = FY0 + 26
+    if crest is not None:
+        img.paste(crest, (fcx - crest.width // 2, crest_top), crest)
+        crest_bottom = crest_top + crest.height
+    else:
+        crest_bottom = crest_top + 140
+    head_top = crest_bottom + 22
+    head_h = FY1 - head_top - 22; head_w = fw - 56
+
+    LEGENDS = {"harry kane": "78830"}
+    legend_pid = LEGENDS.get(player_name.lower())
+    photo = None; photo_src = "none"
+    if player_el or legend_pid:
+        pid = legend_pid or (player_el.get("code") if player_el else None)
+        if pid:
+            pp = Path(f"players/{pid}.png")
+            if not pp.exists():
+                _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
+            photo = _safe_open_rgba(pp)
+            if photo is not None: photo_src = "fpl"
+    if photo is None and story.get("media_url"):
+        tp = Path(f"players/tweet_{story.get('id')}.jpg")
+        if not tp.exists():
+            _download_asset(story["media_url"], tp)
+        photo = _safe_open_rgba(tp)
+        if photo is not None: photo_src = "tweet"
+    if photo is not None:
+        photo = _fit_contain(photo, head_w, head_h)
+        img.paste(photo, (fcx - photo.width // 2,
+                          head_top + (head_h - photo.height) // 2), photo)
+    else:
+        # Neither FPL mugshot nor journalist photo available -> guaranteed
+        # silhouette IMAGE in the same slot. The card always carries a visual.
+        _draw_player_silhouette(img, draw, fcx, head_top, head_w, head_h)
+
+    # ---------- LEFT: wordmark, label, name, info ----------
+    LX = 70
+    _draw_wordmark(draw, (LX, 54))
+    top_text, top_col, bot_text, bot_col = _label_lines(story, mode)
+    lf = get_premium_font(66, "Black"); ly = 152
+    _draw_text_shadow(draw, (LX, ly), top_text, lf, top_col, offset=2)
+    lb = draw.textbbox((0, 0), top_text, font=lf); lh = lb[3] - lb[1]
+    if bot_text:
+        ly2 = ly + lh + 18
+        _draw_text_shadow(draw, (LX, ly2), bot_text, lf, bot_col, offset=2)
+        name_y = ly2 + lh + 40
+    else:
+        name_y = ly + lh + 40
+    name_up = player_name.upper()
+    NAME_MAX_W = FX0 - LX - 40
+    nsize = 86; nf = get_premium_font(nsize, "Black")
+    while draw.textlength(name_up, font=nf) > NAME_MAX_W and nsize > 44:
+        nsize -= 3; nf = get_premium_font(nsize, "Black")
+    _draw_text_shadow(draw, (LX, name_y), name_up, nf, (255, 255, 255), offset=3)
+    nb = draw.textbbox((0, 0), name_up, font=nf)
+    y = name_y + (nb[3] - nb[1]) + 34
+    info_f = get_premium_font(38, "Bold"); sub_f = get_premium_font(27, "Bold")
+    def _info_row(label, value, col=(255, 255, 255)):
+        nonlocal y
+        if not value: return
+        _draw_text_shadow(draw, (LX, y + 4), label, sub_f, (150, 165, 195))
+        lw = draw.textlength(label + "   ", font=sub_f)
+        _draw_text_shadow(draw, (LX + lw, y), str(value), info_f, col)
+        y += 60
+    if ev == "injury":
+        stage = story.get("stage", 1)
+        avail = {4: "Fit again", 3: "Ruled out", 2: "Doubt", 1: "Being assessed"}.get(stage, "Being assessed")
+        _info_row("STATUS", avail); _info_row("DIAGNOSIS", story.get("diagnosis"))
+        _info_row("RETURN", story.get("expected_return"))
+    elif ev == "manager":
+        tc = story.get("to_club") or (to_key or "").replace("_", " ")
+        _info_row("CLUB", _pretty_club(tc) if tc else None)
+    else:
+        if collapsed:
+            _info_row("DEAL", "Collapsed", col=(255, 120, 120))
         else:
-            create_transfer_image(story, sources, filename, collapsed=bool(story.get("collapsed")))
-        if _ok(): return
-        print("  [IMG] rich card produced no valid file — using fallback template")
+            fc = story.get("from_club") or (from_key or "").replace("_", " ")
+            tc = story.get("to_club") or (to_key or "").replace("_", " ")
+            _info_row("FROM", _pretty_club(fc) if fc else None)
+            _info_row("TO", _pretty_club(tc) if tc else None)
+        _info_row("FEE", story.get("fee")); _info_row("CONTRACT", story.get("contract"))
+
+    # ---------- source bar ----------
+    draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
+    draw.rectangle([0, H - 12, W, H], fill=accent)
+    src = " · ".join(f"@{s}" for s in sources[:2])
+    bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
+    bsize = 34; bf = get_premium_font(bsize, "Bold")
+    while bsize > 24 and draw.textlength(bar, font=bf) > (W - 120):
+        bsize -= 1; bf = get_premium_font(bsize, "Bold")
+    bb = draw.textbbox((0, 0), bar, font=bf)
+    by = (H - 90) + (78 - (bb[3] - bb[1])) // 2 - bb[1]
+    draw.text((60, by), bar, font=bf, fill=(190, 200, 220))
+    img.save(filename)
+
+
+def create_image(story, sources, filename, rumour=False):
+    """Unified entry point. Every post type now renders the same clean
+    Doku-style card via create_player_card; the BREAKING NEWS template is the
+    last-resort guarantee so a post is never image-less."""
+    mode = "rumour" if rumour else "confirmed"
+    def _ok():
+        return os.path.exists(filename) and os.path.getsize(filename) >= 1000
+    try:
+        create_player_card(story, sources, filename, mode=mode)
+        if _ok():
+            return
+        print("  [IMG] player card produced no valid file — using fallback template")
     except Exception as e:
-        print(f"  [IMG] rich card raised ({e}) — using fallback template")
+        print(f"  [IMG] player card raised ({e}) — using fallback template")
     try:
         _create_fallback_card(story, sources, filename)
         if _ok():
@@ -1542,38 +1659,37 @@ async def post_item(post_client, item, data):
     if not valid:
         print(f"  POST BLOCKED ({why}): {item.get('player')!r}")
         if item.get("id") and item["id"] not in data["posted_ids"]:
-            data["posted_ids"].append(item["id"])
-            save_data(data)
+            data["posted_ids"].append(item["id"]); save_data(data)
         return False
     dup, dreason = is_duplicate_content(item, data)
     if dup:
         print(f"  POST BLOCKED (duplicate:{dreason}): {item.get('player')!r}")
         if item.get("id") and item["id"] not in data["posted_ids"]:
-            data["posted_ids"].append(item["id"])
-            save_data(data)
+            data["posted_ids"].append(item["id"]); save_data(data)
         return False
     image_path = item.get("draft_image") or str(PENDING_DIR / f"{_slug(item)}.png")
     caption = item.get("draft_caption") or trim_for_twitter(
         build_tweet_body(item, item["sources"], item.get("mode", "confirmed")), limit=278)
-    # GUARANTEE AN IMAGE: every post must ship with a card. If the attached image
-    # is missing or empty, regenerate it now (which itself falls back to the
-    # BREAKING NEWS template) rather than dropping the post image-less.
-    if not os.path.exists(image_path) or os.path.getsize(image_path) < 1000:
-        print(f"  [IMG] post-time image missing/empty — regenerating before posting: {item.get('player')!r}")
+
+    # GUARANTEE AN IMAGE — never drop or block a post for a missing card.
+    def _img_ok():
+        return os.path.exists(image_path) and os.path.getsize(image_path) >= 1000
+    if not _img_ok():
+        print(f"  [IMG] post-time card missing — regenerating: {item.get('player')!r}")
         try:
             create_image(item, item["sources"], image_path, rumour=(item.get("mode") == "rumour"))
         except Exception as e:
-            print(f"  [IMG] post-time regeneration raised: {e}")
-    if not os.path.exists(image_path) or os.path.getsize(image_path) < 1000:
-        # Last-resort guaranteed card so a post is NEVER published without an image.
-        print(f"  [IMG] regeneration still empty — forcing BREAKING NEWS fallback card: {item.get('player')!r}")
+            print(f"  [IMG] regeneration raised: {e}")
+    if not _img_ok():
+        print(f"  [IMG] forcing BREAKING NEWS fallback card: {item.get('player')!r}")
         try:
             _create_fallback_card(item, item["sources"], image_path)
         except Exception as e:
             print(f"  [IMG] forced fallback card failed: {e}")
-    if not os.path.exists(image_path) or os.path.getsize(image_path) < 1000:
+    if not _img_ok():
         print(f"  POST BLOCKED (no image could be produced): {item.get('player')!r}")
         return False
+
     media_id = await post_client.upload_media(image_path, media_type="image/png")
     posted_live = False
     try:
@@ -1588,7 +1704,7 @@ async def post_item(post_client, item, data):
         else: raise
     if posted_live:
         record_posted(item, data)
-        print(f"  ✅ POSTED [{status_label(item, item.get('mode'))}]: "
+        print(f"  \u2705 POSTED [{status_label(item, item.get('mode'))}]: "
               f"{item['player']} — {item['event']} (stage {item['stage']})")
         return True
     return False
@@ -1659,7 +1775,6 @@ async def scrape(data, read_client):
     fpl = fetch_fpl_data()
     story_map = {}
     seen = skipped = 0
-    already_posted_skip = non_football_skip = 0
     accounts_total = len(JOURNALISTS)
     accounts_failed = 0
     for username in JOURNALISTS:
@@ -1670,24 +1785,12 @@ async def scrape(data, read_client):
         if not tweets and src in ("none", "error"):
             accounts_failed += 1
             print(f"  [WARN] @{username}: ALL sources failed — X tokens may be expired or Nitter is down")
-        elif not tweets:
-            # twikit/nitter "succeeded" at the transport level but returned ZERO
-            # tweets. This is what stale-but-not-dead X cookies or rate-limiting
-            # look like. Count it as a failed read so the health check is honest
-            # instead of reporting "sources read OK" on an empty pull.
-            accounts_failed += 1
-            print(f"  [WARN] @{username}: read via {src} but returned 0 tweets "
-                  f"— likely stale X cookies or rate limit (not necessarily a quiet day)")
         else:
             print(f"  [READ] @{username}: {len(tweets)} tweets via {src}")
         for t in tweets:
             tid, text = t["id"], t["text"]
-            if tid in data["posted_ids"]:
-                already_posted_skip += 1
-                continue
-            if not any(k in text.lower() for k in FOOTBALL_KW):
-                non_football_skip += 1
-                continue
+            if tid in data["posted_ids"]: continue
+            if not any(k in text.lower() for k in FOOTBALL_KW): continue
             seen += 1
             if tid in data["extracted"]: story = dict(data["extracted"][tid])
             else:
@@ -1744,9 +1847,6 @@ async def scrape(data, read_client):
         print("  [WARN] Zero football tweets from ALL journalists. X auth tokens "
               "likely expired — update X_AUTH_TOKEN and X_CT0_TOKEN secrets.")
     print(f"  [SCRAPE] {seen} football tweets seen, {skipped} skipped, {len(story_map)} candidate stories")
-    print(f"  [SCRAPE-DIAG] dropped before counting: {already_posted_skip} already-posted (ID in cache), "
-          f"{non_football_skip} non-football (no keyword). If 'seen' is 0 but reads worked, "
-          f"these two numbers explain where every tweet went.")
     data["last_read_health"] = {
         "accounts_total": accounts_total,
         "accounts_failed": accounts_failed,
@@ -1809,7 +1909,7 @@ def build_draft(item, data, fpl):
 AUTOPOST_MODES = {"confirmed", "rumour"}
 MAX_POSTS_PER_RUN = 3
 MAX_POSTS_PER_HOUR = 2
-POST_JITTER_RANGE_S = (300, 900)
+POST_JITTER_RANGE_S = (0, 15)
 
 EVENT_PRIORITY = {
     "injury": 0, "suspension": 1, "transfer": 2, 
