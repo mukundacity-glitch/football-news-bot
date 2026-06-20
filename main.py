@@ -731,24 +731,43 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
                  or _alias_after("set to join") or _alias_after("close to joining"))
 
     from_key = to_key = None
+    direction_confident = False   # set True only when an explicit anchor proves it
     if from_anchor and to_anchor and from_anchor != to_anchor:
         from_key, to_key = from_anchor, to_anchor
+        direction_confident = True
     elif from_anchor and len(clubs) == 2:
         from_key = from_anchor
         other = [c for c in clubs if c != from_anchor]
         to_key = other[0] if other else None
+        direction_confident = bool(to_key)
     elif to_anchor and len(clubs) == 2:
         to_key = to_anchor
         other = [c for c in clubs if c != to_anchor]
         from_key = other[0] if other else None
+        direction_confident = bool(from_key)
+    elif to_anchor and len(clubs) <= 1:
+        # explicit "to/joins/signs for X" with one club -> X is the destination.
+        to_key = to_anchor
+        direction_confident = True
+    elif from_anchor and len(clubs) <= 1:
+        # explicit "from/leaves X" with one club -> X is the CURRENT club.
+        from_key = from_anchor
+        direction_confident = True
     elif len(clubs) == 1:
         # single club + "stay"/"renewal" => that is the CURRENT club, not a destination
         if event in ("stay", "renewal"):
             from_key = clubs[0]
+            direction_confident = True
         else:
-            to_key = clubs[0]
+            # AMBIGUOUS: one club, no anchor. We do NOT know if the player is
+            # joining or leaving it. Leave direction UNRESOLVED (no guess).
+            to_key = None
+            from_key = None
+            direction_confident = False
     else:
-        to_key = clubs[0] if clubs else None
+        # No clubs, or 2+ clubs with no anchor: cannot order them safely.
+        to_key = clubs[0] if (len(clubs) == 1) else None
+        direction_confident = False
 
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
 
@@ -780,6 +799,8 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         "stage": stage, "collapsed": is_collapsed,
         "headline": name if name else "Transfer update",
         "body": summary, "confidence": 0.5,
+        "direction_confident": direction_confident,
+        "from_fallback": True,   # parsed without LLM
     }
 
 
@@ -829,7 +850,13 @@ def has_written_claim(tweet_text: str) -> bool:
 
 
 def build_story(tweet_text: str, fpl_data=None) -> dict:
-    s = extract_story_llm(tweet_text) or extract_story_fallback(tweet_text, fpl_data)
+    llm = extract_story_llm(tweet_text)
+    s = llm or extract_story_fallback(tweet_text, fpl_data)
+    if llm is not None:
+        # LLM path: the prompt explicitly enforces from=current, to=destination,
+        # so trust its direction. Mark not-from-fallback for the guard below.
+        s["from_fallback"] = False
+        s.setdefault("direction_confident", True)
     # Always clean the body of any leaked source text (Rule 2).
     s["body"] = _clean_source_text(s.get("body") or "")
     s["from_key"] = s.get("from_key") or resolve_club_key(s.get("from_club"))
@@ -1200,6 +1227,18 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
         pl_club = bool(to_key) or (to_club and to_club.lower() in PL_CLUB_NAMES)
         if not (pl_club or is_bundesliga_or_laliga_club(to_club)):
             return False, "manager_no_club"
+        # Item 3 — manager parsing accuracy. The regex fallback cannot tell a
+        # manager being APPOINTED from a manager being quoted about a player
+        # (the Alonso/De Zerbi shape). For fallback-parsed manager stories,
+        # require explicit appointment wording in the source; else skip.
+        if story.get("from_fallback"):
+            appoint_cue = re.search(
+                r"\b(appoint|appointed|new (head coach|manager|boss)|"
+                r"set to (become|take over|be appointed)|sacked|"
+                r"named (as )?(head coach|manager)|takes over|"
+                r"agree(s|d)? to (become|join)|done deal)\b", tl)
+            if not appoint_cue:
+                return False, "manager_no_appointment_cue"
         return True, "ok_manager"
 
     if story["event"] == "injury":
@@ -1304,6 +1343,32 @@ def validate_story(story, fpl_data=None):
     player = (story.get("player") or "").strip()
     if not player:
         return False, "missing_player"
+
+    # UNIVERSAL NAME GUARD (runs on BOTH the LLM and the regex-fallback paths).
+    # The LLM can also emit a lone surname ("Neil" from "Gary O'Neil") or a
+    # truncated name ("Georgia Under" from "Georgia Under-21"), so this guard
+    # lives here in validate_story rather than only in the fallback.
+    _ptokens = [t for t in re.split(r"[\s\-']+", player) if t]
+    _plow = player.lower()
+    # 1) A manager's surname is never a transfer/player subject on a NON-manager
+    #    event (Alonso/De Zerbi/O'Neil etc.).
+    if ev != "manager" and (_plow in MANAGER_SURNAMES or
+                            any(m in _plow for m in MANAGER_SURNAMES)):
+        return False, "player_is_manager_name"
+    # 2) For manager events the SUBJECT is the manager; a bare single-token
+    #    surname ("Neil") is too unreliable to ship as a card.
+    if ev == "manager" and len(_ptokens) < 2:
+        return False, "manager_name_single_token"
+    # 3) A single-token "player" on a transfer/injury event is almost always a
+    #    parse artefact; require at least two tokens.
+    if ev in ("transfer", "loan", "loan_option", "injury", "suspension",
+              "renewal", "stay") and len(_ptokens) < 2:
+        return False, "player_name_single_token"
+    # 4) Truncated trailing fragments seen in logs ("Georgia Under" <- Under-21,
+    #    "... Under", "... U21"). Reject names ending in a size/age fragment.
+    if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow):
+        return False, "player_name_truncated_fragment"
+
     PLACEHOLDERS = ("player name", "example", "xxx", "[", "]", "tbd", "to follow",
                     "lorem", "duration & details", "updated heading", "from club", "to club")
     blob = " ".join(str(story.get(k, "") or "") for k in
@@ -1328,6 +1393,13 @@ def validate_story(story, fpl_data=None):
             return False, "from_equals_to"
         if not (tk or story.get("to_club") or fk or story.get("from_club")):
             return False, "no_clubs"
+        # HARD DIRECTION GUARD (item 2): if this story was parsed by the regex
+        # fallback (no LLM) and the direction was NOT proven by an explicit
+        # anchor, refuse to publish. A single club with no "to/from/joins/leaves"
+        # cue is the exact shape that produced "Salah -> TO: Liverpool". We would
+        # rather skip than assert a possibly-reversed move. Accuracy > volume.
+        if story.get("from_fallback") and not story.get("direction_confident"):
+            return False, "direction_unconfident"
         leak = (story.get("body", "") + " " + story.get("headline", "")).lower()
         if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak):
             return False, "event_data_mismatch"
