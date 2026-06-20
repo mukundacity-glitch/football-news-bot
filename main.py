@@ -863,7 +863,7 @@ def detect_mixed_story(story, raw_text) -> str:
     for c in clauses:
         if any(re.search(r'(?<![a-z])' + re.escape(a) + r'(?![a-z])', c) for a in _SORTED_ALIASES):
             clubbed_clauses += 1
-    if clubbed_clauses >= 3: return "multiple_stories_suspected"
+    if clubbed_clauses >= 4: return "multiple_stories_suspected"
     if ev in ("transfer", "loan", "loan_option"):
         if re.search(r'\bno\s+(move|exit|transfer|deal)\b', tl) or \
            re.search(r'\b(not?|never)\s+(?:moving|leaving|for sale)\b', tl):
@@ -944,6 +944,12 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
     big_player = is_big_player(story["player"], fpl_data) or is_big_name_player(story["player"])
     big_club = is_big_club_name(story.get("to_club")) or is_big_club_name(story.get("from_club"))
     if big_player or big_club: return True, "ok_big_name"
+    # UNLOCK: elite source + any named club = worth posting
+    tiers = [source_tier(s) for s in (sources or [])]
+    elite_source = any(t == 2 for t in tiers)
+    any_club = bool(story.get("to_club") or story.get("from_club") or
+                    story.get("to_key") or story.get("from_key"))
+    if elite_source and any_club: return True, "ok_elite_source"
     return False, "not_fpl_relevant"
 
 def classify_post(story, sources):
@@ -963,8 +969,7 @@ def classify_post(story, sources):
     video_only = story.get("from_video") and not has_official
     if (has_official or trusted_strong or n_elite >= 2) and not video_only: return "confirmed"
     if n_elite >= 1: return "rumour"
-    if is_big_player(story.get("player"), fetch_fpl_data()) or story.get("confidence", 0) >= 0.7:
-        if has_media: return "rumour"
+    if n_elite >= 1: return "rumour"
     if has_media: return "rumour"
     return None
 
