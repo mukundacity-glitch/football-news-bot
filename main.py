@@ -1266,8 +1266,12 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                          get_premium_font(28, "Bold"), (160, 255, 120))
 
     # portrait (only if verified — never the wrong face)
-    if face_verified and player_el:
-        pid = player_el.get("code")
+    # 1. Hardcode old FPL player codes for legends so their official headshots load
+    LEGENDS = {"harry kane": "78830"}
+    legend_pid = LEGENDS.get(player_name.lower())
+
+    if (face_verified and player_el) or legend_pid:
+        pid = legend_pid or player_el.get("code")
         if pid:
             pp = Path(f"players/{pid}.png")
             if not pp.exists():
@@ -1276,8 +1280,24 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             if portrait is not None:
                 portrait = _fit_contain(portrait, 520, 600)
                 img.paste(portrait, (W - portrait.width - 60, H - portrait.height - 100), portrait)
+    elif story.get("media_url"):
+        # 2. Grab the image directly from the journalist's tweet
+        tweet_img_path = Path(f"players/tweet_{story.get('id')}.jpg")
+        if not tweet_img_path.exists():
+            _download_asset(story["media_url"], tweet_img_path)
+        tweet_pic = _safe_open_rgba(tweet_img_path)
+        if tweet_pic is not None:
+            tweet_pic = _fit_contain(tweet_pic, 560, 560)
+            img.paste(tweet_pic, (W - tweet_pic.width - 40, H - tweet_pic.height - 80), tweet_pic)
+        else:
+            # Fallback if image download fails
+            cx, cy = W - 320, H // 2 - 20
+            for r in range(220, 20, -50):
+                draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 15), width=2)
+            f_emblem = get_premium_font(160, "Black")
+            draw.text((cx - 60, cy - 100), "V", font=f_emblem, fill=(84, 224, 124, 50))
     else:
-        # Premium generic graphic for non-FPL big stars (like Harry Kane) so card isn't empty
+        # 3. Final Fallback: The glowing V emblem
         cx, cy = W - 320, H // 2 - 20
         for r in range(220, 20, -50):
             draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 15), width=2)
@@ -1488,8 +1508,18 @@ def get_nitter_tweets(username):
                 link, desc = it.find("link"), it.find("description")
                 if link is None: continue
                 tid = link.text.strip().split("/")[-1].split("#")[0]
-                text = re.sub(r'<[^>]+>', '', desc.text).strip() if desc is not None and desc.text else ""
-                if tid and text: out.append({"id": tid, "text": text})
+                desc_text = desc.text if desc is not None and desc.text else ""
+                text = re.sub(r'<[^>]+>', '', desc_text).strip()
+                
+                # Extract image from Nitter HTML
+                media_url = None
+                img_match = re.search(r'<img[^>]+src="([^">]+)"', desc_text)
+                if img_match:
+                    media_url = img_match.group(1)
+                    if media_url.startswith("/"):
+                        media_url = f"{inst}{media_url}"
+                
+                if tid and text: out.append({"id": tid, "text": text, "media_url": media_url})
             if out: return out
         except Exception: continue
     return []
@@ -1504,7 +1534,17 @@ async def get_twikit_tweets(read_client, username, count=20, retries=2):
             for t in tweets:
                 txt = getattr(t, "full_text", None) or getattr(t, "text", "") or ""
                 tid = str(getattr(t, "id", "") or "")
-                if tid and txt: out.append({"id": tid, "text": txt})
+                
+                # Safely extract image from Twikit
+                media_url = None
+                if hasattr(t, "media") and t.media:
+                    for m in t.media:
+                        m_type = getattr(m, "type", None) or (m.get("type") if isinstance(m, dict) else None)
+                        if m_type == "photo":
+                            media_url = getattr(m, "media_url_https", None) or (m.get("media_url_https") if isinstance(m, dict) else None)
+                            if media_url: break
+                            
+                if tid and txt: out.append({"id": tid, "text": txt, "media_url": media_url})
             return out
         except Exception as e:
             if attempt + 1 < retries: await asyncio.sleep(3 * (attempt + 1))
@@ -1541,6 +1581,7 @@ async def scrape(data, read_client):
             if tid in data["extracted"]: story = dict(data["extracted"][tid])
             else:
                 story = build_story(text, fpl)
+                story["media_url"] = t.get("media_url")
                 data["extracted"][tid] = dict(story)
             safe, why = passes_safety_gate(story, text, fpl, sources=[username])
             if not safe:
