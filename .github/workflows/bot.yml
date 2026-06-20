@@ -48,16 +48,15 @@ jobs:
           X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
           X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
-          FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set +e
-          python main.py
+          python bot.py
           code=$?
           if [ $code -ne 0 ]; then
             echo "First attempt failed (exit $code) — retrying once after 30s"
             sleep 30
-            python main.py
+            python bot.py
             code=$?
           fi
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
