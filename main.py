@@ -2291,7 +2291,11 @@ AUTOPOST_MODES = {"confirmed", "rumour"}
 # 1 per run = even 30-min spacing. 48 possible runs × 1 = up to 48 slots,
 # but the daily hard cap of 17 stops it well before that, hitting the
 # 15-17/day target while staying X-safe (<=2/hour).
-MAX_POSTS_PER_RUN = 1
+POST_JITTER_RANGE_S = (300, 900)
+...
+jitter = random.randint(*POST_JITTER_RANGE_S)
+print(f"  [PACING] waiting {jitter}s before posting (anti-spam jitter)…")
+await asyncio.sleep(jitter)
 MAX_POSTS_PER_HOUR = 2                 # hard anti-spam ceiling
 POST_JITTER_RANGE_S = (300, 900)       # random 5-15 min pre-post delay (anti-spam)
 
