@@ -1247,7 +1247,12 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         x += 150
         if crest is not None:
             img.paste(crest, (x, y + (CREST - crest.height) // 2), crest)
-            x += CREST + 20
+        else:
+            # Generic clean emblem outline for non-PL teams so spacing stays perfectly aligned
+            cy = y + (CREST - 70) // 2
+            draw.rounded_rectangle([x + 15, cy, x + 85, cy + 70], radius=12, outline=(255, 255, 255, 40), width=3)
+            draw.ellipse([x + 35, cy + 20, x + 65, cy + 50], fill=(84, 224, 124, 60))
+        x += CREST + 20
         name = (club_text or (club_key or "").replace("_", " ")).upper()
         _draw_text_shadow(draw, (x, y + (CREST - 44) // 2), name, crest_font, color)
         y += CREST + 22
@@ -1260,6 +1265,7 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         _safe_emoji_text(img, (TEXT_X, y + 8), detail.upper()[:60],
                          get_premium_font(28, "Bold"), (160, 255, 120))
 
+    # portrait (only if verified — never the wrong face)
     if face_verified and player_el:
         pid = player_el.get("code")
         if pid:
@@ -1270,6 +1276,13 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             if portrait is not None:
                 portrait = _fit_contain(portrait, 520, 600)
                 img.paste(portrait, (W - portrait.width - 60, H - portrait.height - 100), portrait)
+    else:
+        # Premium generic graphic for non-FPL big stars (like Harry Kane) so card isn't empty
+        cx, cy = W - 320, H // 2 - 20
+        for r in range(220, 20, -50):
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 15), width=2)
+        f_emblem = get_premium_font(160, "Black")
+        draw.text((cx - 60, cy - 100), "V", font=f_emblem, fill=(84, 224, 124, 50))
 
     draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
     draw.rectangle([0, H - 12, W, H], fill=accent)
@@ -1639,13 +1652,13 @@ def build_draft(item, data, fpl):
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
 AUTOPOST_MODES = {"confirmed", "rumour"}
-MAX_POSTS_PER_RUN = 1
+MAX_POSTS_PER_RUN = 3
 MAX_POSTS_PER_HOUR = 2
 POST_JITTER_RANGE_S = (300, 900)
 
 EVENT_PRIORITY = {
-    "injury": 0, "suspension": 1, "manager": 2,
-    "transfer": 3, "loan": 3, "loan_option": 3, "renewal": 4, "stay": 4,
+    "injury": 0, "suspension": 1, "transfer": 2, 
+    "loan": 2, "loan_option": 2, "manager": 3, "renewal": 4, "stay": 4,
 }
 
 def _recent_post_count(data, within_seconds):
