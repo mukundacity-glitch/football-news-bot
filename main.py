@@ -30,7 +30,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageChops
 from pilmoji import Pilmoji
 
 # ── TWIKIT PATCH (inline) ────────────────────────────────────────────────
@@ -655,6 +655,37 @@ def has_written_claim(tweet_text: str) -> bool:
     cleaned = _clean_source_text(tweet_text)
     return bool(_CLAIM_MARKERS.search(cleaned)) and len(cleaned.split()) >= 5
 
+# ── HISTORICAL (OLD-NEWS) DETECTOR ───────────────────────────────────────
+# Stops decades-old "on this day" / anniversary items posting as if they were
+# breaking news (e.g. "Bergkamp completed his transfer to Arsenal in 1995").
+# Default: such items are DETECTED and BLOCKED. Flip ALLOW_HISTORICAL_POSTS to
+# True to instead post them, tagged HISTORICAL on the card and in the text.
+ALLOW_HISTORICAL_POSTS = False
+
+_HISTORICAL_MARKERS = re.compile(
+    r"\b(on this day|on this date|this day in|otd|\d+\s+years?\s+(ago|on)|"
+    r"years?\s+ago|anniversary|throwback|#tbt|flashback|remember when|"
+    r"back in (the\s+)?(19|20)\d\d|years on|on this very day)\b", re.I)
+
+def detect_historical(text: str) -> bool:
+    """True when a tweet is about a clearly OLD event, not current news."""
+    t = text or ""
+    tl = t.lower()
+    if _HISTORICAL_MARKERS.search(tl):
+        return True
+    # Any 1900s year in a football tweet = historical, full stop.
+    if re.search(r"\b19\d\d\b", t):
+        return True
+    # A 2000s year >= 2 seasons old, stated as the time of the event
+    # ("in/back in/during/on 2018"), = old news. "until 2030" / "since 2022"
+    # are NOT matched, so future contract terms and ongoing context are safe.
+    cur = datetime.now(timezone.utc).year
+    for y in re.findall(r"\b(?:in|back in|during|on)\s+(20\d\d)\b", tl):
+        if int(y) <= cur - 2:
+            return True
+    return False
+
+
 def build_story(tweet_text: str, fpl_data=None) -> dict:
     llm = extract_story_llm(tweet_text)
     s = llm or extract_story_fallback(tweet_text, fpl_data)
@@ -667,6 +698,7 @@ def build_story(tweet_text: str, fpl_data=None) -> dict:
     try: s["stage"] = max(1, min(4, int(s.get("stage", 1))))
     except Exception: s["stage"] = 1
     s["collapsed"] = bool(s.get("collapsed"))
+    s["historical"] = detect_historical(tweet_text)
 
     if looks_like_video_post(tweet_text):
         s["from_video"] = True
@@ -868,6 +900,7 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
                    "ballon d'or", "merch", "video game", "ea sports"]
     if any(k in tl for k in NON_NEWS_KW): return False, "off_topic_content"
     if not story.get("is_football"): return False, "not_football"
+    if story.get("historical") and not ALLOW_HISTORICAL_POSTS: return False, "historical_news"
     if story.get("confidence", 0) < 0.45: return False, "low_confidence"
     if any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl) for w in STAFF_BLOCK_KW): return False, "staff_or_offpitch"
     if not story.get("player"): return False, "no_player"
@@ -971,7 +1004,7 @@ def validate_story(story, fpl_data=None):
 # ── LABELS ───────────────────────────────────────────────────────────────
 APPROVED_LABELS = {
     "TRANSFER", "RUMOUR", "INJURY", "SUSPENSION", "CONTRACT EXTENSION",
-    "LOAN", "MANAGER NEWS", "OFFICIAL",
+    "LOAN", "MANAGER NEWS", "OFFICIAL", "HISTORICAL",
 }
 EVENT_PREFIX = {
     "transfer": "TRANSFER", "loan": "LOAN", "loan_option": "LOAN",
@@ -981,6 +1014,7 @@ EVENT_PREFIX = {
 }
 
 def status_label(story, mode):
+    if story.get("historical"): return "HISTORICAL"
     if story.get("collapsed"): return "RUMOUR"
     if mode == "rumour": return "RUMOUR"
     ev = story.get("event")
@@ -1488,25 +1522,31 @@ def create_player_card(story, sources, filename, mode="confirmed"):
     _draw_diagonal_accents(img, accent, GOLD)
     draw = ImageDraw.Draw(img, "RGBA")
 
-    # ---------- RIGHT: framed crest (top) + headshot (below) ----------
+    # ---------- RIGHT: crest badge (top) + LARGE photo filling the panel ----
     FX0, FY0, FX1, FY1 = 840, 150, 1320, H - 112
     draw.rounded_rectangle([FX0, FY0, FX1, FY1], radius=26,
                            fill=(17, 26, 44), outline=(255, 255, 255, 32), width=3)
-    fcx = (FX0 + FX1) // 2; fw = FX1 - FX0
+    fcx = (FX0 + FX1) // 2
+
+    # team crest at the TOP of the image area (kept big + clear)
     crest_key = to_key or from_key
-    crest = _load_crest(crest_key, box=170) if crest_key else None
-    crest_top = FY0 + 26
+    crest = _load_crest(crest_key, box=118) if crest_key else None
+    crest_top = FY0 + 20
+    crest_bottom = crest_top + (crest.height if crest is not None else 96)
     if crest is not None:
         img.paste(crest, (fcx - crest.width // 2, crest_top), crest)
-        crest_bottom = crest_top + crest.height
-    else:
-        crest_bottom = crest_top + 140
-    head_top = crest_bottom + 22
-    head_h = FY1 - head_top - 22; head_w = fw - 56
+
+    # LARGE portrait photo box that fills the rest of the panel
+    PB_W = 372
+    pbx0 = fcx - PB_W // 2
+    pby0 = crest_bottom + 14
+    pby1 = FY1 - 18
+    pbx1 = pbx0 + PB_W
+    pb_h = pby1 - pby0
 
     LEGENDS = {"harry kane": "78830"}
     legend_pid = LEGENDS.get(player_name.lower())
-    photo = None; photo_src = "none"
+    photo = None
     if player_el or legend_pid:
         pid = legend_pid or (player_el.get("code") if player_el else None)
         if pid:
@@ -1514,21 +1554,27 @@ def create_player_card(story, sources, filename, mode="confirmed"):
             if not pp.exists():
                 _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
             photo = _safe_open_rgba(pp)
-            if photo is not None: photo_src = "fpl"
     if photo is None and story.get("media_url"):
         tp = Path(f"players/tweet_{story.get('id')}.jpg")
         if not tp.exists():
             _download_asset(story["media_url"], tp)
         photo = _safe_open_rgba(tp)
-        if photo is not None: photo_src = "tweet"
+
     if photo is not None:
-        photo = _fit_contain(photo, head_w, head_h)
-        img.paste(photo, (fcx - photo.width // 2,
-                          head_top + (head_h - photo.height) // 2), photo)
+        # COVER-fit: fill the box edge-to-edge, center-crop with a slight upward
+        # bias so faces are kept; round the corners to match the panel. This
+        # makes the image big, sharp, centered and never tiny/letterboxed.
+        filled = ImageOps.fit(photo, (PB_W, pb_h), Image.Resampling.LANCZOS,
+                              centering=(0.5, 0.38)).convert("RGBA")
+        round_mask = Image.new("L", (PB_W, pb_h), 0)
+        ImageDraw.Draw(round_mask).rounded_rectangle([0, 0, PB_W, pb_h], radius=20, fill=255)
+        # respect the photo's own transparency (FPL cut-outs) so the panel shows
+        # through instead of a black box; opaque photos stay fully visible.
+        paste_mask = ImageChops.multiply(filled.getchannel("A"), round_mask)
+        img.paste(filled, (pbx0, pby0), paste_mask)
     else:
-        # Neither FPL mugshot nor journalist photo available -> guaranteed
-        # silhouette IMAGE in the same slot. The card always carries a visual.
-        _draw_player_silhouette(img, draw, fcx, head_top, head_w, head_h)
+        # guaranteed silhouette IMAGE filling the same box (never empty)
+        _draw_player_silhouette(img, draw, fcx, pby0, PB_W, pb_h)
 
     # ---------- LEFT: wordmark, label, name, info ----------
     LX = 70
@@ -1575,7 +1621,7 @@ def create_player_card(story, sources, filename, mode="confirmed"):
             tc = story.get("to_club") or (to_key or "").replace("_", " ")
             _info_row("FROM", _pretty_club(fc) if fc else None)
             _info_row("TO", _pretty_club(tc) if tc else None)
-        _info_row("FEE", story.get("fee")); _info_row("CONTRACT", story.get("contract"))
+        _info_row("PRICE", story.get("fee")); _info_row("CONTRACT", story.get("contract"))
 
     # ---------- source bar ----------
     draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
