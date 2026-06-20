@@ -112,10 +112,10 @@ except Exception as _e:
 _GEMINI_LAST_MODEL = None
 
 # ── SECRETS ──────────────────────────────────────────────────────────────
-X_AUTH_TOKEN = os.getenv("X_AUTH_TOKEN")
-X_CT0_TOKEN = os.getenv("X_CT0_TOKEN")
-X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
-X_POST_CT0_TOKEN = os.getenv("X_POST_CT0_TOKEN")
+X_AUTH_TOKEN = (os.getenv("X_AUTH_TOKEN") or "").strip()
+X_CT0_TOKEN = (os.getenv("X_CT0_TOKEN") or "").strip()
+X_POST_AUTH_TOKEN = (os.getenv("X_POST_AUTH_TOKEN") or "").strip()
+X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or "").strip()
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
 # ── PATHS ────────────────────────────────────────────────────────────────
@@ -2079,7 +2079,7 @@ async def main(post: bool = True, allow_rumours: bool = False):
     queue = await scrape(data, read_client)
     if not queue:
         rh = data.get("last_read_health", {})
-        if rh.get("fail_ratio", 0) >= 0.5:
+        if rh.get("fail_ratio", 0) >= 0.15:
             print("[BOT] No drafts — but over half of sources failed to read. "
                   "Likely a READ/access problem, not a quiet news day. "
                   "Verify X cookies and Nitter, then re-run.")
