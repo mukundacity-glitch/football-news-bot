@@ -1040,7 +1040,7 @@ def build_hashtags(story):
         if ht and ht not in tags: tags.append(ht)
     if (story.get("to_key") or story.get("from_key")) and "#PremierLeague" not in tags:
         tags.append("#PremierLeague")
-    return " ".join(tags[:3])
+    return " ".join(tags[:4])
 
 # ── TWEET TEXT ───────────────────────────────────────────────────────────
 def twitter_len(text: str) -> int:
@@ -1071,24 +1071,12 @@ def trim_for_twitter(body: str, limit: int = 278) -> str:
 def build_tweet_body(story, sources, mode) -> str:
     label = status_label(story, mode)
     head = story.get("headline") or story.get("player") or "Update"
-    summary = (story.get("body") or "").strip()
-    lines = [f"{label} | {head}", "", summary]
-    if story.get("event") in ("transfer", "loan", "loan_option") and not story.get("collapsed"):
-        fc = (story.get("from_club") or (story.get("from_key") or "").replace("_", " ")).strip()
-        tc = (story.get("to_club") or (story.get("to_key") or "").replace("_", " ")).strip()
-        dir_bits = []
-        if fc: dir_bits.append(f"From: {fc}")
-        if tc: dir_bits.append(f"To: {tc}")
-        if dir_bits: lines.append("\n" + "  |  ".join(dir_bits))
-    if story.get("conditional"): lines.append("\n" + story["conditional"])
-    if story.get("fpl_impact"): lines.append("\nFPL: " + story["fpl_impact"])
-    details = []
-    if story.get("fee"): details.append(f"Fee: {story['fee']}")
-    if story.get("contract"): details.append(story["contract"])
-    if details: lines.append("\n" + "  |  ".join(details))
-    if mode == "rumour" and label == "RUMOUR": lines.insert(0, "Unconfirmed report")
-    body = "\n".join(p for p in lines if p is not None).strip()
-    body += "\n\n" + build_hashtags(story)
+    # Short prefix: "RUMOUR |" or "OFFICIAL |" etc + headline only
+    if mode == "rumour" and label == "RUMOUR":
+        first_line = f"Unconfirmed report RUMOUR | {head}"
+    else:
+        first_line = f"{label} | {head}"
+    body = first_line + "\n\n" + build_hashtags(story)
     return body
 
 def build_detail_line(story) -> str:
