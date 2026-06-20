@@ -110,11 +110,20 @@ except Exception as _e:
 _GEMINI_LAST_MODEL = None
 
 # ── SECRETS ──────────────────────────────────────────────────────────────
-X_AUTH_TOKEN = os.getenv("X_AUTH_TOKEN")
-X_CT0_TOKEN = os.getenv("X_CT0_TOKEN")
-X_POST_AUTH_TOKEN = os.getenv("X_POST_AUTH_TOKEN")
-X_POST_CT0_TOKEN = os.getenv("X_POST_CT0_TOKEN")
-FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
+def _clean_secret(name):
+    """Read an env secret and strip ALL surrounding whitespace/newlines.
+    A trailing '\n' (very common when pasting into GitHub Secrets) makes twikit
+    raise 'Illegal header value' because HTTP headers cannot contain newlines.
+    Stripping here fixes it permanently regardless of how the secret was pasted.
+    """
+    v = os.getenv(name)
+    return v.strip() if isinstance(v, str) else v
+
+X_AUTH_TOKEN = _clean_secret("X_AUTH_TOKEN")
+X_CT0_TOKEN = _clean_secret("X_CT0_TOKEN")
+X_POST_AUTH_TOKEN = _clean_secret("X_POST_AUTH_TOKEN")
+X_POST_CT0_TOKEN = _clean_secret("X_POST_CT0_TOKEN")
+FOOTBALL_API_KEY = _clean_secret("FOOTBALL_API_KEY")
 
 # ── PATHS ────────────────────────────────────────────────────────────────
 POSTED_FILE = Path("posted_news.json")
@@ -1650,6 +1659,7 @@ async def scrape(data, read_client):
     fpl = fetch_fpl_data()
     story_map = {}
     seen = skipped = 0
+    already_posted_skip = non_football_skip = 0
     accounts_total = len(JOURNALISTS)
     accounts_failed = 0
     for username in JOURNALISTS:
@@ -1672,8 +1682,12 @@ async def scrape(data, read_client):
             print(f"  [READ] @{username}: {len(tweets)} tweets via {src}")
         for t in tweets:
             tid, text = t["id"], t["text"]
-            if tid in data["posted_ids"]: continue
-            if not any(k in text.lower() for k in FOOTBALL_KW): continue
+            if tid in data["posted_ids"]:
+                already_posted_skip += 1
+                continue
+            if not any(k in text.lower() for k in FOOTBALL_KW):
+                non_football_skip += 1
+                continue
             seen += 1
             if tid in data["extracted"]: story = dict(data["extracted"][tid])
             else:
@@ -1730,6 +1744,9 @@ async def scrape(data, read_client):
         print("  [WARN] Zero football tweets from ALL journalists. X auth tokens "
               "likely expired — update X_AUTH_TOKEN and X_CT0_TOKEN secrets.")
     print(f"  [SCRAPE] {seen} football tweets seen, {skipped} skipped, {len(story_map)} candidate stories")
+    print(f"  [SCRAPE-DIAG] dropped before counting: {already_posted_skip} already-posted (ID in cache), "
+          f"{non_football_skip} non-football (no keyword). If 'seen' is 0 but reads worked, "
+          f"these two numbers explain where every tweet went.")
     data["last_read_health"] = {
         "accounts_total": accounts_total,
         "accounts_failed": accounts_failed,
