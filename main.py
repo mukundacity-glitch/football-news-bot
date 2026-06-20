@@ -1,3 +1,4 @@
+"""
 FPL VORTEX — Football news automation (DRAFT-ONLY build).
 
 What this build does:
