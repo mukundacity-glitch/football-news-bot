@@ -28,7 +28,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 from pilmoji import Pilmoji
 
 # ── TWIKIT PATCH (inline) ────────────────────────────────────────────────
@@ -954,12 +954,22 @@ def validate_story(story, fpl_data=None):
     if looks_like_club(player): return False, "player_is_club"
     if re.search(r'\bRT\s+@|@\w+|https?://', story.get("body", "")): return False, "raw_source_text_in_body"
     if player_already_at_club(story, fpl_data): return False, "already_at_destination"
+    # Regex-only (no-LLM) "set to stay" / renewal with no resolved club is filler,
+    # not news. Block it so the fallback stops manufacturing contract non-stories.
+    if ev in ("renewal", "stay") and story.get("from_fallback") and not (
+            story.get("from_key") or story.get("to_key")):
+        return False, "fallback_stay_no_resolved_club"
     if ev in ("transfer", "loan", "loan_option"):
         fk = story.get("from_key"); tk = story.get("to_key")
         fc = (story.get("from_club") or "").strip().lower()
         tc = (story.get("to_club") or "").strip().lower()
         if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
         if not (tk or story.get("to_club") or fk or story.get("from_club")): return False, "no_clubs"
+        # Regex-only (no-LLM) transfers must have at least one RESOLVED PL club key.
+        # A loose club-name string alone is not enough to ship a fallback transfer
+        # card — this stops contentless "TRANSFER UPDATE" cards with no real move
+        # (e.g. a stray big name picked up with no destination).
+        if story.get("from_fallback") and not (fk or tk): return False, "fallback_transfer_no_resolved_club"
         if story.get("from_fallback") and not story.get("direction_confident"): return False, "direction_unconfident"
         leak = (story.get("body", "") + " " + story.get("headline", "")).lower()
         if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak): return False, "event_data_mismatch"
@@ -1159,6 +1169,65 @@ def _load_crest(club_key, box=120):
         if src is not None: return _fit_contain(src, box, box)
     return None
 
+def _draw_right_visual_fallback(img, draw, W, H, story):
+    """Right-side visual when there is NO usable player/clean photo.
+    Priority: large club crest (destination club, else origin club) -> glowing V
+    emblem. Crests exist only for PL clubs (FPL badge API); for non-PL clubs no
+    badge is available, so we fall through to the emblem rather than show a
+    wrong/placeholder badge.
+    """
+    crest_key = story.get("to_key") or story.get("from_key")
+    big_crest = _load_crest(crest_key, box=420) if crest_key else None
+    if big_crest is not None:
+        zone_left = 820
+        zone_cx = zone_left + (W - zone_left) // 2
+        zone_cy = (H - 90) // 2 + 40
+        for r in range(int(big_crest.width * 0.62), 20, -60):
+            draw.ellipse([zone_cx - r, zone_cy - r, zone_cx + r, zone_cy + r],
+                         outline=(255, 255, 255, 12), width=2)
+        img.paste(big_crest,
+                  (zone_cx - big_crest.width // 2, zone_cy - big_crest.height // 2),
+                  big_crest)
+        return
+    cx, cy = W - 320, H // 2 - 20
+    for r in range(220, 20, -50):
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 15), width=2)
+    f_emblem = get_premium_font(160, "Black")
+    draw.text((cx - 60, cy - 100), "V", font=f_emblem, fill=(84, 224, 124, 50))
+
+def _looks_like_clean_photo(im) -> bool:
+    """Return True only if the image looks like a real player PHOTO, not a
+    pre-made graphic/card with text baked in (which would bleed/overlap when
+    pasted). Heuristic, no OCR needed:
+      1. Aspect ratio: player headshots are square or portrait. Journalist
+         transfer cards are wide landscape banners — reject those.
+      2. Edge density: text-heavy graphics have far more hard edges than a
+         photo of a face/kit. High edge density => likely a text card.
+    On any error we are conservative and return False (skip the image).
+    """
+    try:
+        w, h = im.size
+        if w < 80 or h < 80:
+            return False
+        ar = w / float(h)
+        # Wide landscape (banner / pre-made card) — not a portrait photo.
+        if ar > 1.35:
+            return False
+        # Edge-density check on a downscaled grayscale copy.
+        small = im.convert("L").resize((128, 128))
+        edges = small.filter(ImageFilter.FIND_EDGES)
+        import numpy as _np
+        arr = _np.asarray(edges, dtype=_np.uint8)
+        # Fraction of pixels that are strong edges. Text => many strong edges.
+        # Clean photos measure ~0.01-0.03; text/graphic cards measure ~0.06+.
+        strong = float((arr > 60).mean())
+        if strong > 0.05:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def _draw_diagonal_accents(img, accent, gold=(212, 175, 55)):
     W, H = img.size
     ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -1281,28 +1350,32 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 portrait = _fit_contain(portrait, 520, 600)
                 img.paste(portrait, (W - portrait.width - 60, H - portrait.height - 100), portrait)
     elif story.get("media_url"):
-        # 2. Grab the image directly from the journalist's tweet
+        # 2. Grab the image directly from the journalist's tweet — but ONLY if it
+        #    looks like a clean photo, never a pre-made card with text baked in
+        #    (which caused text bleed/overlap). Also confine it to the RIGHT side
+        #    so it can never cover the FROM/TO text on the left.
         tweet_img_path = Path(f"players/tweet_{story.get('id')}.jpg")
         if not tweet_img_path.exists():
             _download_asset(story["media_url"], tweet_img_path)
         tweet_pic = _safe_open_rgba(tweet_img_path)
-        if tweet_pic is not None:
-            tweet_pic = _fit_contain(tweet_pic, 560, 560)
-            img.paste(tweet_pic, (W - tweet_pic.width - 40, H - tweet_pic.height - 80), tweet_pic)
+        if tweet_pic is not None and _looks_like_clean_photo(tweet_pic):
+            # Right-hand photo zone only: starts at x=820, never enters text area.
+            PHOTO_ZONE_X = 820
+            zone_w = W - PHOTO_ZONE_X - 40
+            zone_h = H - 90 - 60  # keep clear of the bottom source bar
+            tweet_pic = _fit_contain(tweet_pic, zone_w, zone_h)
+            px = W - tweet_pic.width - 40
+            if px < PHOTO_ZONE_X:
+                px = PHOTO_ZONE_X
+            py = (H - 90) - tweet_pic.height - 10
+            img.paste(tweet_pic, (px, py), tweet_pic)
         else:
-            # Fallback if image download fails
-            cx, cy = W - 320, H // 2 - 20
-            for r in range(220, 20, -50):
-                draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 15), width=2)
-            f_emblem = get_premium_font(160, "Black")
-            draw.text((cx - 60, cy - 100), "V", font=f_emblem, fill=(84, 224, 124, 50))
+            # Image was missing, or was a text-graphic we refuse to paste:
+            # fall back to club crest, then emblem.
+            _draw_right_visual_fallback(img, draw, W, H, story)
     else:
-        # 3. Final Fallback: The glowing V emblem
-        cx, cy = W - 320, H // 2 - 20
-        for r in range(220, 20, -50):
-            draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 15), width=2)
-        f_emblem = get_premium_font(160, "Black")
-        draw.text((cx - 60, cy - 100), "V", font=f_emblem, fill=(84, 224, 124, 50))
+        # 3. No portrait and no tweet image: club crest, then emblem.
+        _draw_right_visual_fallback(img, draw, W, H, story)
 
     draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
     draw.rectangle([0, H - 12, W, H], fill=accent)
@@ -1473,8 +1546,24 @@ async def post_item(post_client, item, data):
     image_path = item.get("draft_image") or str(PENDING_DIR / f"{_slug(item)}.png")
     caption = item.get("draft_caption") or trim_for_twitter(
         build_tweet_body(item, item["sources"], item.get("mode", "confirmed")), limit=278)
+    # GUARANTEE AN IMAGE: every post must ship with a card. If the attached image
+    # is missing or empty, regenerate it now (which itself falls back to the
+    # BREAKING NEWS template) rather than dropping the post image-less.
     if not os.path.exists(image_path) or os.path.getsize(image_path) < 1000:
-        print(f"  POST BLOCKED (image missing/empty): {item.get('player')!r}")
+        print(f"  [IMG] post-time image missing/empty — regenerating before posting: {item.get('player')!r}")
+        try:
+            create_image(item, item["sources"], image_path, rumour=(item.get("mode") == "rumour"))
+        except Exception as e:
+            print(f"  [IMG] post-time regeneration raised: {e}")
+    if not os.path.exists(image_path) or os.path.getsize(image_path) < 1000:
+        # Last-resort guaranteed card so a post is NEVER published without an image.
+        print(f"  [IMG] regeneration still empty — forcing BREAKING NEWS fallback card: {item.get('player')!r}")
+        try:
+            _create_fallback_card(item, item["sources"], image_path)
+        except Exception as e:
+            print(f"  [IMG] forced fallback card failed: {e}")
+    if not os.path.exists(image_path) or os.path.getsize(image_path) < 1000:
+        print(f"  POST BLOCKED (no image could be produced): {item.get('player')!r}")
         return False
     media_id = await post_client.upload_media(image_path, media_type="image/png")
     posted_live = False
