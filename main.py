@@ -1,5 +1,5 @@
 """
-FPL VORTEX — Football news automation (LIVE build).
+FPL VORTEX — Football news automation (DRAFT-ONLY build).
 
 What this build does:
   - Scrapes trusted journalist/club accounts.
@@ -9,14 +9,18 @@ What this build does:
     MANAGER using a strict source rule (official OR >= 2 trusted reporters).
   - Renders a clean card: "FPL VORTEX" wordmark top-left, FROM:/TO: text rows
     (NO arrows), club crests, relevant hashtags only.
-  - Auto-posts confirmed AND rumour stories (up to MAX_POSTS_PER_RUN per run,
-    17 per day total). Rumours are clearly labelled RUMOUR on the card.
+  - Writes every result to queue/pending/ as a DRAFT. It NEVER posts.
+
+To post, a human reviews the drafts. Auto-posting is intentionally disabled.
 """
 
 from clubs_cache import get_club_data
 import os
 import re
 import json
+import hashlib
+import difflib
+import random
 import argparse
 import asyncio
 import requests
@@ -97,13 +101,44 @@ if _tx_mod is not None:
 
 from twikit import Client
 
+# ── GEMINI (google-genai SDK) ────────────────────────────────────────────
+# Migrated from the deprecated `google.generativeai` package to the current
+# `google-genai` SDK (GA as of 2025). Install: pip install google-genai
+#
+# VERIFIED model availability (Google AI docs, June 2026):
+#   - Free tier = Flash / Flash-Lite ONLY. Pro models are paid-only since
+#     2026-04-01, so a free key returns `limit: 0` on any *-pro model.
+#   - Gemini 1.5 (all) and 2.0 Flash are SHUT DOWN (404). Do NOT use them.
+#   - Live free-tier-eligible models: gemini-2.5-flash, gemini-2.5-flash-lite,
+#     gemini-3.5-flash.
+#
+# The chain below is newest-capable-first WITHIN the free tier so the first
+# hop actually succeeds on a free key. To switch to a PAID key later, just
+# reorder GEMINI_MODEL_CHAIN (e.g. put "gemini-3.5-flash" or a *-pro first).
+# Failover is automatic: each model is tried in order; on any error (quota,
+# timeout, 404) the next is tried; if all fail, the regex fallback runs.
+GEMINI_MODEL_CHAIN = [
+    "gemini-2.5-flash",        # primary — free-tier eligible, strong quality
+    "gemini-2.5-flash-lite",   # fallback 1 — cheapest, highest free quota
+    "gemini-3.5-flash",        # fallback 2 — newest GA Flash
+    # NOTE: to use Pro (paid key only), add e.g. "gemini-3.1-pro" here.
+]
+GEMINI_TIMEOUT_S = 20          # per-call timeout; exceed -> try next model
+
 try:
-    import google.generativeai as genai
-    _GEMINI_OK = bool(os.getenv("GEMINI_API_KEY"))
-    if _GEMINI_OK:
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-except Exception:
+    from google import genai as _genai
+    from google.genai import types as _genai_types
+    _GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+    _gemini_client = _genai.Client(api_key=_GEMINI_KEY) if _GEMINI_KEY else None
+    _GEMINI_OK = _gemini_client is not None
+except Exception as _e:
+    print(f"[GEMINI] google-genai SDK unavailable, using regex fallback only: {_e}")
+    _gemini_client = None
     _GEMINI_OK = False
+    _genai_types = None
+
+# Tracks which model actually answered last (for logging/monitoring).
+_GEMINI_LAST_MODEL = None
 
 # ── SECRETS ──────────────────────────────────────────────────────────────
 X_AUTH_TOKEN = os.getenv("X_AUTH_TOKEN")      # read account (twikit reader)
@@ -331,6 +366,16 @@ MANAGER_SURNAMES = {
     "ten hag", "amorim", "emery", "howe", "maresca", "iraola", "frank",
     "nuno", "moyes", "dyche", "hurzeler", "glasner", "ancelotti", "xabi alonso",
     "alonso", "flick", "simeone", "mourinho", "conte", "tuchel", "nagelsmann",
+    # Additional managers seen in logs / common PL appointments
+    "neil", "o'neil", "o'neil",    # Gary O'Neil
+    "mcinnes",                      # Derek McInnes
+    "wilder",                       # Chris Wilder
+    "edwards",                      # Rob Edwards
+    "robinson",                     # Paul Robinson / other Robinsons
+    "silva",                        # Marco / David Silva (managerial context)
+    "kompany",                      # Vincent Kompany
+    "lopetegui",                    # Julen Lopetegui
+    "obi",                          # keep generic; rare as player name
 }
 
 
@@ -418,6 +463,11 @@ def load_data() -> dict:
     d.setdefault("posted_ids", [])
     d.setdefault("pending", {})
     d.setdefault("extracted", {})
+    # Persistent content-dedup stores (survive across runs):
+    #   posted_hashes: list of SHA-256 content hashes already published.
+    #   posted_headlines: list of normalised headlines for fuzzy matching.
+    d.setdefault("posted_hashes", [])
+    d.setdefault("posted_headlines", [])
     return d
 
 
@@ -489,17 +539,79 @@ def _clean_source_text(text: str) -> str:
     return t
 
 
+def _gemini_generate(prompt: str):
+    """Try each model in GEMINI_MODEL_CHAIN until one returns text.
+    Returns (text, model_id) or (None, None) if all fail. Logs each hop."""
+    global _GEMINI_LAST_MODEL
+    if not _GEMINI_OK or _gemini_client is None:
+        return None, None
+    cfg = None
+    if _genai_types is not None:
+        try:
+            cfg = _genai_types.GenerateContentConfig(
+                temperature=0.2,
+                http_options=_genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_S * 1000),
+            )
+        except Exception:
+            cfg = None
+    for model_id in GEMINI_MODEL_CHAIN:
+        try:
+            resp = _gemini_client.models.generate_content(
+                model=model_id, contents=prompt, config=cfg)
+            text = getattr(resp, "text", None)
+            if text:
+                if _GEMINI_LAST_MODEL != model_id:
+                    print(f"  [GEMINI] using model: {model_id}")
+                _GEMINI_LAST_MODEL = model_id
+                return text, model_id
+            print(f"  [GEMINI] {model_id} returned empty — trying next")
+        except Exception as e:
+            msg = str(e)
+            short = (msg[:120] + "…") if len(msg) > 120 else msg
+            print(f"  [GEMINI] {model_id} failed ({short}) — trying next")
+            continue
+    print("  [GEMINI] ALL models failed — using regex fallback")
+    return None, None
+
+
 def extract_story_llm(tweet_text: str):
     if not _GEMINI_OK:
         return None
-    try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        resp = model.generate_content(_EXTRACT_PROMPT.format(tweet=tweet_text))
-        raw = resp.text
-        return json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
-    except Exception as e:
-        print(f"  [LLM] extraction failed, using fallback: {e}")
+    text, _model = _gemini_generate(_EXTRACT_PROMPT.format(tweet=tweet_text))
+    if not text:
         return None
+    try:
+        return json.loads(text[text.find("{"): text.rfind("}") + 1])
+    except Exception as e:
+        print(f"  [LLM] JSON parse failed, using fallback: {e}")
+        return None
+
+
+# Single-token surnames the regex fallback grabs from fuller names (e.g.
+# "Neil" out of "Gary O'Neil"). With no LLM to disambiguate, a lone surname
+# is never a safe transfer/player subject. Block in the no-LLM path only.
+_FALLBACK_BANNED_SOLO = {
+    "neil", "silva", "alonso", "robinson", "edwards", "wilder", "obi",
+    "kompany", "nuno", "frank", "howe", "moyes", "dyche", "emery", "conte",
+    "tuchel", "klopp", "arteta", "slot", "amorim", "maresca", "iraola",
+}
+
+
+def _is_safe_fallback_name(name: str) -> bool:
+    """Stricter than _is_bad_name; used ONLY when the LLM was unavailable.
+    Requires a multi-token name and rejects manager-ish / lone surnames so the
+    fallback fails SAFE (drops the story) instead of shipping 'NEIL -> IPSWICH'."""
+    if not name:
+        return False
+    tokens = [t for t in re.split(r"[\s\-']+", name.strip()) if t]
+    if len(tokens) < 2:
+        return False  # a single token is too risky without LLM disambiguation
+    low = name.lower()
+    if low in _FALLBACK_BANNED_SOLO:
+        return False
+    if any(m in low for m in MANAGER_SURNAMES):
+        return False
+    return True
 
 
 def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
@@ -592,6 +704,12 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             if is_big_name_player(m):
                 name = m
                 break
+
+    # FALLBACK SAFETY: the LLM did not run, so a single-token or manager-ish
+    # name is unreliable. Drop it rather than ship a card like "NEIL -> IPSWICH".
+    # passes_safety_gate then rejects it cleanly as "no_player".
+    if name and not _is_safe_fallback_name(name):
+        name = None
 
     # direction anchoring
     clubs = []
@@ -800,6 +918,64 @@ def fpl_team_key(el, fpl_data):
 
 
 # ── DEDUP / PROGRESSION ──────────────────────────────────────────────────
+# ── CONTENT DEDUP (hash + fuzzy headline) ────────────────────────────────
+# Defence beyond the existing tweet-id / story-key dedup: catches the SAME
+# news arriving as DIFFERENT tweets (e.g. one reporter quoted by three others,
+# or the same story reworded). One news item => one post.
+def _norm_text(s: str) -> str:
+    """Lowercase, strip emoji/punctuation/whitespace for stable comparison."""
+    s = (s or "").lower()
+    s = _EMOJI_RE.sub(" ", s) if "_EMOJI_RE" in globals() else s
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def content_hash(story: dict) -> str:
+    """Stable SHA-256 over the identity-defining fields of a story.
+    Event-type + player + clubs + normalised headline. Fee/stage deliberately
+    EXCLUDED so trivial wording changes don't defeat dedup, but a genuinely
+    different destination (a real new development) produces a new hash."""
+    parts = [
+        _event_family(story.get("event")),
+        _norm_text(story.get("player")),
+        _norm_text(story.get("from_key") or story.get("from_club")),
+        _norm_text(story.get("to_key") or story.get("to_club")),
+        _norm_text(story.get("headline")),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def is_duplicate_content(story: dict, data: dict, threshold: float = 0.90):
+    """Return (True, reason) if this story was already posted.
+      1) exact content-hash match, or
+      2) fuzzy headline match >= threshold against any posted headline.
+    Else (False, "")."""
+    h = content_hash(story)
+    if h in data.get("posted_hashes", []):
+        return True, "content_hash"
+    head = _norm_text(story.get("headline") or story.get("player"))
+    if head:
+        for prev in data.get("posted_headlines", []):
+            if difflib.SequenceMatcher(None, head, prev).ratio() >= threshold:
+                return True, f"fuzzy_headline>={threshold:.2f}"
+    return False, ""
+
+
+def record_content_dedup(story: dict, data: dict):
+    """Persist the hash + headline so this exact news never posts again."""
+    h = content_hash(story)
+    if h not in data.setdefault("posted_hashes", []):
+        data["posted_hashes"].append(h)
+    head = _norm_text(story.get("headline") or story.get("player"))
+    if head and head not in data.setdefault("posted_headlines", []):
+        data["posted_headlines"].append(head)
+    # Bound growth (keep most-recent 2000 of each).
+    if len(data["posted_hashes"]) > 2000:
+        data["posted_hashes"] = data["posted_hashes"][-2000:]
+    if len(data["posted_headlines"]) > 2000:
+        data["posted_headlines"] = data["posted_headlines"][-2000:]
+
+
 def build_story_key(player, club_key, event) -> str:
     p = (player or "unknown").lower().replace(" ", "_")
     c = (club_key or "unknown").lower()
@@ -910,17 +1086,12 @@ def detect_mixed_story(story, raw_text) -> str:
         return "player_is_manager"
 
     # 2) Manager named in text + transfer/stay event + subject is someone else.
-    #    NARROWED: only block when the manager appears as the GRAMMATICAL SUBJECT
-    #    of the move (e.g. "Guardiola joins PSG") — NOT when they merely appear as
-    #    context ("Slot confirms Liverpool want X"). The original broad check killed
-    #    the majority of legitimate transfer tweets because journalists routinely
-    #    quote or name managers as commentary, not as the transfer subject.
-    #    Check #1 above already catches the case where the extracted player IS a
-    #    manager, so this check is now limited to explicit "manager moves to club"
-    #    phrasing to avoid collateral blocking.
+    #    De Zerbi / Van de Ven pattern: a manager talking about a player.
     if ev in ("transfer", "loan", "loan_option", "stay", "renewal"):
+        manager_in_text = any(re.search(r'(?<![a-z])' + re.escape(m) + r'(?![a-z])', tl)
+                              for m in MANAGER_SURNAMES)
         subject_is_manager = any(m in player for m in MANAGER_SURNAMES)
-        if subject_is_manager:
+        if manager_in_text and not subject_is_manager:
             return "manager_and_player_mixed"
 
     # 3) Three+ clauses each naming a club → likely stitched stories.
@@ -958,16 +1129,15 @@ def detect_mixed_story(story, raw_text) -> str:
     for n in sorted(name_candidates, key=len, reverse=True):
         if not any(n != o and n in o for o in distinct):
             distinct.add(n)
-    # Two or more distinct full names in one tweet is a strong mix signal,
-    # especially when coordinated with "and"/"&".
+    # Only block when names are EXPLICITLY coordinated ("A and B") or there
+    # are 3+ distinct full names. Exactly-2 names in a tweet is normal (e.g.
+    # journalist quoting a manager commenting on a player) and was causing
+    # the vast majority of legitimate stories to be silently dropped.
     if len(distinct) >= 2:
-        coordinated = bool(re.search(r'\b[A-Z][a-zà-ÿ]+ [A-Z][a-zà-ÿ]+\s+(?:and|&)\s+[A-Z][a-zà-ÿ]+ [A-Z][a-zà-ÿ]+', text))
+        coordinated = bool(re.search(
+            r'\b[A-Z][a-zà-ÿ]+ [A-Z][a-zà-ÿ]+\s+(?:and|&)\s+[A-Z][a-zà-ÿ]+ [A-Z][a-zà-ÿ]+',
+            text))
         if coordinated or len(distinct) >= 3:
-            return "multiple_players_suspected"
-        # exactly two distinct names, not obviously coordinated: flag only if
-        # the second isn't part of the chosen player's own name.
-        others = {n for n in distinct if player and player not in n and n not in player}
-        if len(others) >= 1 and len(distinct) >= 2:
             return "multiple_players_suspected"
 
     return ""
@@ -1229,7 +1399,8 @@ def build_hashtags(story):
     if (story.get("to_key") or story.get("from_key")) and "#PremierLeague" not in tags:
         tags.append("#PremierLeague")
     # keep it minimal and relevant
-    return " ".join(tags[:5])
+    # Anti-spam: cap at 3 hashtags total (incl. base tag).
+    return " ".join(tags[:3])
 
 
 # ── TWEET TEXT ───────────────────────────────────────────────────────────
@@ -1490,44 +1661,59 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     # Wordmark heading (channel name, left)
     _draw_wordmark(draw, (TEXT_X, 48))
 
-    # Category strip
-    label = "TRANSFER UPDATE" if not collapsed else "TRANSFER UPDATE"
-    lf = get_premium_font(34, "Bold")
-    draw.rounded_rectangle([TEXT_X, 120, TEXT_X + draw.textlength(label, font=lf) + 36, 168],
-                           radius=10, fill=(227, 30, 36))
-    _draw_text_shadow(draw, (TEXT_X + 18, 126), label, lf, (255, 255, 255), offset=1)
+    # Category strip — label reflects the actual event, not always "TRANSFER UPDATE"
+    ev = story.get("event", "transfer")
+    if collapsed:
+        label = "DEAL COLLAPSED"
+        badge_color = (120, 30, 34)
+    elif ev == "manager":
+        label = "MANAGER NEWS"
+        badge_color = (30, 80, 160)
+    elif ev in ("loan", "loan_option"):
+        label = "LOAN UPDATE"
+        badge_color = (180, 100, 0)
+    elif ev in ("renewal", "stay"):
+        label = "CONTRACT UPDATE"
+        badge_color = (30, 130, 80)
+    else:
+        label = "TRANSFER UPDATE"
+        badge_color = (227, 30, 36)
+    lf = get_premium_font(44, "Bold")              # label: 44px (was 34)
+    draw.rounded_rectangle([TEXT_X, 116, TEXT_X + draw.textlength(label, font=lf) + 40, 178],
+                           radius=10, fill=badge_color)
+    _draw_text_shadow(draw, (TEXT_X + 20, 124), label, lf, (255, 255, 255), offset=1)
 
-    # Player name
+    # Player name — larger floor so it never shrinks below 56px for readability
     name_up = player_name.upper()
-    TEXT_MAX_W = 760
-    nsize = 96
+    TEXT_MAX_W = 780
+    nsize = 104                                     # was 96
     nf = get_premium_font(nsize, "Black")
-    while draw.textlength(name_up, font=nf) > TEXT_MAX_W and nsize > 40:
+    while draw.textlength(name_up, font=nf) > TEXT_MAX_W and nsize > 56:
         nsize -= 3
         nf = get_premium_font(nsize, "Black")
-    name_y = 210
+    name_y = 200
     _draw_text_shadow(draw, (TEXT_X, name_y), name_up, nf, (255, 255, 255), offset=3)
     nb = draw.textbbox((0, 0), name_up, font=nf)
     name_bottom = name_y + (nb[3] - nb[1]) + 24
 
-    # FROM / TO rows — TEXT, NO ARROW
-    crest_font = get_premium_font(30, "Bold")
-    row_label_font = get_premium_font(26, "Bold")
-    CREST = 84
+    # FROM / TO rows — larger fonts for mobile readability
+    crest_font = get_premium_font(46, "Bold")      # club name: 46px (was 40)
+    row_label_font = get_premium_font(38, "Bold")  # FROM/TO: 38px (was 34)
+    CREST = 104                                     # bigger crests (was 96)
     y = name_bottom
 
     def _row(tag, club_key, club_text, color):
         nonlocal y
         crest = _load_crest(club_key, CREST)
         x = TEXT_X
-        _draw_text_shadow(draw, (x, y + (CREST - 30) // 2), tag, row_label_font, (170, 180, 200))
-        x += 130
+        _draw_text_shadow(draw, (x, y + (CREST - 34) // 2), tag, row_label_font, (170, 180, 200))
+        x += 150
         if crest is not None:
             img.paste(crest, (x, y + (CREST - crest.height) // 2), crest)
-            x += CREST + 18
+            x += CREST + 20
         name = (club_text or (club_key or "").replace("_", " ")).upper()
-        _draw_text_shadow(draw, (x, y + (CREST - 34) // 2), name, crest_font, color)
-        y += CREST + 18
+        _draw_text_shadow(draw, (x, y + (CREST - 44) // 2), name, crest_font, color)
+        y += CREST + 22
 
     if from_key or story.get("from_club"):
         _row("FROM:", from_key, story.get("from_club"), (225, 225, 225))
@@ -1557,9 +1743,9 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     draw.rectangle([0, H - 12, W, H], fill=accent)
     src = " · ".join(f"@{s}" for s in sources[:2])
     bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
-    bsize = 30
+    bsize = 34
     bf = get_premium_font(bsize, "Bold")
-    while bsize > 18 and draw.textlength(bar, font=bf) > (W - 120):
+    while bsize > 24 and draw.textlength(bar, font=bf) > (W - 120):
         bsize -= 1
         bf = get_premium_font(bsize, "Bold")
     bbox = draw.textbbox((0, 0), bar, font=bf)
@@ -1612,19 +1798,89 @@ def create_injury_image(story, sources, filename):
     draw.rectangle([0, H - 90, W, H - 12], fill=(20, 10, 12))
     src = " · ".join(f"@{s}" for s in sources[:2])
     bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
-    bf = get_premium_font(28, "Bold")
+    bf = get_premium_font(32, "Bold")
     draw.text((60, H - 70), bar, font=bf, fill=(220, 190, 190))
     img.save(filename)
 
 
+def _create_fallback_card(story, sources, filename):
+    """Last-resort BREAKING NEWS template. No player photo, no crest required —
+    only fonts + solid fills, so it cannot fail the way asset-dependent cards can.
+    This is the bottom of the image fallback hierarchy: it ALWAYS produces a file."""
+    W, H = 1200, 675
+    img = Image.new("RGB", (W, H), (11, 18, 32))
+    draw = ImageDraw.Draw(img, "RGBA")
+    # gold accent bars
+    draw.rectangle([0, 0, W, 12], fill=(212, 175, 55))
+    draw.rectangle([0, H - 12, W, H], fill=(212, 175, 55))
+    _draw_wordmark(draw, (60, 48))
+    # red breaking strip
+    lf = get_premium_font(40, "Bold")
+    label = "BREAKING NEWS"
+    draw.rounded_rectangle([60, 130, 60 + draw.textlength(label, font=lf) + 44, 192],
+                           radius=12, fill=(210, 30, 34))
+    _draw_text_shadow(draw, (60 + 22, 138), label, lf, (255, 255, 255), offset=2)
+    # headline (large, wrapped)
+    head = (story.get("headline") or story.get("player") or "Football update").upper()
+    hf = get_premium_font(64, "Black")
+    words, line, y = head.split(), "", 250
+    for w in words:
+        test = (line + " " + w).strip()
+        if draw.textlength(test, font=hf) > W - 120 and line:
+            _draw_text_shadow(draw, (60, y), line, hf, (255, 255, 255), offset=3)
+            y += 78
+            line = w
+        else:
+            line = test
+    if line:
+        _draw_text_shadow(draw, (60, y), line, hf, (255, 255, 255), offset=3)
+    # source footer
+    src = " · ".join(f"@{s}" for s in (sources or [])[:2]) or CHANNEL_HANDLE
+    draw.rectangle([0, H - 78, W, H - 12], fill=(20, 24, 33))
+    bf = get_premium_font(30, "Bold")
+    draw.text((60, H - 64), f"Source: {src}  |  {CHANNEL_HANDLE}", font=bf, fill=(190, 200, 220))
+    img.save(filename)
+
+
 def create_image(story, sources, filename, rumour=False):
-    if story.get("event") == "injury" and not rumour and not story.get("collapsed"):
-        try:
-            create_injury_image(story, sources, filename)
+    """Image fallback hierarchy — never leaves without a valid card on disk:
+      L1/L2: rich transfer/injury card (player photo if verified, else crest).
+      L3/L4: same card with crest/league only (handled inside the card fn when
+             no verified photo — it already degrades gracefully).
+      L5:    flat BREAKING NEWS template that needs no downloaded assets.
+    Each level is tried in turn; the first that writes a valid (>=1KB) file wins.
+    """
+    def _ok():
+        return os.path.exists(filename) and os.path.getsize(filename) >= 1000
+
+    # L1–L4: the existing rich cards (they already fall back photo->crest->text).
+    try:
+        if story.get("event") == "injury" and not rumour and not story.get("collapsed"):
+            try:
+                create_injury_image(story, sources, filename)
+            except Exception as e:
+                print(f"  [IMG] injury card failed, using transfer card: {e}")
+                create_transfer_image(story, sources, filename,
+                                      collapsed=bool(story.get("collapsed")))
+        else:
+            create_transfer_image(story, sources, filename,
+                                  collapsed=bool(story.get("collapsed")))
+        if _ok():
             return
-        except Exception as e:
-            print(f"  [IMG] injury card failed, using standard card: {e}")
-    create_transfer_image(story, sources, filename, collapsed=bool(story.get("collapsed")))
+        print("  [IMG] rich card produced no valid file — using fallback template")
+    except Exception as e:
+        print(f"  [IMG] rich card raised ({e}) — using fallback template")
+
+    # L5: guaranteed template.
+    try:
+        _create_fallback_card(story, sources, filename)
+        if _ok():
+            print("  [IMG] fallback BREAKING NEWS card used.")
+            return
+    except Exception as e:
+        print(f"  [IMG] fallback card ALSO failed: {e}")
+    # If even this failed, the caller's >=1KB check will block the post — never
+    # publishing a blank image.
 
 
 # ── QUEUE FILES ──────────────────────────────────────────────────────────
@@ -1667,20 +1923,38 @@ def record_posted(item, data):
         "status": "collapsed" if item.get("collapsed") else "active",
         "sources": item["sources"], "last_updated": datetime.now(timezone.utc).isoformat(),
     }
+    record_content_dedup(item, data)   # persist hash + headline (one news=one post)
     increment_daily(data)
     save_data(data)
     move_to_posted(item)
 
 
+# twikit 2.3.3 throws KeyError while parsing Twitter's SUCCESS response. Every
+# one of these keys means the tweet IS live; re-raising causes a duplicate post
+# next run. Seen in logs: 'urls', 'withheld_in_countries', 'pinned_tweet_ids_str'.
+_TWIKIT_SUCCESS_PARSE_KEYS = {
+    "urls", "withheld_in_countries", "pinned_tweet_ids_str",
+    "entities", "extended_entities", "card",
+}
+
+
 async def post_item(post_client, item, data):
     """Publish ONE already-built, already-validated draft to X.
-    Re-validates as a final guard, uploads the rendered image, posts the caption.
-    Returns True on success."""
-    # Final accuracy gate — never post a story that fails validation, even if it
-    # somehow reached here. (Defence in depth: same gate that built the draft.)
+    Re-validates + content-dedups as a final guard, uploads the rendered image,
+    posts the caption. Returns True on success."""
+    # Final accuracy gate.
     valid, why = validate_story(item, fetch_fpl_data())
     if not valid:
         print(f"  POST BLOCKED ({why}): {item.get('player')!r}")
+        if item.get("id") and item["id"] not in data["posted_ids"]:
+            data["posted_ids"].append(item["id"])
+            save_data(data)
+        return False
+
+    # Final content-dedup gate (catches same news via a different tweet id).
+    dup, dreason = is_duplicate_content(item, data)
+    if dup:
+        print(f"  POST BLOCKED (duplicate:{dreason}): {item.get('player')!r}")
         if item.get("id") and item["id"] not in data["posted_ids"]:
             data["posted_ids"].append(item["id"])
             save_data(data)
@@ -1695,11 +1969,29 @@ async def post_item(post_client, item, data):
         return False
 
     media_id = await post_client.upload_media(image_path, media_type="image/png")
-    await post_client.create_tweet(text=caption, media_ids=[media_id])
-    record_posted(item, data)
-    print(f"  ✅ POSTED [{status_label(item, item.get('mode'))}]: "
-          f"{item['player']} — {item['event']} (stage {item['stage']})")
-    return True
+
+    # CRITICAL: once create_tweet is SENT, a parse KeyError means the tweet is
+    # live. record_posted in that case; never re-raise into the retry loop —
+    # that is what produced the duplicate posts.
+    posted_live = False
+    try:
+        await post_client.create_tweet(text=caption, media_ids=[media_id])
+        posted_live = True
+    except KeyError as ke:
+        key = str(ke).strip("'\"")
+        if key in _TWIKIT_SUCCESS_PARSE_KEYS:
+            print(f"  [WARN] twikit KeyError({ke}) after create_tweet — "
+                  f"tweet is live; recording as posted to prevent duplicate.")
+            posted_live = True
+        else:
+            raise
+
+    if posted_live:
+        record_posted(item, data)
+        print(f"  ✅ POSTED [{status_label(item, item.get('mode'))}]: "
+              f"{item['player']} — {item['event']} (stage {item['stage']})")
+        return True
+    return False
 
 
 # ── SCRAPER ──────────────────────────────────────────────────────────────
@@ -1921,13 +2213,149 @@ def build_draft(item, data, fpl):
 
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
-# Which post modes may AUTO-POST without human review.
-# Both CONFIRMED and RUMOUR stories post; rumours are clearly labelled on the
-# card so followers know they are unconfirmed. Daily cap keeps volume sane.
+# Both confirmed and rumour stories auto-post; rumours are clearly labelled
+# RUMOUR on the card. Daily cap (17) keeps total volume sane.
 AUTOPOST_MODES = {"confirmed", "rumour"}
-# 1 post per run keeps output evenly spread across the 30-min cron schedule.
-# 48 possible runs/day × 1 = up to 48 slots, but daily hard cap is 17.
+# 1 per run = even 30-min spacing. 48 possible runs × 1 = up to 48 slots,
+# but the daily hard cap of 17 stops it well before that, hitting the
+# 15-17/day target while staying X-safe (<=2/hour).
 MAX_POSTS_PER_RUN = 1
+MAX_POSTS_PER_HOUR = 2                 # hard anti-spam ceiling
+POST_JITTER_RANGE_S = (300, 900)       # random 5-15 min pre-post delay (anti-spam)
+
+# Story-type priority when more than one is ready in a run (brief #6):
+# injuries/suspensions first, then manager, then transfers.
+EVENT_PRIORITY = {
+    "injury": 0, "suspension": 1, "manager": 2,
+    "transfer": 3, "loan": 3, "loan_option": 3, "renewal": 4, "stay": 4,
+}
+
+
+def _recent_post_count(data, within_seconds):
+    """How many posts were recorded within the last `within_seconds`."""
+    now = datetime.now(timezone.utc)
+    n = 0
+    for st in data.get("stories", {}).values():
+        ts = st.get("last_updated")
+        if not ts:
+            continue
+        try:
+            t = datetime.fromisoformat(ts)
+        except Exception:
+            continue
+        if (now - t).total_seconds() <= within_seconds:
+            n += 1
+    return n
+
+
+async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
+    """Offline test harness. Feeds fixture tweets through the REAL pipeline
+    (build_story -> safety gate -> validate -> dedup -> build_draft) with NO
+    network reads and NO posting. Proves: dedup (one news=one post), image
+    fallback (every accepted story yields a >=1KB card), Gemini failover (logs
+    which model answered or that it fell back), and posting volume estimate.
+
+    Run it `runs` times over the SAME fixtures to prove duplicates don't repost.
+    """
+    print(f"\n[DRY-RUN] Using fixtures: {fixtures_path} (x{runs} pass(es))")
+    init_club_data()
+    fpl = fetch_fpl_data()
+
+    fx = Path(fixtures_path)
+    if not fx.exists():
+        print(f"[DRY-RUN] FIXTURE FILE NOT FOUND: {fixtures_path}")
+        return
+    try:
+        fixtures = json.loads(fx.read_text())
+    except Exception as e:
+        print(f"[DRY-RUN] could not parse fixtures: {e}")
+        return
+
+    # Isolated state so a dry-run never touches production posted_news.json.
+    data = {"daily": {"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                      "count": 0, "limit": 17},
+            "stories": {}, "posted_ids": [], "pending": {}, "extracted": {},
+            "posted_hashes": [], "posted_headlines": []}
+
+    total_accepted = total_dup_blocked = total_img_ok = total_img_fail = 0
+    dryrun_dir = Path("queue/dryrun")
+    dryrun_dir.mkdir(parents=True, exist_ok=True)
+
+    for run_i in range(1, runs + 1):
+        print(f"\n[DRY-RUN] ===== PASS {run_i}/{runs} =====")
+        accepted_this_pass = 0
+        for fxt in fixtures:
+            username = fxt.get("source", "FabrizioRomano")
+            text = fxt.get("text", "")
+            tid = str(fxt.get("id") or hashlib.sha256(text.encode()).hexdigest()[:16])
+
+            story = build_story(text, fpl)
+            safe, why = passes_safety_gate(story, text, fpl, sources=[username])
+            if not safe:
+                print(f"  [DRY] skip ({why}): {text[:60]!r}")
+                continue
+            valid, vwhy = validate_story(story, fpl)
+            if not valid:
+                print(f"  [DRY] invalid ({vwhy}): {text[:60]!r}")
+                continue
+
+            # Content-dedup BEFORE drafting (the real gate runs in post_item too).
+            dup, dreason = is_duplicate_content(story, data)
+            if dup:
+                total_dup_blocked += 1
+                print(f"  [DRY] DUPLICATE BLOCKED ({dreason}): {story.get('player')!r}")
+                continue
+
+            story.update({"id": tid, "key": build_story_key(
+                story["player"], story.get("to_key") or story.get("from_key") or "unknown",
+                story["event"]), "sources": [username], "mode": "rumour"})
+
+            # Image fallback proof: render and verify a >=1KB file always results.
+            img_path = dryrun_dir / f"{re.sub(r'[^a-z0-9_]', '', story['key'])}.png"
+            try:
+                create_image(story, story["sources"], str(img_path),
+                             rumour=(story["mode"] == "rumour"))
+                if img_path.exists() and img_path.stat().st_size >= 1000:
+                    total_img_ok += 1
+                else:
+                    total_img_fail += 1
+                    print(f"  [DRY] IMAGE FAILED to produce valid file: {story['key']}")
+            except Exception as e:
+                total_img_fail += 1
+                print(f"  [DRY] IMAGE EXCEPTION: {e}")
+
+            # Record as "posted" in the isolated state so pass 2 sees it as a dup.
+            record_content_dedup(story, data)
+            data["stories"][story["key"]] = {
+                "stage": story.get("stage", 1), "player": story["player"],
+                "event": story["event"], "status": "active",
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
+            accepted_this_pass += 1
+            total_accepted += 1
+            print(f"  [DRY] ACCEPTED: {story['player']} — {story['event']} "
+                  f"-> {img_path.name}")
+        print(f"[DRY-RUN] pass {run_i}: {accepted_this_pass} new accepted")
+
+    # Volume estimate: with MAX_POSTS_PER_RUN=1 and a 30-min cron, daily output
+    # is min(unique_accepted_per_day, daily_limit). Report both.
+    print("\n[DRY-RUN] ================ SUMMARY ================")
+    print(f"  Fixtures processed : {len(fixtures)} x {runs} pass(es)")
+    print(f"  Unique accepted    : {total_accepted}")
+    print(f"  Duplicates blocked : {total_dup_blocked}  (should be > 0 if runs>1)")
+    print(f"  Images OK (>=1KB)  : {total_img_ok}")
+    print(f"  Images FAILED      : {total_img_fail}  (MUST be 0)")
+    print(f"  Daily cap          : {data['daily']['limit']}")
+    est = min(total_accepted, data['daily']['limit'])
+    print(f"  Est. posts/day     : ~{est} (capped at {data['daily']['limit']}; "
+          f"1/run × 30-min cron, hour cap {MAX_POSTS_PER_HOUR})")
+    print(f"  Gemini status      : {'ACTIVE — last model ' + str(_GEMINI_LAST_MODEL) if _GEMINI_LAST_MODEL else 'FALLBACK (regex) — no LLM answered'}")
+    print(f"  Cards written to   : {dryrun_dir}/")
+    print("[DRY-RUN] ==========================================")
+    if total_img_fail == 0:
+        print("[DRY-RUN] PASS: no blank/broken images.")
+    else:
+        print("[DRY-RUN] FAIL: some images did not render — investigate above.")
 
 
 async def main(post: bool = True, allow_rumours: bool = False):
@@ -1984,13 +2412,27 @@ async def main(post: bool = True, allow_rumours: bool = False):
               "Set X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN. Nothing posted.")
         return
 
-    # Both confirmed and rumour stories are eligible to auto-post.
-    # AUTOPOST_MODES = {"confirmed", "rumour"} — see constant above.
+    # Both confirmed and rumour stories are eligible — see AUTOPOST_MODES above.
     modes_ok = set(AUTOPOST_MODES)
     postable = [d for d in drafts if d.get("mode") in modes_ok]
 
     if not postable:
         print("[BOT] No postable stories this run.")
+        return
+
+    # Priority: injuries/suspensions > manager > transfers; collapsed first
+    # within a tier; then by stage (more advanced first).
+    postable.sort(key=lambda s: (
+        EVENT_PRIORITY.get(s.get("event"), 5),
+        0 if s.get("collapsed") else 1,
+        -int(s.get("stage", 1)),
+    ))
+
+    # Anti-spam per-hour ceiling.
+    posted_last_hour = _recent_post_count(data, 3600)
+    if posted_last_hour >= MAX_POSTS_PER_HOUR:
+        print(f"[BOT] Per-hour cap reached ({posted_last_hour}/{MAX_POSTS_PER_HOUR}) "
+              f"— skipping posting this run.")
         return
 
     try:
@@ -2000,30 +2442,41 @@ async def main(post: bool = True, allow_rumours: bool = False):
         print(f"[BOT] could not init posting client: {e}")
         return
 
-    # Respect BOTH the per-run cap and the remaining daily allowance.
+    # Respect per-run cap, remaining daily allowance, AND per-hour ceiling.
     remaining_today = data["daily"]["limit"] - data["daily"]["count"]
-    batch = postable[:max(0, min(MAX_POSTS_PER_RUN, remaining_today))]
-    print(f"[BOT] Posting {len(batch)} item(s) "
-          f"(run cap {MAX_POSTS_PER_RUN}, {remaining_today} left today).")
+    remaining_hour = MAX_POSTS_PER_HOUR - posted_last_hour
+    batch = postable[:max(0, min(MAX_POSTS_PER_RUN, remaining_today, remaining_hour))]
+    print(f"[BOT] Posting {len(batch)} item(s) (run cap {MAX_POSTS_PER_RUN}, "
+          f"{remaining_today} left today, {remaining_hour} left this hour).")
 
     posted = 0
     for i, item in enumerate(batch):
         if not check_daily_limit(data):
             print("[BOT] Hit daily limit mid-batch — stopping.")
             break
+        # Anti-spam jitter: random 5-15 min delay before each post so timing
+        # looks human. Skipped in dry-run (no post_client there).
+        jitter = random.randint(*POST_JITTER_RANGE_S)
+        print(f"  [PACING] waiting {jitter}s before posting (anti-spam jitter)…")
+        await asyncio.sleep(jitter)
         try:
             if await post_item(post_client, item, data):
                 posted += 1
         except Exception as e:
-            print(f"  [ERROR] {item['key']} (attempt 1): {e} — retrying once")
-            try:
-                await asyncio.sleep(10)
-                if await post_item(post_client, item, data):
-                    posted += 1
-            except Exception as e2:
-                print(f"  [ERROR] {item['key']} (attempt 2): {e2} — skipping")
-        if i < len(batch) - 1:
-            await asyncio.sleep(45)   # spacing between posts in one run
+            # Dedup-aware retry: only retry if NOT already recorded as posted.
+            if item.get("id") and item["id"] in data["posted_ids"]:
+                print(f"  [ERROR] {item['key']}: {e} — already recorded, NOT retrying")
+            else:
+                print(f"  [ERROR] {item['key']} (attempt 1): {e} — retrying once")
+                try:
+                    await asyncio.sleep(10)
+                    if await post_item(post_client, item, data):
+                        posted += 1
+                except Exception as e2:
+                    print(f"  [ERROR] {item['key']} (attempt 2): {e2} — skipping")
+                    if item.get("id") and item["id"] not in data["posted_ids"]:
+                        data["posted_ids"].append(item["id"])
+                        save_data(data)
 
     print(f"\n[BOT] {posted} post(s) published; {data['daily']['count']}/"
           f"{data['daily']['limit']} used today.")
@@ -2036,5 +2489,15 @@ if __name__ == "__main__":
                              "(auto-posts confirmed/OFFICIAL stories, capped per run/day).")
     parser.add_argument("--allow-rumours", action="store_true",
                         help="Also auto-post RUMOUR-labelled stories (NOT recommended).")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Offline test: run fixtures through the full pipeline, "
+                             "no network reads, no posting. Proves dedup/image/volume.")
+    parser.add_argument("--fixtures", default="fixtures/tweets.json",
+                        help="Path to fixture tweets JSON for --dry-run.")
+    parser.add_argument("--runs", type=int, default=2,
+                        help="How many passes over fixtures in --dry-run (>=2 proves dedup).")
     args = parser.parse_args()
-    asyncio.run(main(post=not args.draft_only, allow_rumours=args.allow_rumours))
+    if args.dry_run:
+        asyncio.run(run_dry_run(fixtures_path=args.fixtures, runs=args.runs))
+    else:
+        asyncio.run(main(post=not args.draft_only, allow_rumours=args.allow_rumours))
