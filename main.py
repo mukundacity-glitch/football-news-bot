@@ -1762,10 +1762,15 @@ def get_nitter_tweets(username):
                 tid = link.text.strip().split("/")[-1].split("#")[0]
                 desc_text = desc.text if desc is not None and desc.text else ""
                 text = re.sub(r'<[^>]+>', '', desc_text).strip()
-                # Strip Nitter's trailing author footer, e.g. "paul joyce (@_pauljoyce)"
-                # which otherwise leaks an @handle into the body and gets rejected.
-                text = re.sub(r'\s*\n+\s*[^\n]*\(@\w+\)\s*$', '', text).strip()
-                text = re.sub(r'^Updated:\s*\S+\s*', '', text).strip()
+                # Nitter prepends/appends an author byline like "paul joyce (@_pauljoyce)".
+                # It can appear at the FRONT or the END, so strip any line that is just
+                # "<name> (@handle)", then drop any leftover bare @handles and URLs that
+                # would otherwise trip the raw-source-text validator.
+                text = re.sub(r'(?m)^\s*[^\n]*\(@\w+\)\s*$', '', text)
+                text = re.sub(r'^\s*Updated:\s*\S+', '', text)
+                text = re.sub(r'@\w+', '', text)
+                text = re.sub(r'https?://\S+', '', text)
+                text = re.sub(r'\n{2,}', '\n', text).strip()
                 
                 # Extract image from Nitter HTML
                 media_url = None
