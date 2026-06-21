@@ -16,8 +16,7 @@ Pass --draft-only to only build cards into queue/pending/ (no posting), or
 --dry-run to test the whole pipeline offline.
 """
 
-from bot_config import load_config
-from fpl_injuries import fpl_injury_stories, commit_posted_fpl, clear_fit_players
+from clubs_cache import get_club_data
 import os
 import re
 import json
@@ -94,6 +93,7 @@ from twikit import Client
 GEMINI_MODEL_CHAIN = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
+    "gemini-3.5-flash",
 ]
 GEMINI_TIMEOUT_S = 20
 
@@ -116,10 +116,7 @@ X_AUTH_TOKEN = (os.getenv("X_AUTH_TOKEN") or "").strip()
 X_CT0_TOKEN = (os.getenv("X_CT0_TOKEN") or "").strip()
 X_POST_AUTH_TOKEN = (os.getenv("X_POST_AUTH_TOKEN") or "").strip()
 X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or "").strip()
-
-# ── CONFIG (all changing data lives in config.json) ──────────────────────
-CFG = load_config()
-SETTINGS = CFG["settings"]
+FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
 # ── PATHS ────────────────────────────────────────────────────────────────
 POSTED_FILE = Path("posted_news.json")
@@ -133,18 +130,45 @@ CHANNEL_NAME = "FPL VORTEX"
 CHANNEL_HANDLE = "@FPLVortex"
 
 # ── JOURNALISTS ──────────────────────────────────────────────────────────
-# ── SOURCES (from config) ────────────────────────────────────────────────
-# Journalists drive transfer detection; club accounts confirm; media supplement.
-JOURNALISTS = (CFG["journalists"] + CFG["media_accounts"]
-               + CFG["official_club_accounts"])
-NITTER_INSTANCES = CFG["nitter_instances"]
+JOURNALISTS = [
+    "FabrizioRomano", "David_Ornstein", "_pauljoyce", "sistoney67",
+    "SamiMokbel_BBC", "JacobsBen", "JamesPearceLFC", "SachaTavolieri",
+    "Plettigoal", "MatteoMoretto", "AlfredoPedulla", "DiMarzio",
+    "SkySportsNews", "BBCSport", "TheAthleticFC", "guardianfootball",
+    "lequipe", "marca", "diarioas", "kicker", "TransferNewsLive",
+    "premierleague", "OfficialFPL", "Arsenal", "ManCity", "LFC", "ChelseaFC",
+    "ManUtd", "SpursOfficial", "NUFC", "NFFC",
+    "AlexCrabb1", "Transferzone00",
+]
+NITTER_INSTANCES = [
+    "https://nitter.net",
+    "https://nitter.privacydev.net",
+    "https://nitter.poast.org",
+]
 
-# ── SOURCE TIERS (from config) ───────────────────────────────────────────
-OFFICIAL_ACCOUNTS = set(s.lower() for s in CFG["source_tiers"]["official"])
-ELITE_TRUSTED = set(s.lower() for s in CFG["source_tiers"]["reporter"])
-TRUSTED_MEDIA = set(s.lower() for s in CFG["source_tiers"]["media"])
+# ── SOURCE TIERS ─────────────────────────────────────────────────────────
+OFFICIAL_ACCOUNTS = {
+    "premierleague", "officialfpl", "fpl", "uefa", "fifacom", "fifaworldcup",
+    "arsenal", "avfcofficial", "afcbournemouth", "brentfordfc",
+    "officialbhafc", "chelseafc", "cpfc", "everton", "fulhamfc",
+    "lcfc", "liverpoolfc", "lfc", "mancity", "manutd", "newcastle_nufc", "nufc",
+    "nffc", "southamptonfc", "spursofficial", "westham", "wolves",
+}
 OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {"officialfpl", "fpl", "premierleague"}
+ELITE_TRUSTED = {
+    "fabrizioromano", "david_ornstein", "_pauljoyce", "sistoney67",
+    "samimokbel_bbc", "jacobsben", "jamespearcelfc", "sachatavolieri",
+    "plettigoal", "matteomoretto", "alfredopedulla", "dimarzio",
+}
 TRUSTED_REPORTERS = ELITE_TRUSTED
+TRUSTED_MEDIA = {
+    "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
+    "guardianfootball", "lequipe", "marca", "diarioas", "as", "kicker",
+    "transfernewslive", "alexcrabb1",
+}
+# Aggregators / rumour pages: deliberately left in NO tier (tier 0). Their
+# items only reach a post when corroborated by a trusted reporter, matching the
+# "aggregators require tier-1 confirmation" rule. (e.g. Transferzone00)
 
 def source_tier(handle: str) -> int:
     h = (handle or "").lower().lstrip("@")
@@ -153,15 +177,36 @@ def source_tier(handle: str) -> int:
     if h in TRUSTED_MEDIA: return 3
     return 0
 
-# ── KEYWORDS (from config) ───────────────────────────────────────────────
-FOOTBALL_KW = CFG["keywords"]["football"]
-STAFF_BLOCK_KW = CFG["keywords"]["staff_block"]
-TRANSFER_SIGNAL_KW = CFG["keywords"]["transfer_signals"]
-INJURY_KW = CFG["keywords"]["injury_words"]
-SUSPENSION_KW = CFG["keywords"]["suspension_words"]
+# ── LIGHT PRE-FILTER ─────────────────────────────────────────────────────
+FOOTBALL_KW = [
+    "transfer", "sign", "deal", "fee", "bid", "loan", "contract", "agree",
+    "medical", "official", "here we go", "talks", "joins", "move", "target",
+    "injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt",
+    "sack", "appoint", "manager", "head coach", "stay", "return", "recall",
+    "suspended", "suspension", "banned", "red card", "sent off",
+]
+STAFF_BLOCK_KW = [
+    "head of recruitment", "sporting director", "director of football",
+    "technical director", "chief scout", "scouting", "ceo", "chairman",
+    "owner", "president", "physio", "kit man", "head of football",
+    "transfer chief", "negotiator",
+]
 
-# ── CLUB MAPS (from config) ──────────────────────────────────────────────
-CLUB_ALIASES = CFG["club_aliases"]
+# ── CLUB MAPS ────────────────────────────────────────────────────────────
+CLUB_ALIASES = {
+    "arsenal": "Arsenal", "aston villa": "Aston_Villa", "villa": "Aston_Villa",
+    "bournemouth": "Bournemouth", "brentford": "Brentford", "brighton": "Brighton",
+    "chelsea": "Chelsea", "crystal palace": "Crystal_Palace", "palace": "Crystal_Palace",
+    "everton": "Everton", "fulham": "Fulham", "ipswich": "Ipswich", "ipswich town": "Ipswich",
+    "leicester": "Leicester", "leicester city": "Leicester", "liverpool": "Liverpool",
+    "manchester city": "Man_City", "man city": "Man_City", "manchester united": "Man_Utd",
+    "man united": "Man_Utd", "man utd": "Man_Utd", "newcastle": "Newcastle",
+    "newcastle united": "Newcastle", "nottingham forest": "Nottm_Forest",
+    "nott'm forest": "Nottm_Forest", "forest": "Nottm_Forest", "southampton": "Southampton",
+    "tottenham": "Spurs", "spurs": "Spurs", "tottenham hotspur": "Spurs",
+    "west ham": "West_Ham", "west ham united": "West_Ham", "wolves": "Wolves",
+    "wolverhampton": "Wolves",
+}
 _SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
 CLUB_WORD_FRAGMENTS: set = set()
 
@@ -178,9 +223,31 @@ POSITION_WORDS = {
     "goalkeeper", "defender", "midfielder", "striker", "winger",
     "forward", "keeper", "playmaker", "captain", "international",
 }
-FPL_LOGO_IDS = CFG["club_crest_ids"]
-CLUB_COLORS = CFG["club_colors"]
-CLUB_HASHTAG_MAP = CFG["club_hashtags"]
+FPL_LOGO_IDS = {
+    "Arsenal": "3", "Aston_Villa": "7", "Bournemouth": "91", "Brentford": "94",
+    "Brighton": "36", "Chelsea": "8", "Crystal_Palace": "31", "Everton": "11",
+    "Fulham": "54", "Ipswich": "40", "Leicester": "13", "Liverpool": "14",
+    "Man_City": "43", "Man_Utd": "1", "Newcastle": "4", "Nottm_Forest": "17",
+    "Southampton": "20", "Spurs": "6", "West_Ham": "21", "Wolves": "39",
+}
+CLUB_COLORS = {
+    "Arsenal": (239, 1, 7), "Aston_Villa": (103, 14, 54), "Bournemouth": (181, 14, 18),
+    "Brentford": (227, 6, 19), "Brighton": (0, 87, 184), "Chelsea": (3, 70, 148),
+    "Crystal_Palace": (27, 69, 143), "Everton": (39, 68, 136), "Fulham": (15, 15, 15),
+    "Ipswich": (0, 0, 255), "Leicester": (0, 83, 160), "Liverpool": (200, 16, 46),
+    "Man_City": (108, 173, 223), "Man_Utd": (218, 41, 28), "Newcastle": (15, 15, 15),
+    "Nottm_Forest": (229, 50, 51), "Southampton": (215, 25, 32), "Spurs": (17, 24, 38),
+    "West_Ham": (122, 38, 58), "Wolves": (253, 185, 19),
+}
+CLUB_HASHTAG_MAP = {
+    "Arsenal": "#Arsenal", "Aston_Villa": "#AVFC", "Bournemouth": "#AFCB",
+    "Brentford": "#Brentford", "Brighton": "#BHAFC", "Chelsea": "#Chelsea",
+    "Crystal_Palace": "#CPFC", "Everton": "#EFC", "Fulham": "#FFC",
+    "Ipswich": "#ITFC", "Leicester": "#LCFC", "Liverpool": "#LFC",
+    "Man_City": "#MCFC", "Man_Utd": "#MUFC", "Newcastle": "#NUFC",
+    "Nottm_Forest": "#NFFC", "Southampton": "#SaintsFC", "Spurs": "#THFC",
+    "West_Ham": "#WHUFC", "Wolves": "#Wolves",
+}
 PL_CLUB_NAMES = {a for a in CLUB_ALIASES}
 
 BUNDESLIGA_BIG_CLUBS = {"bayern", "bayern munich", "borussia dortmund", "dortmund",
@@ -211,7 +278,11 @@ def is_bundesliga_or_laliga_club(name: str) -> bool:
     n = name.lower().strip()
     return any(n == c or c in n for c in (BUNDESLIGA_BIG_CLUBS | LA_LIGA_BIG_CLUBS))
 
-BIG_NAMES_NON_FPL = set(s.lower() for s in CFG["big_name_players"])
+BIG_NAMES_NON_FPL = {
+    "mbappe", "mbappé", "vinicius", "vinícius", "bellingham", "rodrygo",
+    "haaland", "lewandowski", "messi", "neymar", "ronaldo", "modric", "kroos",
+    "benzema", "pedri", "gavi", "yamal", "kane", "musiala", "wirtz", "kvaratskhelia",
+}
 MANAGER_SURNAMES = {
     "de zerbi", "zerbi", "guardiola", "arteta", "klopp", "slot", "postecoglou",
     "ten hag", "amorim", "emery", "howe", "maresca", "iraola", "frank",
@@ -226,24 +297,22 @@ def is_big_name_player(name: str) -> bool:
     n = name.lower().strip()
     return any(part in BIG_NAMES_NON_FPL for part in re.split(r'[\s\-]+', n))
 
-# ── CLUB DATA WIRING (config-only, no external API) ──────────────────────
+# ── CLUBS_CACHE WIRING ───────────────────────────────────────────────────
 CLUB_NAME_SET = set()
 CLUB_HASHTAGS = {}
 
 def init_club_data():
-    """Build club lookup tables purely from config — no football API call.
-    This used to hit football-data.org (now removed). Everything comes from
-    config.json's club_aliases / club_hashtags."""
     global CLUB_NAME_SET, CLUB_HASHTAGS, PL_CLUB_NAMES
-    CLUB_HASHTAGS = {k.lower(): v for k, v in CLUB_HASHTAG_MAP.items()}
-    # also index by alias so hashtag_for() can resolve human names
-    for alias, key in CLUB_ALIASES.items():
-        if key in CLUB_HASHTAG_MAP:
-            CLUB_HASHTAGS[alias.lower()] = CLUB_HASHTAG_MAP[key]
-    PL_CLUB_NAMES = {a for a in CLUB_ALIASES}
-    CLUB_NAME_SET = set(CLUB_ALIASES.keys()) | set(CLUB_HASHTAGS.keys())
+    try:
+        d = get_club_data()
+    except Exception as e:
+        print(f"[CLUBS] get_club_data failed: {e}")
+        return
+    CLUB_HASHTAGS = d.get("club_hashtags", {}) or {}
+    PL_CLUB_NAMES = set(d.get("pl_clubs", []) or []) | {a for a in CLUB_ALIASES}
+    CLUB_NAME_SET = set(CLUB_HASHTAGS.keys()) | set((d.get("short_names", {}) or {}).keys())
+    CLUB_NAME_SET |= set(CLUB_ALIASES.keys())
     _build_club_word_fragments()
-    print(f"[CLUBS] Club data ready from config ({len(CLUB_ALIASES)} aliases).")
 
 def _build_club_word_fragments():
     SKIP = {"fc", "the", "de", "af", "sc", "if", "bk", "ac", "as", "vv",
@@ -277,7 +346,7 @@ def hashtag_for(name_or_key: str):
 
 # ── STATE ────────────────────────────────────────────────────────────────
 def load_data() -> dict:
-    fresh = {"daily": {"date": "", "count": 0, "limit": SETTINGS["daily_limit"]}, "stories": {}, "posted_ids": []}
+    fresh = {"daily": {"date": "", "count": 0, "limit": 17}, "stories": {}, "posted_ids": []}
     if POSTED_FILE.exists():
         try:
             with open(POSTED_FILE) as f: d = json.load(f)
@@ -292,13 +361,6 @@ def load_data() -> dict:
     d.setdefault("extracted", {})
     d.setdefault("posted_hashes", [])
     d.setdefault("posted_headlines", [])
-    d.setdefault("posted_headlines_staged", [])
-    d.setdefault("posted_stage_keys", [])
-    d.setdefault("deferred", [])
-    d.setdefault("posts_by_type_today", {})
-    d.setdefault("posts_by_type_date", "")
-    # Daily limit always reflects current config, even on an old state file.
-    d["daily"]["limit"] = SETTINGS["daily_limit"]
     return d
 
 def save_data(data: dict):
@@ -309,7 +371,7 @@ def save_data(data: dict):
 def check_daily_limit(data: dict) -> bool:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if data["daily"]["date"] != today:
-        data["daily"] = {"date": today, "count": 0, "limit": SETTINGS["daily_limit"]}
+        data["daily"] = {"date": today, "count": 0, "limit": 17}
     return data["daily"]["count"] < data["daily"]["limit"]
 
 def increment_daily(data: dict):
@@ -356,14 +418,9 @@ def _clean_source_text(text: str) -> str:
     t = text or ""
     t = re.sub(r'\bRT\s+@\w+:?', ' ', t)
     t = re.sub(r'https?://\S+|www\.\S+', ' ', t)
-    # Remove a full Nitter/Twitter byline like "paul joyce (@_pauljoyce)"
-    # before stripping bare handles, so no orphaned name/parens are left.
-    t = re.sub(r'[A-Za-z][\w.\'’-]*(?:\s+[A-Za-z][\w.\'’-]*){0,3}\s*\(@\w+\)', ' ', t)
     t = re.sub(r'(?<!\w)@\w+', ' ', t)
     t = re.sub(r'#\w+', ' ', t)
-    t = re.sub(r'\(\s*\)', ' ', t)          # drop orphaned empty parentheses
     t = re.sub(r'[“”"]', '', t)
-    t = re.sub(r'\s+([.,;:])', r'\1', t)     # tidy space-before-punctuation
     t = re.sub(r'\s+', ' ', t).strip()
     return t
 
@@ -414,25 +471,14 @@ _FALLBACK_BANNED_SOLO = {
     "tuchel", "klopp", "arteta", "slot", "amorim", "maresca", "iraola",
 }
 
-def _is_safe_fallback_name(name: str, fpl_data=None) -> bool:
+def _is_safe_fallback_name(name: str) -> bool:
     if not name: return False
     tokens = [t for t in re.split(r"[\s\-']+", name.strip()) if t]
+    if len(tokens) < 2: return False
     low = name.lower()
-    # Manager surnames are still blocked as transfer SUBJECTS.
     if low in _FALLBACK_BANNED_SOLO: return False
-    if any(m == low for m in MANAGER_SURNAMES): return False
-    # Two+ token names are accepted as before.
-    if len(tokens) >= 2:
-        if any(m in low for m in MANAGER_SURNAMES): return False
-        return True
-    # Single-token names (Tonali, Casemiro, Cunha, Ederson) are allowed ONLY
-    # when corroborated as a real player — FPL match or known big name — so we
-    # don't turn random capitalised words into "players".
-    if fpl_data is not None and find_player_in_fpl(name, fpl_data):
-        return True
-    if is_big_name_player(name):
-        return True
-    return False
+    if any(m in low for m in MANAGER_SURNAMES): return False
+    return True
 
 def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     cleaned = _clean_source_text(tweet_text)
@@ -441,7 +487,11 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     def has_word(words_list, text):
         return any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text) for w in words_list)
 
+    # An on-loan signal must win over injury wording. Recycled lines like
+    # "X ruled out ... has joined Y on loan" otherwise misfire as injuries.
+    loan_signal = ("on loan" in tl) or bool(re.search(r"\bjoine?d?\b.*\bon loan\b", tl))
     if has_word(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl): event = "suspension"
+    elif loan_signal: event = "loan"
     elif has_word(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt"], tl): event = "injury"
     elif has_word(["sack", "appoint", "head coach", "manager"], tl): event = "manager"
     elif has_word(["new deal", "new contract", "signs new", "extension", "renew"], tl): event = "renewal"
@@ -480,20 +530,10 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         return False
 
     name = None
-    # FIRST: a known big-name single token (Casemiro, Tonali…) or an FPL player,
-    # so we don't mistakenly grab an unrecognised two-word CLUB as the player.
-    for cand in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', cleaned):
-        cl = cand.lower()
-        if _is_bad_name(cl): continue
-        if is_big_name_player(cand) or (fpl_data and find_player_in_fpl(cand, fpl_data)):
-            name = cand
+    for m in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:\s+(?:(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-Z][a-zà-ÿ]+)+)\b', cleaned):
+        if not _is_bad_name(m.lower()):
+            name = m
             break
-    # THEN: multi-word proper names (with optional nobiliary particles).
-    if not name:
-        for m in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:\s+(?:(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-Z][a-zà-ÿ]+)+)\b', cleaned):
-            if not _is_bad_name(m.lower()):
-                name = m
-                break
     if not name:
         for m in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:[-\' ][A-Z][a-zà-ÿ]+)+)\b', cleaned):
             if not _is_bad_name(m.lower()):
@@ -512,7 +552,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
                 name = m
                 break
 
-    if name and not _is_safe_fallback_name(name, fpl_data):
+    if name and not _is_safe_fallback_name(name):
         name = None
 
     clubs = []
@@ -635,22 +675,52 @@ _HISTORICAL_MARKERS = re.compile(
     r"years?\s+ago|anniversary|throwback|#tbt|flashback|remember when|"
     r"back in (the\s+)?(19|20)\d\d|years on|on this very day)\b", re.I)
 
+# A "fresh news" cue means the tweet is reporting something happening NOW.
+# If present, the recycled-status heuristic below is overridden so genuine
+# current developments (a player recovering, a new loan announced today) post.
+_FRESH_CUE = re.compile(
+    r"\b(today|tonight|tomorrow|breaking|here we go|confirmed|just (in|now)|"
+    r"official|now|set to|close to|agreed|agree|recovered|back in training|"
+    r"returns? to training|fit again|stepped up|ruled fit|available again|"
+    r"new deal|signs new|signed new|extension)\b", re.I)
+
+# Recycled status lines (e.g. OfficialFPL re-surfacing "X has joined Y on loan
+# for the rest of the season") have no fresh-news anchor. These are the lines
+# that produced the stale Redmond / Young injury-card bug.
+_RECYCLED_STATUS = re.compile(
+    r"\b(has|have)\s+joined\b.*\bon loan\b|"
+    r"\bon loan\b.*\b(rest of the|until end of|for the season)\b|"
+    r"\bfor the rest of the (season|campaign)\b", re.I)
+
 def detect_historical(text: str) -> bool:
-    """True when a tweet is about a clearly OLD event, not current news."""
+    """True when a tweet is OLD / recycled news, not a current development.
+
+    We do NOT care how old the player's situation is — only whether THIS tweet
+    reports something happening now. "Injured a year ago, recovered today" is
+    fresh (passes); "on this day in 2019 he joined on loan" is recycled (blocked).
+    """
     t = text or ""
     tl = t.lower()
-    if _HISTORICAL_MARKERS.search(tl):
+    has_fresh = bool(_FRESH_CUE.search(tl))
+    # Soft markers ("on this day", "X years ago", "anniversary") usually mean
+    # reminiscing — BUT "injured a year ago, recovered TODAY" is real news.
+    # So a soft marker only blocks when there is NO fresh-news cue.
+    if _HISTORICAL_MARKERS.search(tl) and not has_fresh:
         return True
-    # Any 1900s year in a football tweet = historical, full stop.
+    # Any 1900s year in a football tweet = historical, full stop (hard).
     if re.search(r"\b19\d\d\b", t):
         return True
-    # A 2000s year >= 2 seasons old, stated as the time of the event
-    # ("in/back in/during/on 2018"), = old news. "until 2030" / "since 2022"
-    # are NOT matched, so future contract terms and ongoing context are safe.
+    # A 2000s year >= 2 seasons old, stated as the TIME OF THE EVENT
+    # ("in/back in/during/on 2018"), = old news (hard). "until 2030" /
+    # "since 2022" are NOT matched, so future terms / ongoing context are safe.
     cur = datetime.now(timezone.utc).year
     for y in re.findall(r"\b(?:in|back in|during|on)\s+(20\d\d)\b", tl):
         if int(y) <= cur - 2:
             return True
+    # Recycled season-status lines with NO fresh cue = stale. With a fresh cue
+    # (recovered / today / confirmed / new deal) they are real news and pass.
+    if _RECYCLED_STATUS.search(tl) and not has_fresh:
+        return True
     return False
 
 
@@ -734,67 +804,34 @@ def _norm_text(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 def content_hash(story: dict) -> str:
-    """Stage-AWARE content hash. A story at stage 2 and the SAME story later at
-    stage 3 hash differently (so genuine progression can post), but the exact
-    same story at the same stage hashes identically and can never repost."""
     parts = [
         _event_family(story.get("event")),
         _norm_text(story.get("player")),
         _norm_text(story.get("from_key") or story.get("from_club")),
         _norm_text(story.get("to_key") or story.get("to_club")),
         _norm_text(story.get("headline")),
-        f"stage{int(story.get('stage', 1))}",          # ← per-stage uniqueness
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
-def stage_post_key(story: dict) -> str:
-    """A compact key identifying a story at a specific stage, used for the
-    explicit 'one post per stage' ledger."""
-    fam = _event_family(story.get("event"))
-    player = _norm_text(story.get("player"))
-    club = _norm_text(story.get("to_key") or story.get("to_club")
-                      or story.get("from_key") or story.get("from_club") or "unknown")
-    return f"{fam}|{player}|{club}|stage{int(story.get('stage', 1))}"
-
 def is_duplicate_content(story: dict, data: dict, threshold: float = 0.90):
-    # 1) Explicit per-stage ledger — the hard "never same stage twice" rule.
-    spk = stage_post_key(story)
-    if spk in data.get("posted_stage_keys", []):
-        return True, "stage_already_posted"
-    # 2) Stage-aware content hash.
     h = content_hash(story)
     if h in data.get("posted_hashes", []): return True, "content_hash"
-    # 3) Fuzzy headline match — but ONLY within the same stage, so a stage-2
-    #    "talks" post doesn't block the later stage-4 "here we go" post.
     head = _norm_text(story.get("headline") or story.get("player"))
-    stg = int(story.get("stage", 1))
     if head:
-        for prev_head, prev_stage in data.get("posted_headlines_staged", []):
-            if prev_stage == stg and difflib.SequenceMatcher(
-                    None, head, prev_head).ratio() >= threshold:
-                return True, f"fuzzy_headline_same_stage>={threshold:.2f}"
+        for prev in data.get("posted_headlines", []):
+            if difflib.SequenceMatcher(None, head, prev).ratio() >= threshold:
+                return True, f"fuzzy_headline>={threshold:.2f}"
     return False, ""
 
 def record_content_dedup(story: dict, data: dict):
-    spk = stage_post_key(story)
-    if spk not in data.setdefault("posted_stage_keys", []):
-        data["posted_stage_keys"].append(spk)
     h = content_hash(story)
     if h not in data.setdefault("posted_hashes", []):
         data["posted_hashes"].append(h)
     head = _norm_text(story.get("headline") or story.get("player"))
-    stg = int(story.get("stage", 1))
-    staged = data.setdefault("posted_headlines_staged", [])
-    if head and [head, stg] not in staged:
-        staged.append([head, stg])
-    # legacy field kept for backward compat with old state files
-    legacy = data.setdefault("posted_headlines", [])
-    if head and head not in legacy:
-        legacy.append(head)
-    for fld in ("posted_stage_keys", "posted_hashes", "posted_headlines",
-                "posted_headlines_staged"):
-        if len(data.get(fld, [])) > 3000:
-            data[fld] = data[fld][-3000:]
+    if head and head not in data.setdefault("posted_headlines", []):
+        data["posted_headlines"].append(head)
+    if len(data["posted_hashes"]) > 2000: data["posted_hashes"] = data["posted_hashes"][-2000:]
+    if len(data["posted_headlines"]) > 2000: data["posted_headlines"] = data["posted_headlines"][-2000:]
 
 def build_story_key(player, club_key, event) -> str:
     p = (player or "unknown").lower().replace(" ", "_")
@@ -834,45 +871,42 @@ def absorb_unknown_variant(player, event, canonical_key, *maps):
         if mp and unknown_key in mp: return unknown_key
     return None
 
-def should_post(data, key, new_stage, collapsed, new_sources=None):
+def should_post(data, key, new_stage, collapsed):
     existing = data["stories"].get(key)
     if collapsed:
         if not existing or existing["status"] == "active": return True, "collapse"
         return False, "already_collapsed"
     if not existing: return True, "new"
     if existing["status"] == "collapsed": return False, "story_collapsed"
-    if new_stage > existing.get("stage", 1): return True, "progression"
-    # RELAXED no_progression: a same-stage story is still worth (re)considering
-    # if a NEW trusted source has corroborated it since we last posted. Content
-    # dedup downstream still prevents identical re-posts, so this only lets a
-    # genuinely strengthened story through, not spam.
-    prev_sources = set(s.lower() for s in (existing.get("sources") or []))
-    fresh = [s for s in (new_sources or []) if s.lower() not in prev_sources]
-    if fresh:
-        return True, "new_corroboration"
-    return False, "no_progression"
+    if new_stage <= existing["stage"]: return False, "no_progression"
+    return True, "progression"
 
 # ── SAFETY + ACCURACY GATES ──────────────────────────────────────────────
-STRONG_OFFICIAL = CFG["keywords"]["strong_official"]
+STRONG_OFFICIAL = ["here we go", "official", "confirmed", "completed", "done deal",
+                   "sealed", "unveiled", "joins", "joined", "signs", "signed", "medical"]
 
 def detect_mixed_story(story, raw_text) -> str:
-    """Only flag a story as mixed when it is TRULY unusable. Relaxed per spec:
-    a tweet that mentions two clubs (selling + buying) or a player plus a
-    passing manager reference is normal transfer news, not a mixed story."""
     text = (raw_text or "")
     tl = text.lower()
     player = (story.get("player") or "").lower()
     ev = story.get("event")
-    # The transfer SUBJECT itself being a manager is a real error.
-    if ev != "manager" and player and (player in MANAGER_SURNAMES or
-                                       any(m == player for m in MANAGER_SURNAMES)):
+    if ev != "manager" and player and (player in MANAGER_SURNAMES or any(m in player for m in MANAGER_SURNAMES)):
         return "player_is_manager"
-    # Negated move misread as a transfer ("X will NOT leave / not for sale").
+    if ev in ("transfer", "loan", "loan_option", "stay", "renewal"):
+        manager_in_text = any(re.search(r'(?<![a-z])' + re.escape(m) + r'(?![a-z])', tl) for m in MANAGER_SURNAMES)
+        subject_is_manager = any(m in player for m in MANAGER_SURNAMES)
+        if manager_in_text and not subject_is_manager: return "manager_and_player_mixed"
+    clauses = re.split(r'[.;]|\bmeanwhile\b|\balso\b|\bplus\b|\belsewhere\b|\bseparately\b', tl)
+    clubbed_clauses = 0
+    for c in clauses:
+        if any(re.search(r'(?<![a-z])' + re.escape(a) + r'(?![a-z])', c) for a in _SORTED_ALIASES):
+            clubbed_clauses += 1
+    if clubbed_clauses >= 4: return "multiple_stories_suspected"
     if ev in ("transfer", "loan", "loan_option"):
         if re.search(r'\bno\s+(move|exit|transfer|deal)\b', tl) or \
-           re.search(r'\b(not|never)\s+(?:moving|leaving|for sale|going)\b', tl):
-            return "negated_move_misread_as_transfer"
-    # Genuinely tangled: THREE or more clearly distinct full-name players.
+           re.search(r'\b(not?|never)\s+(?:moving|leaving|for sale)\b', tl):
+            dests = sum(1 for a in _SORTED_ALIASES if re.search(r'(?<![a-z])' + re.escape(a) + r'(?![a-z])', tl))
+            if dests >= 1: return "negated_move_misread_as_transfer"
     name_candidates = set()
     for mm in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:\s+[A-Z][a-zà-ÿ]+){1,2})\b', text):
         low = mm.lower()
@@ -882,8 +916,9 @@ def detect_mixed_story(story, raw_text) -> str:
     distinct = set()
     for n in sorted(name_candidates, key=len, reverse=True):
         if not any(n != o and n in o for o in distinct): distinct.add(n)
-    if len(distinct) >= 3:
-        return "multiple_players_suspected"
+    if len(distinct) >= 2:
+        coordinated = bool(re.search(r'\b[A-Z][a-zà-ÿ]+ [A-Z][a-zà-ÿ]+\s+(?:and|&)\s+[A-Z][a-zà-ÿ]+ [A-Z][a-zà-ÿ]+', text))
+        if coordinated or len(distinct) >= 3: return "multiple_players_suspected"
     return ""
 
 def player_already_at_club(story, fpl_data) -> bool:
@@ -903,99 +938,78 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
                    "ballon d'or", "merch", "video game", "ea sports"]
     if any(k in tl for k in NON_NEWS_KW): return False, "off_topic_content"
     if not story.get("is_football"): return False, "not_football"
+    if tweet_too_old(story.get("created_at")): return False, f"older_than_{MAX_TWEET_AGE_DAYS}d"
     if story.get("historical") and not ALLOW_HISTORICAL_POSTS: return False, "historical_news"
-    if story.get("confidence", 0) < 0.40: return False, "low_confidence"
-    # Block genuine off-pitch STAFF stories (sporting director, CEO, scout…)
-    # but NOT when the subject is a player/manager move.
-    if any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl) for w in STAFF_BLOCK_KW):
-        return False, "staff_or_offpitch"
+    if story.get("confidence", 0) < 0.45: return False, "low_confidence"
+    if any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl) for w in STAFF_BLOCK_KW): return False, "staff_or_offpitch"
     if not story.get("player"): return False, "no_player"
     mixed = detect_mixed_story(story, raw_text)
     if mixed: return False, f"mixed_story:{mixed}"
     if story.get("from_video") and not story.get("has_written_claim"): return False, "video_no_written_claim"
     if player_already_at_club(story, fpl_data): return False, "already_at_destination"
 
-    # ── INJURY / SUSPENSION ──────────────────────────────────────────────
-    # Per spec: allow partial-but-clear updates. Require a trusted/official
-    # source OR an FPL-known player, but do NOT require Bundesliga/LaLiga gating
-    # or a club lookup that the (now absent) football API used to provide.
-    if story["event"] in ("injury", "suspension"):
-        tiers = [source_tier(s) for s in sources]
-        trusted = any(t in (1, 2, 3) for t in tiers) or \
-            any((s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS for s in sources)
-        pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
-        if trusted or pl_player:
-            return True, f"ok_{story['event']}"
-        return False, f"{story['event']}_source_not_trusted"
-
-    # ── MANAGER ──────────────────────────────────────────────────────────
     if story["event"] == "manager":
-        if story.get("to_key") or story.get("to_club"):
-            return True, "ok_manager"
-        # allow if there's a clear appointment cue even without resolved club
-        if re.search(r"\b(appoint|appointed|new (head coach|manager|boss)|"
-                     r"sacked|named (as )?(head coach|manager)|takes over)\b", tl):
-            return True, "ok_manager_cue"
-        return False, "manager_no_club"
+        to_key = story.get("to_key")
+        to_club = story.get("to_club")
+        pl_club = bool(to_key) or (to_club and to_club.lower() in PL_CLUB_NAMES)
+        if not (pl_club or is_bundesliga_or_laliga_club(to_club)): return False, "manager_no_club"
+        if story.get("from_fallback"):
+            appoint_cue = re.search(
+                r"\b(appoint|appointed|new (head coach|manager|boss)|"
+                r"set to (become|take over|be appointed)|sacked|"
+                r"named (as )?(head coach|manager)|takes over|"
+                r"agree(s|d)? to (become|join)|done deal)\b", tl)
+            if not appoint_cue: return False, "manager_no_appointment_cue"
+        return True, "ok_manager"
 
-    # ── TRANSFER / LOAN / RENEWAL / STAY ─────────────────────────────────
-    # Per spec: do NOT require destination club, fee, or confirmation. A clear
-    # transfer SIGNAL from a trusted source about a real player is postable.
-    TRANSFER_SIGNALS = [
-        "fresh bid", "bid expected", "new bid", "bid", "talks", "negotiation",
-        "personal terms", "interest", "interested", "medical", "here we go",
-        "agreement", "agreed", "deal", "close to", "set to", "advanced",
-        "loan", "sign", "signing", "joins", "join", "move", "target",
-        "contract", "new deal", "extension", "renew", "stay", "swap", "fee",
-        "offer", "linked", "approach", "verbal", "green light",
-    ]
-    has_signal = any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl)
-                     for w in TRANSFER_SIGNALS)
-    tiers = [source_tier(s) for s in sources]
-    trusted_source = any(t in (1, 2, 3) for t in tiers)
+    if story["event"] == "injury":
+        tiers = [source_tier(s) for s in sources]
+        injury_source_ok = any(t in (1, 2) for t in tiers) or \
+            any((s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS for s in sources)
+        if not injury_source_ok: return False, "injury_source_not_approved"
+        pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
+        bl_club_in_text = any(c in tl for c in (BUNDESLIGA_BIG_CLUBS | LA_LIGA_BIG_CLUBS))
+        if pl_player or bl_club_in_text: return True, "ok_injury"
+        return False, "injury_not_pl_bundesliga_laliga"
+
     pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
+    pl_club = bool(story.get("to_key") or story.get("from_key"))
+    if not pl_club:
+        for nm in (story.get("to_club"), story.get("from_club")):
+            if nm and nm.lower() in PL_CLUB_NAMES:
+                pl_club = True
+                break
+    if pl_player or pl_club: return True, "ok"
     big_player = is_big_player(story["player"], fpl_data) or is_big_name_player(story["player"])
     big_club = is_big_club_name(story.get("to_club")) or is_big_club_name(story.get("from_club"))
+    if big_player or big_club: return True, "ok_big_name"
+    # UNLOCK: elite source + any named club = worth posting
+    tiers = [source_tier(s) for s in (sources or [])]
+    elite_source = any(t == 2 for t in tiers)
     any_club = bool(story.get("to_club") or story.get("from_club") or
                     story.get("to_key") or story.get("from_key"))
-
-    # Accept when there's a clear transfer signal AND any of:
-    #   trusted source / FPL or big player / big or named club.
-    if has_signal and (trusted_source or pl_player or big_player or big_club or any_club):
-        return True, "ok_transfer_signal"
-    # Last resort: an FPL/big player named by a trusted source, even if the
-    # signal keyword set didn't match (e.g. unusual phrasing).
-    if trusted_source and (pl_player or big_player):
-        return True, "ok_trusted_player"
-    return False, "not_clearly_transfer"
+    if elite_source and any_club: return True, "ok_elite_source"
+    return False, "not_fpl_relevant"
 
 def classify_post(story, sources):
-    """Return the post MODE: 'confirmed' (official/strong) or 'rumour'
-    (reported by a journalist). Per spec, a single trusted reporter is enough
-    to post — we just label it 'reported' rather than 'confirmed'."""
-    if story.get("fpl_official"):
-        return "confirmed"   # first-party FPL data is confirmed by definition
     if story.get("collapsed"): return "rumour"
     tiers = [source_tier(s) for s in sources]
     has_official = 1 in tiers
-    has_elite = any(t == 2 for t in tiers)
-    has_media = any(t == 3 for t in tiers)
+    n_elite = sum(1 for t in tiers if t == 2)
+    has_media = 3 in tiers
     tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    strong_words = story.get("stage", 1) >= 4 or any(
-        re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
+    strong_words = story["stage"] >= 4 or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
 
-    if story["event"] in ("injury", "suspension"):
-        # official or trusted reporter ⇒ confirmed; reputable media ⇒ reported
-        if has_official or has_elite: return "confirmed"
-        if has_media: return "rumour"
-        return "rumour"
+    if story["event"] == "injury":
+        if has_official or n_elite >= 1: return "confirmed"
+        return None
 
+    trusted_strong = strong_words and (has_official or n_elite >= 1)
     video_only = story.get("from_video") and not has_official
-    if (has_official or (strong_words and (has_official or has_elite))) and not video_only:
-        return "confirmed"
-    # A single trusted journalist or reputable outlet ⇒ post as reported.
-    if has_elite or has_media:
-        return "rumour"
+    if (has_official or trusted_strong or n_elite >= 2) and not video_only: return "confirmed"
+    if n_elite >= 1: return "rumour"
+    if n_elite >= 1: return "rumour"
+    if has_media: return "rumour"
     return None
 
 def validate_story(story, fpl_data=None):
@@ -1004,53 +1018,31 @@ def validate_story(story, fpl_data=None):
     if not player: return False, "missing_player"
     _ptokens = [t for t in re.split(r"[\s\-']+", player) if t]
     _plow = player.lower()
-    # The transfer SUBJECT being an exact manager surname is still an error,
-    # but a single-name player (Tonali, Casemiro, Cunha, Ederson) is FINE.
-    if ev != "manager" and _plow in MANAGER_SURNAMES:
-        return False, "player_is_manager_name"
-    if ev == "manager" and len(_ptokens) < 2:
-        return False, "manager_name_single_token"
-    # RELAXED: single-token player names are allowed for all event types.
-    # Only reject an obviously truncated youth-team fragment ("... Under" / "U21").
-    if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow):
-        return False, "player_name_truncated_fragment"
+    if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
+    if ev == "manager" and len(_ptokens) < 2: return False, "manager_name_single_token"
+    if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
+    if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
 
-    PLACEHOLDERS = ("player name", "example", "xxx", "tbd", "to follow",
-                    "lorem", "duration & details", "updated heading",
-                    "from club", "to club")
+    PLACEHOLDERS = ("player name", "example", "xxx", "[", "]", "tbd", "to follow",
+                    "lorem", "duration & details", "updated heading", "from club", "to club")
     blob = " ".join(str(story.get(k, "") or "") for k in
                     ("player", "headline", "body", "from_club", "to_club", "fee",
                      "contract", "conditional", "diagnosis", "expected_return")).lower()
     for ph in PLACEHOLDERS:
         if ph in blob: return False, f"placeholder_text:{ph!r}"
     if looks_like_club(player): return False, "player_is_club"
-    # Scrub raw source artefacts (RT/@handles/URLs) in place rather than reject.
-    if re.search(r'\bRT\s+@|@\w+|https?://', story.get("body", "")):
-        cleaned_body = _clean_source_text(story.get("body", ""))
-        if len(cleaned_body.split()) < 4:
-            cleaned_body = _summarise(
-                story.get("player"), ev,
-                story.get("from_key"), story.get("to_key"),
-                story.get("stage", 1), story.get("collapsed"))
-        story["body"] = cleaned_body
-        if re.search(r'\bRT\s+@|@\w+|https?://', story.get("body", "")):
-            return False, "raw_source_text_in_body"
+    if re.search(r'\bRT\s+@|@\w+|https?://', story.get("body", "")): return False, "raw_source_text_in_body"
     if player_already_at_club(story, fpl_data): return False, "already_at_destination"
     if ev in ("transfer", "loan", "loan_option"):
         fk = story.get("from_key"); tk = story.get("to_key")
         fc = (story.get("from_club") or "").strip().lower()
         tc = (story.get("to_club") or "").strip().lower()
-        # If both clubs are named and identical, that's a genuine error.
-        if (fk and tk and fk == tk) or (fc and tc and fc == tc):
-            return False, "from_equals_to"
-        # RELAXED: a transfer with NO club at all is still postable (e.g.
-        # "Tonali to Spurs" where Spurs failed to resolve, or "bid expected").
-        # We no longer reject on missing clubs or unconfident direction.
+        if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
+        if not (tk or story.get("to_club") or fk or story.get("from_club")): return False, "no_clubs"
+        if story.get("from_fallback") and not story.get("direction_confident"): return False, "direction_unconfident"
         leak = (story.get("body", "") + " " + story.get("headline", "")).lower()
-        if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak):
-            return False, "event_data_mismatch"
-    if ev == "manager" and not (story.get("to_key") or story.get("to_club") or story.get("headline")):
-        return False, "manager_no_club"
+        if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak): return False, "event_data_mismatch"
+    if ev == "manager" and not (story.get("to_key") or story.get("to_club")): return False, "manager_no_club"
     return True, "ok"
 
 # ── LABELS ───────────────────────────────────────────────────────────────
@@ -1120,97 +1112,15 @@ def trim_for_twitter(body: str, limit: int = 278) -> str:
         out += ch
     return out.rstrip() + "…"
 
-def _pretty_club_name(story, which):
-    """Human-readable club name from key or club field. which = 'to' or 'from'."""
-    key = story.get(f"{which}_key")
-    club = story.get(f"{which}_club")
-    name = club or (key or "").replace("_", " ")
-    name = name.strip()
-    if not name:
-        return None
-    return name.title() if name.islower() else name
-
-
 def build_tweet_body(story, sources, mode) -> str:
-    """Build a short, clear, informative caption.
-
-    Format per type:
-      🔴 INJURY: Sousa (Aston Villa)
-      Hamstring injury – 25% chance of playing
-      <hashtags>
-
-      🔵 REPORTED: Tonali → Tottenham
-      Fresh bid expected as talks continue
-      <hashtags>
-    """
     label = status_label(story, mode)
-    tiers = [source_tier(s) for s in (sources or [])]
-    is_official = 1 in tiers
-    ev = story.get("event", "transfer")
-    player = story.get("player") or story.get("headline") or "Update"
-
-    # Resolve the label word and a leading emoji.
-    if mode == "rumour" and label in ("RUMOUR", None):
-        tag, emoji = "REPORTED", "🔵"
-    elif label == "OFFICIAL" or is_official:
-        tag, emoji = (label or "OFFICIAL"), "✅"
+    head = story.get("headline") or story.get("player") or "Update"
+    # Short prefix: "RUMOUR |" or "OFFICIAL |" etc + headline only
+    if mode == "rumour" and label == "RUMOUR":
+        first_line = f"Unconfirmed report RUMOUR | {head}"
     else:
-        tag, emoji = (label or "UPDATE"), "🔵"
-
-    to_club = _pretty_club_name(story, "to")
-    from_club = _pretty_club_name(story, "from")
-
-    # ── Line 1: the headline, shaped per event type ──────────────────────
-    if ev in ("injury", "suspension"):
-        emoji = "🔴" if ev == "injury" else "🟥"
-        club = from_club or to_club
-        head = f"{player} ({club})" if club else player
-        first_line = f"{emoji} {tag}: {head}"
-    elif ev in ("transfer", "loan", "loan_option"):
-        if to_club and from_club:
-            head = f"{player}: {from_club} → {to_club}"
-        elif to_club:
-            head = f"{player} → {to_club}"
-        elif from_club:
-            head = f"{player} ({from_club})"
-        else:
-            head = player
-        first_line = f"{emoji} {tag}: {head}"
-    elif ev in ("renewal", "stay"):
-        club = from_club or to_club
-        head = f"{player} ({club})" if club else player
-        first_line = f"📝 {tag}: {head}"
-    elif ev == "manager":
-        head = f"{player} → {to_club}" if to_club else player
-        first_line = f"📋 {tag}: {head}"
-    else:
-        first_line = f"{emoji} {tag}: {player}"
-
-    # ── Line 2: the key detail (this is what was missing before) ─────────
-    detail = None
-    if ev in ("injury", "suspension"):
-        # FPL gives us the real text: "Hamstring injury - 25% chance of playing"
-        detail = story.get("diagnosis") or story.get("expected_return")
-        if detail:
-            detail = detail.replace(" - ", " – ")
-    else:
-        bits = []
-        if story.get("fee"): bits.append(story["fee"])
-        if story.get("contract"): bits.append(story["contract"])
-        if story.get("conditional"): bits.append(story["conditional"])
-        if bits:
-            detail = "  •  ".join(bits)
-        else:
-            # fall back to the one-sentence summary body if it adds info
-            b = (story.get("body") or "").strip()
-            if b and b.lower() not in (player.lower(), first_line.lower()):
-                detail = b
-
-    # Assemble, keeping it compact. trim_for_twitter() enforces the hard limit.
-    lines = [first_line]
-    if detail:
-        lines.append(detail)
-    body = "\n".join(lines) + "\n\n" + build_hashtags(story)
+        first_line = f"{label} | {head}"
+    body = first_line + "\n\n" + build_hashtags(story)
     return body
 
 def build_detail_line(story) -> str:
@@ -1618,37 +1528,6 @@ def _pretty_club(s):
     s = (s or "").strip()
     return s.title() if s.islower() else s
 
-def _wrap_text_to_width(draw, text, font, max_width, max_lines=2):
-    """Wrap text into up to max_lines that each fit max_width. The final line is
-    ellipsised if the text is too long. Returns a list of line strings."""
-    if not text:
-        return []
-    words = str(text).split()
-    lines = []
-    cur = ""
-    for w in words:
-        test = (cur + " " + w).strip()
-        if draw.textlength(test, font=font) <= max_width or not cur:
-            cur = test
-        else:
-            lines.append(cur)
-            cur = w
-            if len(lines) == max_lines:
-                break
-    if len(lines) < max_lines and cur and (not lines or lines[-1] != cur):
-        lines.append(cur)
-    # If we ran out of room, ellipsise the last visible line.
-    if len(lines) == max_lines:
-        joined_words = " ".join(words)
-        shown = " ".join(lines)
-        if draw.textlength(shown, font=font) < draw.textlength(joined_words, font=font):
-            last = lines[-1]
-            while last and draw.textlength(last + "…", font=font) > max_width:
-                last = last[:-1]
-            lines[-1] = (last.rstrip() + "…") if last else "…"
-    return lines[:max_lines]
-
-
 def create_player_card(story, sources, filename, mode="confirmed"):
     """One card for EVERY post type. RIGHT = framed (crest on top + headshot
     below), Doku-style. LEFT = two-line red/green label, name, type info.
@@ -1681,32 +1560,13 @@ def create_player_card(story, sources, filename, mode="confirmed"):
                            fill=(17, 26, 44), outline=(255, 255, 255, 32), width=3)
     fcx = (FX0 + FX1) // 2
 
-    # team crest at the TOP of the image area (kept big + clear).
-    # For INJURY/SUSPENSION cards we deliberately show NO club crest — instead a
-    # red medical cross — so it reads instantly as an availability update.
-    is_injury_card = ev in ("injury", "suspension")
-    if is_injury_card:
-        # Red medical cross centred at the top of the panel. Arms must be clearly
-        # longer than they are thick, or the two bars merge into a square.
-        cross_cx = fcx
-        cross_cy = FY0 + 70
-        arm = 46      # half-length of each arm (long)
-        thick = 16    # half-thickness of each bar (thin)
-        red = (227, 30, 36)
-        draw.rounded_rectangle(
-            [cross_cx - thick, cross_cy - arm, cross_cx + thick, cross_cy + arm],
-            radius=7, fill=red)
-        draw.rounded_rectangle(
-            [cross_cx - arm, cross_cy - thick, cross_cx + arm, cross_cy + thick],
-            radius=7, fill=red)
-        crest_bottom = cross_cy + arm
-    else:
-        crest_key = to_key or from_key
-        crest = _load_crest(crest_key, box=118) if crest_key else None
-        crest_top = FY0 + 20
-        crest_bottom = crest_top + (crest.height if crest is not None else 96)
-        if crest is not None:
-            img.paste(crest, (fcx - crest.width // 2, crest_top), crest)
+    # team crest at the TOP of the image area (kept big + clear)
+    crest_key = to_key or from_key
+    crest = _load_crest(crest_key, box=118) if crest_key else None
+    crest_top = FY0 + 20
+    crest_bottom = crest_top + (crest.height if crest is not None else 96)
+    if crest is not None:
+        img.paste(crest, (fcx - crest.width // 2, crest_top), crest)
 
     # LARGE portrait photo box that fills the rest of the panel
     PB_W = 372
@@ -1766,31 +1626,43 @@ def create_player_card(story, sources, filename, mode="confirmed"):
     nsize = 86; nf = get_premium_font(nsize, "Black")
     while draw.textlength(name_up, font=nf) > NAME_MAX_W and nsize > 44:
         nsize -= 3; nf = get_premium_font(nsize, "Black")
-    # Hard truncate if still too wide at the minimum size (prevents overlap).
-    if draw.textlength(name_up, font=nf) > NAME_MAX_W:
-        while name_up and draw.textlength(name_up + "…", font=nf) > NAME_MAX_W:
-            name_up = name_up[:-1]
-        name_up = name_up.rstrip() + "…"
     _draw_text_shadow(draw, (LX, name_y), name_up, nf, (255, 255, 255), offset=3)
     nb = draw.textbbox((0, 0), name_up, font=nf)
     y = name_y + (nb[3] - nb[1]) + 34
     info_f = get_premium_font(38, "Bold"); sub_f = get_premium_font(27, "Bold")
-    # All info text must stay LEFT of the photo panel (FX0) with a 40px gutter.
-    INFO_MAX_X = FX0 - 40
+    INFO_MAX_X = FX0 - 30  # never draw past the image panel's left edge
+
     def _info_row(label, value, col=(255, 255, 255)):
         nonlocal y
         if not value: return
+        value = str(value)
         _draw_text_shadow(draw, (LX, y + 4), label, sub_f, (150, 165, 195))
-        lw = draw.textlength(label + "   ", font=sub_f)
-        value_max_w = INFO_MAX_X - (LX + lw)
-        # Wrap the value to the remaining width (up to 2 lines) so long
-        # diagnoses/club names never run into the photo.
-        vlines = _wrap_text_to_width(draw, str(value), info_f, value_max_w, max_lines=2)
-        for i, vl in enumerate(vlines):
-            _draw_text_shadow(draw, (LX + lw, y), vl, info_f, col)
-            if i < len(vlines) - 1:
-                y += 46
-        y += 60
+        vx = LX + draw.textlength(label + "   ", font=sub_f)
+        avail = max(120, INFO_MAX_X - vx)
+        # shrink value font until even the longest single word fits the slot
+        vsize, vf = 38, info_f
+        while vsize > 22 and max(
+                (draw.textlength(w, font=vf) for w in value.split()), default=0) > avail:
+            vsize -= 2
+            vf = get_premium_font(vsize, "Bold")
+        # wrap onto lines within `avail`
+        words, line, lines = value.split(), "", []
+        for w in words:
+            test = (line + " " + w).strip()
+            if draw.textlength(test, font=vf) > avail and line:
+                lines.append(line); line = w
+            else:
+                line = test
+        if line: lines.append(line)
+        truncated = len(lines) > 3
+        lines = lines[:3]  # cap height; merge the rest into an ellipsis
+        if truncated and lines:
+            lines[-1] = lines[-1].rstrip() + "…"
+        bb = draw.textbbox((0, 0), "Ag", font=vf)
+        lh = (bb[3] - bb[1]) + 6
+        for i, ln in enumerate(lines):
+            _draw_text_shadow(draw, (vx, y + i * lh), ln, vf, col)
+        y += max(60, len(lines) * lh + 8)
     if ev == "injury":
         stage = story.get("stage", 1)
         avail = {4: "Fit again", 3: "Ruled out", 2: "Doubt", 1: "Being assessed"}.get(stage, "Being assessed")
@@ -1809,27 +1681,27 @@ def create_player_card(story, sources, filename, mode="confirmed"):
             _info_row("TO", _pretty_club(tc) if tc else None)
         _info_row("PRICE", story.get("fee")); _info_row("CONTRACT", story.get("contract"))
 
-    # ---------- source bar (date left in bold green, source right) ----------
+    # ---------- source bar ----------
     draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
     draw.rectangle([0, H - 12, W, H], fill=accent)
-    # Date — bottom-left, bold green.
-    date_str = datetime.now(timezone.utc).strftime("%d %b %Y").upper()
-    date_f = get_premium_font(30, "Black")
-    db = draw.textbbox((0, 0), date_str, font=date_f)
-    dy = (H - 90) + (78 - (db[3] - db[1])) // 2 - db[1]
-    _draw_text_shadow(draw, (60, dy), date_str, date_f, (84, 224, 124), offset=1)
-    date_w = draw.textlength(date_str, font=date_f)
-    # Source — to the RIGHT of the date, right-aligned to the card edge.
     src = " · ".join(f"@{s}" for s in sources[:2])
     bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
-    bsize = 30; bf = get_premium_font(bsize, "Bold")
-    src_left = 60 + date_w + 40
-    while bsize > 22 and draw.textlength(bar, font=bf) > (W - src_left - 40):
+    # Date string in the footer's own colour (gold), right-aligned. Uses the
+    # tweet's publish date when known, otherwise the date the card is made.
+    date_str = _card_date_str(story.get("created_at"))
+    df = get_premium_font(30, "Bold")
+    dw = draw.textlength(date_str, font=df)
+    bsize = 34; bf = get_premium_font(bsize, "Bold")
+    # leave room for the date on the right so the two never collide
+    avail_w = (W - 120) - dw - 30
+    while bsize > 24 and draw.textlength(bar, font=bf) > avail_w:
         bsize -= 1; bf = get_premium_font(bsize, "Bold")
     bb = draw.textbbox((0, 0), bar, font=bf)
     by = (H - 90) + (78 - (bb[3] - bb[1])) // 2 - bb[1]
-    bx = W - 40 - draw.textlength(bar, font=bf)
-    draw.text((max(src_left, bx), by), bar, font=bf, fill=(190, 200, 220))
+    draw.text((60, by), bar, font=bf, fill=(190, 200, 220))
+    db = draw.textbbox((0, 0), date_str, font=df)
+    dy = (H - 90) + (78 - (db[3] - db[1])) // 2 - db[1]
+    draw.text((W - 60 - dw, dy), date_str, font=df, fill=(212, 175, 55))
     img.save(filename)
 
 
@@ -1888,13 +1760,6 @@ def record_posted(item, data):
     }
     record_content_dedup(item, data)
     increment_daily(data)
-    # Advance FPL posted-state ONLY now that the story is truly out. Cap-blocked
-    # FPL stories never reach here, so they regenerate and retry next run.
-    if item.get("fpl_official"):
-        try:
-            commit_posted_fpl(item)
-        except Exception as e:
-            print(f"  [FPL] could not commit posted-state: {e}")
     save_data(data)
     move_to_posted(item)
 
@@ -1959,6 +1824,52 @@ async def post_item(post_client, item, data):
     return False
 
 # ── SCRAPER ──────────────────────────────────────────────────────────────
+# Maximum age, in days, for a tweet to be eligible to post. Tweets whose
+# publish timestamp is older than this are skipped outright (hard cutoff),
+# independent of the recycled-news wording filter.
+MAX_TWEET_AGE_DAYS = 3
+
+def _parse_tweet_date(raw):
+    """Parse a tweet timestamp from twikit (created_at) or Nitter RSS (pubDate)
+    into an aware UTC datetime. Returns None if it can't be parsed."""
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    s = str(raw).strip()
+    # Twitter/X style: "Wed Oct 10 20:19:24 +0000 2018"
+    for fmt in ("%a %b %d %H:%M:%S %z %Y",
+                "%a, %d %b %Y %H:%M:%S %z",      # RFC822 / Nitter pubDate
+                "%a, %d %b %Y %H:%M:%S %Z",
+                "%Y-%m-%dT%H:%M:%S%z",
+                "%Y-%m-%d %H:%M:%S%z"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
+    try:  # last resort: ISO 8601
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS):
+    """True if the tweet's timestamp is older than max_days. Unknown/unparseable
+    dates return False (do NOT block) so a missing timestamp never silently
+    kills every post — the recycled-news filter is the backstop in that case."""
+    dt = _parse_tweet_date(created_at)
+    if dt is None:
+        return False
+    age = datetime.now(timezone.utc) - dt
+    return age.total_seconds() > max_days * 86400
+
+def _card_date_str(created_at):
+    """Footer date label. Uses the tweet's publish date when known, else today.
+    Format: '21 Jun 2026'."""
+    dt = _parse_tweet_date(created_at) or datetime.now(timezone.utc)
+    return dt.strftime("%d %b %Y")
+
 def get_nitter_tweets(username):
     headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
     for inst in NITTER_INSTANCES:
@@ -1973,16 +1884,10 @@ def get_nitter_tweets(username):
                 tid = link.text.strip().split("/")[-1].split("#")[0]
                 desc_text = desc.text if desc is not None and desc.text else ""
                 text = re.sub(r'<[^>]+>', '', desc_text).strip()
-                # Nitter prepends/appends an author byline like "paul joyce (@_pauljoyce)".
-                # It can appear at the FRONT or the END, so strip any line that is just
-                # "<name> (@handle)", then drop any leftover bare @handles and URLs that
-                # would otherwise trip the raw-source-text validator.
-                text = re.sub(r'(?m)^\s*[^\n]*\(@\w+\)\s*$', '', text)
-                text = re.sub(r'^\s*Updated:\s*\S+', '', text)
-                text = re.sub(r'@\w+', '', text)
-                text = re.sub(r'https?://\S+', '', text)
-                text = re.sub(r'\n{2,}', '\n', text).strip()
-                
+
+                pub = it.find("pubDate")
+                created_at = pub.text.strip() if pub is not None and pub.text else None
+
                 # Extract image from Nitter HTML
                 media_url = None
                 img_match = re.search(r'<img[^>]+src="([^">]+)"', desc_text)
@@ -1991,7 +1896,7 @@ def get_nitter_tweets(username):
                     if media_url.startswith("/"):
                         media_url = f"{inst}{media_url}"
                 
-                if tid and text: out.append({"id": tid, "text": text, "media_url": media_url})
+                if tid and text: out.append({"id": tid, "text": text, "media_url": media_url, "created_at": created_at})
             if out: return out
         except Exception: continue
     return []
@@ -2006,7 +1911,8 @@ async def get_twikit_tweets(read_client, username, count=20, retries=2):
             for t in tweets:
                 txt = getattr(t, "full_text", None) or getattr(t, "text", "") or ""
                 tid = str(getattr(t, "id", "") or "")
-                
+                created_at = getattr(t, "created_at", None) or getattr(t, "created_at_datetime", None)
+
                 # Safely extract image from Twikit
                 media_url = None
                 if hasattr(t, "media") and t.media:
@@ -2016,7 +1922,7 @@ async def get_twikit_tweets(read_client, username, count=20, retries=2):
                             media_url = getattr(m, "media_url_https", None) or (m.get("media_url_https") if isinstance(m, dict) else None)
                             if media_url: break
                             
-                if tid and txt: out.append({"id": tid, "text": txt, "media_url": media_url})
+                if tid and txt: out.append({"id": tid, "text": txt, "media_url": media_url, "created_at": created_at})
             return out
         except Exception as e:
             if attempt + 1 < retries: await asyncio.sleep(3 * (attempt + 1))
@@ -2035,25 +1941,6 @@ async def scrape(data, read_client):
     seen = skipped = 0
     accounts_total = len(JOURNALISTS)
     accounts_failed = 0
-    # Per-spec decision log: every tweet's outcome with full reasoning.
-    decisions = []
-    rejected_items = []
-    dup_count = 0
-    def _log(outcome, source, story, text, reason):
-        rec = {
-            "outcome": outcome,                      # accepted | rejected | duplicate
-            "source": source,
-            "player": (story or {}).get("player"),
-            "club": (story or {}).get("to_club") or (story or {}).get("from_club")
-                    or (story or {}).get("to_key") or (story or {}).get("from_key"),
-            "event": (story or {}).get("event"),
-            "fresh": not (story or {}).get("historical", False),
-            "reason": reason,
-            "text": (text or "")[:200],
-        }
-        decisions.append(rec)
-        if outcome == "rejected":
-            rejected_items.append(rec)
     for username in JOURNALISTS:
         try: tweets, src = await fetch_tweets(read_client, username)
         except Exception as e:
@@ -2068,45 +1955,34 @@ async def scrape(data, read_client):
             tid, text = t["id"], t["text"]
             if tid in data["posted_ids"]: continue
             if not any(k in text.lower() for k in FOOTBALL_KW): continue
+            if tweet_too_old(t.get("created_at")):
+                skipped += 1
+                print(f"   skip (older_than_{MAX_TWEET_AGE_DAYS}d): {text[:70]!r}")
+                continue
             seen += 1
-            if tid in data["extracted"]:
-                story = dict(data["extracted"][tid])
-                # Re-sanitise the body on every reuse: older cache entries were
-                # stored before byline/handle stripping existed, and a stale
-                # poisoned body would otherwise fail validation forever.
-                story["body"] = _clean_source_text(story.get("body") or "")
-                if len(story["body"].split()) < 4:
-                    story["body"] = _summarise(
-                        story.get("player"), story.get("event"),
-                        story.get("from_key"), story.get("to_key"),
-                        story.get("stage", 1), story.get("collapsed"))
-                data["extracted"][tid] = dict(story)
+            if tid in data["extracted"]: story = dict(data["extracted"][tid])
             else:
                 story = build_story(text, fpl)
                 story["media_url"] = t.get("media_url")
+                story["created_at"] = t.get("created_at")
                 data["extracted"][tid] = dict(story)
             safe, why = passes_safety_gate(story, text, fpl, sources=[username])
             if not safe:
                 skipped += 1
-                _log("rejected", username, story, text, why)
                 print(f"   skip ({why}): {text[:70]!r}")
                 continue
             valid, vwhy = validate_story(story, fpl)
             if not valid:
                 skipped += 1
-                _log("rejected", username, story, text, vwhy)
                 print(f"   invalid ({vwhy}): {text[:70]!r}")
                 continue
             anchor = story.get("to_key") or story.get("from_key") or "unknown"
             key = reconcile_key(story["player"], anchor, story["event"],
                                 story_map, data.get("stories", {}), data.get("pending", {}))
-            ok, reason = should_post(data, key, story["stage"], story["collapsed"],
-                                     new_sources=[username])
+            ok, reason = should_post(data, key, story["stage"], story["collapsed"])
             if not ok:
-                _log("rejected", username, story, text, reason)
                 print(f"   skip ({reason}): {key}")
                 continue
-            _log("accepted", username, story, text, reason)
             if key in story_map:
                 ex = story_map[key]
                 if username not in ex["sources"]: ex["sources"].append(username)
@@ -2140,38 +2016,6 @@ async def scrape(data, read_client):
         print("  [WARN] Zero football tweets from ALL journalists. X auth tokens "
               "likely expired — update X_AUTH_TOKEN and X_CT0_TOKEN secrets.")
     print(f"  [SCRAPE] {seen} football tweets seen, {skipped} skipped, {len(story_map)} candidate stories")
-
-    # ── SPEC-REQUIRED DECISION SUMMARY + DEBUG FILE ──────────────────────
-    n_accepted = sum(1 for d in decisions if d["outcome"] == "accepted")
-    n_rejected = sum(1 for d in decisions if d["outcome"] == "rejected")
-    print(f"  [tweets_seen={seen}]")
-    print(f"  [candidates={len(story_map)}]")
-    print(f"  [rejected={n_rejected}]")
-    print(f"  [duplicates={dup_count}]")
-    if not story_map:
-        # Surface the top rejection reasons so it's obvious WHY nothing posted.
-        from collections import Counter
-        reasons = Counter(d["reason"] for d in rejected_items)
-        if reasons:
-            print("  [WHY-NOTHING] top rejection reasons: " +
-                  ", ".join(f"{r}×{c}" for r, c in reasons.most_common(6)))
-    try:
-        dbg = Path("queue/debug")
-        dbg.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        with open(dbg / f"decisions_{stamp}.json", "w") as f:
-            json.dump({
-                "at": datetime.now(timezone.utc).isoformat(),
-                "tweets_seen": seen, "candidates": len(story_map),
-                "rejected": n_rejected, "duplicates": dup_count,
-                "decisions": decisions,
-            }, f, indent=2, default=str)
-        # Always (re)write the latest rejected items for quick inspection.
-        with open(dbg / "rejected_latest.json", "w") as f:
-            json.dump(rejected_items, f, indent=2, default=str)
-    except Exception as e:
-        print(f"  [DEBUG] could not write debug file: {e}")
-
     data["last_read_health"] = {
         "accounts_total": accounts_total,
         "accounts_failed": accounts_failed,
@@ -2232,9 +2076,9 @@ def build_draft(item, data, fpl):
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
 AUTOPOST_MODES = {"confirmed", "rumour"}
-MAX_POSTS_PER_RUN = SETTINGS["max_posts_per_run"]
-MAX_POSTS_PER_HOUR = SETTINGS["max_posts_per_hour"]
-POST_JITTER_RANGE_S = tuple(SETTINGS["post_jitter_seconds"])
+MAX_POSTS_PER_RUN = 3
+MAX_POSTS_PER_HOUR = 2
+POST_JITTER_RANGE_S = (0, 15)
 
 EVENT_PRIORITY = {
     "injury": 0, "suspension": 1, "transfer": 2, 
@@ -2265,7 +2109,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
         print(f"[DRY-RUN] could not parse fixtures: {e}")
         return
     data = {"daily": {"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                      "count": 0, "limit": SETTINGS["daily_limit"]},
+                      "count": 0, "limit": 17},
             "stories": {}, "posted_ids": [], "pending": {}, "extracted": {},
             "posted_hashes": [], "posted_headlines": []}
     total_accepted = total_dup_blocked = total_img_ok = total_img_fail = 0
@@ -2280,6 +2124,8 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
             text = fxt.get("text", "")
             tid = str(fxt.get("id") or hashlib.sha256(text.encode()).hexdigest()[:16])
             story = build_story(text, fpl)
+            story["media_url"] = fxt.get("media_url")
+            story["created_at"] = fxt.get("created_at")
             safe, why = passes_safety_gate(story, text, fpl, sources=[username])
             if not safe:
                 print(f"  [DRY] skip ({why}): {text[:60]!r}")
@@ -2355,38 +2201,7 @@ async def main(post: bool = True, allow_rumours: bool = False):
     else:
         print("[READ] no read cookies set — using Nitter fallback only.")
 
-    # ── PRIMARY SOURCE: FPL injuries/suspensions (structured, official, free)
-    fpl_stories = []
-    if SETTINGS.get("use_fpl_injuries", True):
-        try:
-            # Housekeeping: drop now-fit players so a future re-injury posts.
-            clear_fit_players(fpl)
-            raw_fpl = fpl_injury_stories(
-                fpl,
-                min_news_len=SETTINGS.get("fpl_min_news_len", 4),
-                recent_days=SETTINGS.get("fpl_recent_days", 3))
-            for st in raw_fpl:
-                # Run each through validation so a malformed entry can't post.
-                valid, why = validate_story(st, fpl)
-                if not valid:
-                    print(f"  [FPL] skip ({why}): {st.get('player')!r}")
-                    continue
-                dup, dreason = is_duplicate_content(st, data)
-                if dup:
-                    continue
-                st["mode"] = "confirmed"
-                st["key"] = build_story_key(st["player"],
-                                            st.get("from_key") or "unknown", st["event"])
-                fpl_stories.append(st)
-            if fpl_stories:
-                print(f"  [FPL] {len(fpl_stories)} FPL injury/suspension stor(ies) queued.")
-        except Exception as e:
-            print(f"  [FPL] injury source failed (non-fatal): {e}")
-
-    # ── SECONDARY SOURCE: X transfer scrape (fallback-layered) ───────────
     queue = await scrape(data, read_client)
-    # FPL stories go FIRST — they're confirmed and highest-value.
-    queue = fpl_stories + queue
     if not queue:
         rh = data.get("last_read_health", {})
         if rh.get("fail_ratio", 0) >= 0.15:
@@ -2419,60 +2234,20 @@ async def main(post: bool = True, allow_rumours: bool = False):
     modes_ok = set(AUTOPOST_MODES)
     postable = [d for d in drafts if d.get("mode") in modes_ok]
 
-    # ── POLICY: REPORTED + low-confidence handling (config-driven) ───────
-    # post_reported=False → only CONFIRMED (official/FPL) stories post.
-    if not SETTINGS.get("post_reported", True):
-        before = len(postable)
-        postable = [d for d in postable if d.get("mode") == "confirmed"]
-        if before != len(postable):
-            print(f"[BOT] post_reported=false → held {before - len(postable)} "
-                  f"REPORTED story(ies); CONFIRMED only.")
-    # low_confidence_policy: 'skip' (default) drops anything under the threshold
-    # that isn't first-party FPL/official.
-    if SETTINGS.get("low_confidence_policy", "skip") == "skip":
-        thr = SETTINGS.get("confidence_threshold", 0.40)
-        kept = []
-        for d in postable:
-            if d.get("fpl_official") or d.get("mode") == "confirmed":
-                kept.append(d); continue
-            if d.get("confidence", 0.5) >= thr:
-                kept.append(d)
-        postable = kept
-
-    # Re-attach any stories DEFERRED last run because the cap was hit. This is
-    # the "do not miss any news" guarantee — cap-blocked stories wait, they are
-    # not dropped. They keep their original mode/stage and are de-duped normally.
-    deferred = data.get("deferred", [])
-    if deferred:
-        print(f"[BOT] {len(deferred)} story(ies) carried over from previous capped run(s).")
-        postable = deferred + postable
-        data["deferred"] = []
-
     if not postable:
         print("[BOT] No postable stories this run.")
         return
 
-    # ── PRIORITY ORDERING ────────────────────────────────────────────────
-    # 1) CONFIRMED (official / FPL) before REPORTED (journalist).
-    # 2) Within a mode, by event importance (injury/suspension/transfer…).
-    # 3) Higher stage first (more progressed news).
-    def _priority(s):
-        confirmed = 0 if s.get("mode") == "confirmed" else 1
-        return (
-            confirmed,
-            EVENT_PRIORITY.get(s.get("event"), 5),
-            0 if s.get("collapsed") else 1,
-            -int(s.get("stage", 1)),
-        )
-    postable.sort(key=_priority)
+    postable.sort(key=lambda s: (
+        EVENT_PRIORITY.get(s.get("event"), 5),
+        0 if s.get("collapsed") else 1,
+        -int(s.get("stage", 1)),
+    ))
 
     posted_last_hour = _recent_post_count(data, 3600)
     if posted_last_hour >= MAX_POSTS_PER_HOUR:
-        # Cap hit for the hour — DEFER everything to next run, lose nothing.
-        data["deferred"] = postable
-        save_data(data)
         print(f"[BOT] Per-hour cap reached ({posted_last_hour}/{MAX_POSTS_PER_HOUR}) "
-              f"— {len(postable)} story(ies) deferred to next run (none lost).")
+              f"— skipping posting this run.")
         return
 
     try:
@@ -2480,38 +2255,27 @@ async def main(post: bool = True, allow_rumours: bool = False):
         post_client.set_cookies({"auth_token": X_POST_AUTH_TOKEN, "ct0": X_POST_CT0_TOKEN})
     except Exception as e:
         print(f"[BOT] could not init posting client: {e}")
-        data["deferred"] = postable           # nothing posted → defer all
-        save_data(data)
         return
 
     remaining_today = data["daily"]["limit"] - data["daily"]["count"]
     remaining_hour = MAX_POSTS_PER_HOUR - posted_last_hour
-    allow = max(0, min(MAX_POSTS_PER_RUN, remaining_today, remaining_hour))
-    batch = postable[:allow]
-    overflow = postable[allow:]               # everything we can't post now
+    batch = postable[:max(0, min(MAX_POSTS_PER_RUN, remaining_today, remaining_hour))]
     print(f"[BOT] Posting {len(batch)} item(s) (run cap {MAX_POSTS_PER_RUN}, "
-          f"{remaining_today} left today, {remaining_hour} left this hour). "
-          f"{len(overflow)} will carry over.")
+          f"{remaining_today} left today, {remaining_hour} left this hour).")
 
     posted = 0
-    posts_by_type = {"transfer": 0, "injury": 0, "suspension": 0,
-                     "loan": 0, "renewal": 0, "manager": 0, "other": 0}
     for i, item in enumerate(batch):
         if not check_daily_limit(data):
-            print("[BOT] Hit daily limit mid-batch — stopping, remainder deferred.")
-            overflow = batch[i:] + overflow
+            print("[BOT] Hit daily limit mid-batch — stopping.")
             break
-
+        
         jitter = random.randint(*POST_JITTER_RANGE_S)
         print(f"  [PACING] waiting {jitter}s before posting (anti-spam jitter)…")
         await asyncio.sleep(jitter)
-
+        
         try:
             if await post_item(post_client, item, data):
                 posted += 1
-                ev = item.get("event", "other")
-                key = ev if ev in posts_by_type else "other"
-                posts_by_type[key] = posts_by_type.get(key, 0) + 1
         except Exception as e:
             if item.get("id") and item["id"] in data["posted_ids"]:
                 print(f"  [ERROR] {item['key']}: {e} — already recorded, NOT retrying")
@@ -2521,45 +2285,14 @@ async def main(post: bool = True, allow_rumours: bool = False):
                     await asyncio.sleep(10)
                     if await post_item(post_client, item, data):
                         posted += 1
-                        ev = item.get("event", "other")
-                        key = ev if ev in posts_by_type else "other"
-                        posts_by_type[key] = posts_by_type.get(key, 0) + 1
                 except Exception as e2:
-                    print(f"  [ERROR] {item['key']} (attempt 2): {e2} — deferring")
-                    overflow.append(item)     # failed → carry over, don't lose it
+                    print(f"  [ERROR] {item['key']} (attempt 2): {e2} — skipping")
+                    if item.get("id") and item["id"] not in data["posted_ids"]:
+                        data["posted_ids"].append(item["id"])
+                        save_data(data)
 
-    # ── PERSIST CARRY-OVER (nothing is missed) ───────────────────────────
-    # Deduplicate the overflow against itself by stage key so we don't store a
-    # story twice, then save it for the next run.
-    seen_keys = set()
-    clean_overflow = []
-    for s in overflow:
-        sk = stage_post_key(s)
-        if sk in seen_keys:
-            continue
-        seen_keys.add(sk)
-        clean_overflow.append(s)
-    data["deferred"] = clean_overflow
-
-    # ── VOLUME / TYPE LOGGING ────────────────────────────────────────────
-    data.setdefault("posts_by_type_today", {})
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if data.get("posts_by_type_date") != today:
-        data["posts_by_type_today"] = {}
-        data["posts_by_type_date"] = today
-    for k, v in posts_by_type.items():
-        if v:
-            data["posts_by_type_today"][k] = data["posts_by_type_today"].get(k, 0) + v
-    save_data(data)
-
-    print(f"\n[BOT] {posted} post(s) published this run.")
-    print(f"[VOLUME] total_posts_today = {data['daily']['count']}/{data['daily']['limit']}")
-    bt = data["posts_by_type_today"]
-    print(f"[VOLUME] posts_by_type today: " +
-          (", ".join(f"{k}={v}" for k, v in bt.items()) if bt else "none"))
-    if clean_overflow:
-        print(f"[VOLUME] {len(clean_overflow)} story(ies) deferred to next run "
-              f"(carried over, not lost).")
+    print(f"\n[BOT] {posted} post(s) published; {data['daily']['count']}/"
+          f"{data['daily']['limit']} used today.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FPL VORTEX news bot.")
