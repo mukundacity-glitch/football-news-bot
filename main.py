@@ -17,7 +17,7 @@ Pass --draft-only to only build cards into queue/pending/ (no posting), or
 """
 
 from bot_config import load_config
-from fpl_injuries import fpl_injury_stories
+from fpl_injuries import fpl_injury_stories, commit_posted_fpl, clear_fit_players
 import os
 import re
 import json
@@ -1618,6 +1618,37 @@ def _pretty_club(s):
     s = (s or "").strip()
     return s.title() if s.islower() else s
 
+def _wrap_text_to_width(draw, text, font, max_width, max_lines=2):
+    """Wrap text into up to max_lines that each fit max_width. The final line is
+    ellipsised if the text is too long. Returns a list of line strings."""
+    if not text:
+        return []
+    words = str(text).split()
+    lines = []
+    cur = ""
+    for w in words:
+        test = (cur + " " + w).strip()
+        if draw.textlength(test, font=font) <= max_width or not cur:
+            cur = test
+        else:
+            lines.append(cur)
+            cur = w
+            if len(lines) == max_lines:
+                break
+    if len(lines) < max_lines and cur and (not lines or lines[-1] != cur):
+        lines.append(cur)
+    # If we ran out of room, ellipsise the last visible line.
+    if len(lines) == max_lines:
+        joined_words = " ".join(words)
+        shown = " ".join(lines)
+        if draw.textlength(shown, font=font) < draw.textlength(joined_words, font=font):
+            last = lines[-1]
+            while last and draw.textlength(last + "…", font=font) > max_width:
+                last = last[:-1]
+            lines[-1] = (last.rstrip() + "…") if last else "…"
+    return lines[:max_lines]
+
+
 def create_player_card(story, sources, filename, mode="confirmed"):
     """One card for EVERY post type. RIGHT = framed (crest on top + headshot
     below), Doku-style. LEFT = two-line red/green label, name, type info.
@@ -1650,13 +1681,32 @@ def create_player_card(story, sources, filename, mode="confirmed"):
                            fill=(17, 26, 44), outline=(255, 255, 255, 32), width=3)
     fcx = (FX0 + FX1) // 2
 
-    # team crest at the TOP of the image area (kept big + clear)
-    crest_key = to_key or from_key
-    crest = _load_crest(crest_key, box=118) if crest_key else None
-    crest_top = FY0 + 20
-    crest_bottom = crest_top + (crest.height if crest is not None else 96)
-    if crest is not None:
-        img.paste(crest, (fcx - crest.width // 2, crest_top), crest)
+    # team crest at the TOP of the image area (kept big + clear).
+    # For INJURY/SUSPENSION cards we deliberately show NO club crest — instead a
+    # red medical cross — so it reads instantly as an availability update.
+    is_injury_card = ev in ("injury", "suspension")
+    if is_injury_card:
+        # Red medical cross centred at the top of the panel. Arms must be clearly
+        # longer than they are thick, or the two bars merge into a square.
+        cross_cx = fcx
+        cross_cy = FY0 + 70
+        arm = 46      # half-length of each arm (long)
+        thick = 16    # half-thickness of each bar (thin)
+        red = (227, 30, 36)
+        draw.rounded_rectangle(
+            [cross_cx - thick, cross_cy - arm, cross_cx + thick, cross_cy + arm],
+            radius=7, fill=red)
+        draw.rounded_rectangle(
+            [cross_cx - arm, cross_cy - thick, cross_cx + arm, cross_cy + thick],
+            radius=7, fill=red)
+        crest_bottom = cross_cy + arm
+    else:
+        crest_key = to_key or from_key
+        crest = _load_crest(crest_key, box=118) if crest_key else None
+        crest_top = FY0 + 20
+        crest_bottom = crest_top + (crest.height if crest is not None else 96)
+        if crest is not None:
+            img.paste(crest, (fcx - crest.width // 2, crest_top), crest)
 
     # LARGE portrait photo box that fills the rest of the panel
     PB_W = 372
@@ -1716,16 +1766,30 @@ def create_player_card(story, sources, filename, mode="confirmed"):
     nsize = 86; nf = get_premium_font(nsize, "Black")
     while draw.textlength(name_up, font=nf) > NAME_MAX_W and nsize > 44:
         nsize -= 3; nf = get_premium_font(nsize, "Black")
+    # Hard truncate if still too wide at the minimum size (prevents overlap).
+    if draw.textlength(name_up, font=nf) > NAME_MAX_W:
+        while name_up and draw.textlength(name_up + "…", font=nf) > NAME_MAX_W:
+            name_up = name_up[:-1]
+        name_up = name_up.rstrip() + "…"
     _draw_text_shadow(draw, (LX, name_y), name_up, nf, (255, 255, 255), offset=3)
     nb = draw.textbbox((0, 0), name_up, font=nf)
     y = name_y + (nb[3] - nb[1]) + 34
     info_f = get_premium_font(38, "Bold"); sub_f = get_premium_font(27, "Bold")
+    # All info text must stay LEFT of the photo panel (FX0) with a 40px gutter.
+    INFO_MAX_X = FX0 - 40
     def _info_row(label, value, col=(255, 255, 255)):
         nonlocal y
         if not value: return
         _draw_text_shadow(draw, (LX, y + 4), label, sub_f, (150, 165, 195))
         lw = draw.textlength(label + "   ", font=sub_f)
-        _draw_text_shadow(draw, (LX + lw, y), str(value), info_f, col)
+        value_max_w = INFO_MAX_X - (LX + lw)
+        # Wrap the value to the remaining width (up to 2 lines) so long
+        # diagnoses/club names never run into the photo.
+        vlines = _wrap_text_to_width(draw, str(value), info_f, value_max_w, max_lines=2)
+        for i, vl in enumerate(vlines):
+            _draw_text_shadow(draw, (LX + lw, y), vl, info_f, col)
+            if i < len(vlines) - 1:
+                y += 46
         y += 60
     if ev == "injury":
         stage = story.get("stage", 1)
@@ -1745,17 +1809,27 @@ def create_player_card(story, sources, filename, mode="confirmed"):
             _info_row("TO", _pretty_club(tc) if tc else None)
         _info_row("PRICE", story.get("fee")); _info_row("CONTRACT", story.get("contract"))
 
-    # ---------- source bar ----------
+    # ---------- source bar (date left in bold green, source right) ----------
     draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
     draw.rectangle([0, H - 12, W, H], fill=accent)
+    # Date — bottom-left, bold green.
+    date_str = datetime.now(timezone.utc).strftime("%d %b %Y").upper()
+    date_f = get_premium_font(30, "Black")
+    db = draw.textbbox((0, 0), date_str, font=date_f)
+    dy = (H - 90) + (78 - (db[3] - db[1])) // 2 - db[1]
+    _draw_text_shadow(draw, (60, dy), date_str, date_f, (84, 224, 124), offset=1)
+    date_w = draw.textlength(date_str, font=date_f)
+    # Source — to the RIGHT of the date, right-aligned to the card edge.
     src = " · ".join(f"@{s}" for s in sources[:2])
     bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
-    bsize = 34; bf = get_premium_font(bsize, "Bold")
-    while bsize > 24 and draw.textlength(bar, font=bf) > (W - 120):
+    bsize = 30; bf = get_premium_font(bsize, "Bold")
+    src_left = 60 + date_w + 40
+    while bsize > 22 and draw.textlength(bar, font=bf) > (W - src_left - 40):
         bsize -= 1; bf = get_premium_font(bsize, "Bold")
     bb = draw.textbbox((0, 0), bar, font=bf)
     by = (H - 90) + (78 - (bb[3] - bb[1])) // 2 - bb[1]
-    draw.text((60, by), bar, font=bf, fill=(190, 200, 220))
+    bx = W - 40 - draw.textlength(bar, font=bf)
+    draw.text((max(src_left, bx), by), bar, font=bf, fill=(190, 200, 220))
     img.save(filename)
 
 
@@ -1814,6 +1888,13 @@ def record_posted(item, data):
     }
     record_content_dedup(item, data)
     increment_daily(data)
+    # Advance FPL posted-state ONLY now that the story is truly out. Cap-blocked
+    # FPL stories never reach here, so they regenerate and retry next run.
+    if item.get("fpl_official"):
+        try:
+            commit_posted_fpl(item)
+        except Exception as e:
+            print(f"  [FPL] could not commit posted-state: {e}")
     save_data(data)
     move_to_posted(item)
 
@@ -2278,7 +2359,12 @@ async def main(post: bool = True, allow_rumours: bool = False):
     fpl_stories = []
     if SETTINGS.get("use_fpl_injuries", True):
         try:
-            raw_fpl = fpl_injury_stories(fpl, min_news_len=SETTINGS.get("fpl_min_news_len", 4))
+            # Housekeeping: drop now-fit players so a future re-injury posts.
+            clear_fit_players(fpl)
+            raw_fpl = fpl_injury_stories(
+                fpl,
+                min_news_len=SETTINGS.get("fpl_min_news_len", 4),
+                recent_days=SETTINGS.get("fpl_recent_days", 3))
             for st in raw_fpl:
                 # Run each through validation so a malformed entry can't post.
                 valid, why = validate_story(st, fpl)
