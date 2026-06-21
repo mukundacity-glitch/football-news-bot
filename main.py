@@ -1120,19 +1120,97 @@ def trim_for_twitter(body: str, limit: int = 278) -> str:
         out += ch
     return out.rstrip() + "…"
 
+def _pretty_club_name(story, which):
+    """Human-readable club name from key or club field. which = 'to' or 'from'."""
+    key = story.get(f"{which}_key")
+    club = story.get(f"{which}_club")
+    name = club or (key or "").replace("_", " ")
+    name = name.strip()
+    if not name:
+        return None
+    return name.title() if name.islower() else name
+
+
 def build_tweet_body(story, sources, mode) -> str:
+    """Build a short, clear, informative caption.
+
+    Format per type:
+      🔴 INJURY: Sousa (Aston Villa)
+      Hamstring injury – 25% chance of playing
+      <hashtags>
+
+      🔵 REPORTED: Tonali → Tottenham
+      Fresh bid expected as talks continue
+      <hashtags>
+    """
     label = status_label(story, mode)
-    head = story.get("headline") or story.get("player") or "Update"
-    # Per spec: official source ⇒ "CONFIRMED"; journalist/report ⇒ "REPORTED".
     tiers = [source_tier(s) for s in (sources or [])]
     is_official = 1 in tiers
+    ev = story.get("event", "transfer")
+    player = story.get("player") or story.get("headline") or "Update"
+
+    # Resolve the label word and a leading emoji.
     if mode == "rumour" and label in ("RUMOUR", None):
-        first_line = f"REPORTED | {head}"
+        tag, emoji = "REPORTED", "🔵"
     elif label == "OFFICIAL" or is_official:
-        first_line = f"{label or 'OFFICIAL'} | {head}"
+        tag, emoji = (label or "OFFICIAL"), "✅"
     else:
-        first_line = f"{label} | {head}"
-    body = first_line + "\n\n" + build_hashtags(story)
+        tag, emoji = (label or "UPDATE"), "🔵"
+
+    to_club = _pretty_club_name(story, "to")
+    from_club = _pretty_club_name(story, "from")
+
+    # ── Line 1: the headline, shaped per event type ──────────────────────
+    if ev in ("injury", "suspension"):
+        emoji = "🔴" if ev == "injury" else "🟥"
+        club = from_club or to_club
+        head = f"{player} ({club})" if club else player
+        first_line = f"{emoji} {tag}: {head}"
+    elif ev in ("transfer", "loan", "loan_option"):
+        if to_club and from_club:
+            head = f"{player}: {from_club} → {to_club}"
+        elif to_club:
+            head = f"{player} → {to_club}"
+        elif from_club:
+            head = f"{player} ({from_club})"
+        else:
+            head = player
+        first_line = f"{emoji} {tag}: {head}"
+    elif ev in ("renewal", "stay"):
+        club = from_club or to_club
+        head = f"{player} ({club})" if club else player
+        first_line = f"📝 {tag}: {head}"
+    elif ev == "manager":
+        head = f"{player} → {to_club}" if to_club else player
+        first_line = f"📋 {tag}: {head}"
+    else:
+        first_line = f"{emoji} {tag}: {player}"
+
+    # ── Line 2: the key detail (this is what was missing before) ─────────
+    detail = None
+    if ev in ("injury", "suspension"):
+        # FPL gives us the real text: "Hamstring injury - 25% chance of playing"
+        detail = story.get("diagnosis") or story.get("expected_return")
+        if detail:
+            detail = detail.replace(" - ", " – ")
+    else:
+        bits = []
+        if story.get("fee"): bits.append(story["fee"])
+        if story.get("contract"): bits.append(story["contract"])
+        if story.get("conditional"): bits.append(story["conditional"])
+        if bits:
+            detail = "  •  ".join(bits)
+        else:
+            # fall back to the one-sentence summary body if it adds info
+            b = (story.get("body") or "").strip()
+            if b and b.lower() not in (player.lower(), first_line.lower()):
+                detail = b
+
+    # Assemble, keeping it compact. trim_for_twitter() enforces the hard limit.
+    lines = [first_line]
+    if detail:
+        lines.append(detail)
+    body = "\n".join(lines) + "\n\n" + build_hashtags(story)
     return body
 
 def build_detail_line(story) -> str:
