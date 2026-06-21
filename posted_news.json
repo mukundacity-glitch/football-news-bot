@@ -1,7 +1,7 @@
 {
   "daily": {
     "date": "2026-06-21",
-    "count": 4,
+    "count": 6,
     "limit": 24
   },
   "stories": {
@@ -530,6 +530,28 @@
         "OfficialFPL"
       ],
       "last_updated": "2026-06-21T12:46:53.450290+00:00"
+    },
+    "nwaneri_unknown_injury": {
+      "stage": 3,
+      "player": "Nwaneri",
+      "to_key": null,
+      "event": "injury",
+      "status": "active",
+      "sources": [
+        "OfficialFPL"
+      ],
+      "last_updated": "2026-06-21T13:14:30.100757+00:00"
+    },
+    "kabia_unknown_injury": {
+      "stage": 3,
+      "player": "Kabia",
+      "to_key": null,
+      "event": "injury",
+      "status": "active",
+      "sources": [
+        "OfficialFPL"
+      ],
+      "last_updated": "2026-06-21T13:14:34.901316+00:00"
     }
   },
   "posted_ids": [
@@ -607,7 +629,9 @@
     "fpl_3_2025-08-26T13:44:02.357864Z",
     "fpl_9_2025-09-02T13:37:25.929594Z",
     "fpl_11_2026-05-11T00:00:10.901815Z",
-    "fpl_14_2025-09-22T21:14:30.857843Z"
+    "fpl_14_2025-09-22T21:14:30.857843Z",
+    "fpl_25_2026-01-23T17:18:55.073277Z",
+    "fpl_28_2025-09-02T13:24:41.013511Z"
   ],
   "pending": {
     "samuel_martinez_liverpool_transfer": {
@@ -11317,19 +11341,23 @@
     "accounts_total": 42,
     "accounts_failed": 3,
     "fail_ratio": 0.071,
-    "at": "2026-06-21T12:45:12.565223+00:00"
+    "at": "2026-06-21T13:14:19.058543+00:00"
   },
   "posted_hashes": [
     "95b3fe200ec3f997ed7fb243a3157a9ea8cb6b9286cfcd7ee382a62e75f6e715",
     "a2add174f8967fab835664224831468cf816bdbbd7dac624cd8be216ab58d322",
     "8ffdc5258339fa40eb81ba9a4bf9641598fdeded856fc6374f6e3dce076a407d",
-    "dc23005a3b545ba7349fb09668b28122db4d3bf3bac94ca805766b4cc0ffcb53"
+    "dc23005a3b545ba7349fb09668b28122db4d3bf3bac94ca805766b4cc0ffcb53",
+    "0d99e050969a570d3badd9f54bd29be0eff0bec87398c9c8aa85d77d6faa5678",
+    "b898b5558e06ba1548fd52ae6db61233e9172fb6b176d34107bd8744f68515fb"
   ],
   "posted_headlines": [
     "hein",
     "kiwior",
     "white",
-    "kacurri"
+    "kacurri",
+    "nwaneri",
+    "kabia"
   ],
   "posted_headlines_staged": [
     [
@@ -11347,85 +11375,25 @@
     [
       "kacurri",
       3
+    ],
+    [
+      "nwaneri",
+      3
+    ],
+    [
+      "kabia",
+      3
     ]
   ],
   "posted_stage_keys": [
     "injury|hein|arsenal|stage3",
     "injury|kiwior|arsenal|stage3",
     "injury|white|arsenal|stage3",
-    "injury|kacurri|arsenal|stage3"
+    "injury|kacurri|arsenal|stage3",
+    "injury|nwaneri|arsenal|stage3",
+    "injury|kabia|arsenal|stage3"
   ],
   "deferred": [
-    {
-      "is_football": true,
-      "event": "injury",
-      "is_real_move": false,
-      "player": "Nwaneri",
-      "from_club": "Arsenal",
-      "to_club": null,
-      "from_key": null,
-      "to_key": null,
-      "fee": null,
-      "contract": null,
-      "conditional": null,
-      "diagnosis": "has joined Marseille on loan for the rest of the season.",
-      "expected_return": "0% chance next match",
-      "next_match": null,
-      "stage": 3,
-      "collapsed": false,
-      "historical": false,
-      "headline": "Nwaneri",
-      "body": "Nwaneri (Arsenal): has joined Marseille on loan for the rest of the season.",
-      "confidence": 0.95,
-      "from_fallback": false,
-      "direction_confident": true,
-      "from_video": false,
-      "has_written_claim": true,
-      "fpl_official": true,
-      "id": "fpl_25_2026-01-23T17:18:55.073277Z",
-      "sources": [
-        "OfficialFPL"
-      ],
-      "mode": "confirmed",
-      "key": "nwaneri_unknown_injury",
-      "draft_caption": "INJURY | Nwaneri\n\n#FPLVortex #InjuryNews #Arsenal",
-      "draft_image": "queue/pending/nwaneri_unknown_injury_s3.png"
-    },
-    {
-      "is_football": true,
-      "event": "injury",
-      "is_real_move": false,
-      "player": "Kabia",
-      "from_club": "Arsenal",
-      "to_club": null,
-      "from_key": null,
-      "to_key": null,
-      "fee": null,
-      "contract": null,
-      "conditional": null,
-      "diagnosis": "has joined Shrewsbury Town on loan for the rest of the season.",
-      "expected_return": "0% chance next match",
-      "next_match": null,
-      "stage": 3,
-      "collapsed": false,
-      "historical": false,
-      "headline": "Kabia",
-      "body": "Kabia (Arsenal): has joined Shrewsbury Town on loan for the rest of the season.",
-      "confidence": 0.95,
-      "from_fallback": false,
-      "direction_confident": true,
-      "from_video": false,
-      "has_written_claim": true,
-      "fpl_official": true,
-      "id": "fpl_28_2025-09-02T13:24:41.013511Z",
-      "sources": [
-        "OfficialFPL"
-      ],
-      "mode": "confirmed",
-      "key": "kabia_unknown_injury",
-      "draft_caption": "INJURY | Kabia\n\n#FPLVortex #InjuryNews #Arsenal",
-      "draft_image": "queue/pending/kabia_unknown_injury_s3.png"
-    },
     {
       "is_football": true,
       "event": "injury",
@@ -20355,6 +20323,41 @@
       "is_football": true,
       "event": "injury",
       "is_real_move": false,
+      "player": "F\u00e1bio Vieira",
+      "from_club": "Arsenal",
+      "to_club": null,
+      "from_key": null,
+      "to_key": null,
+      "fee": null,
+      "contract": null,
+      "conditional": null,
+      "diagnosis": "has joined Hamburger on loan for the rest of the season.",
+      "expected_return": "0% chance next match",
+      "next_match": null,
+      "stage": 3,
+      "collapsed": false,
+      "historical": false,
+      "headline": "F\u00e1bio Vieira",
+      "body": "F\u00e1bio Vieira (Arsenal): has joined Hamburger on loan for the rest of the season.",
+      "confidence": 0.95,
+      "from_fallback": false,
+      "direction_confident": true,
+      "from_video": false,
+      "has_written_claim": true,
+      "fpl_official": true,
+      "id": "fpl_23_2025-09-02T13:38:06.128321Z",
+      "sources": [
+        "OfficialFPL"
+      ],
+      "mode": "confirmed",
+      "key": "f\u00e1bio_vieira_unknown_injury",
+      "draft_caption": "INJURY | F\u00e1bio Vieira\n\n#FPLVortex #InjuryNews #Arsenal",
+      "draft_image": "queue/pending/fbio_vieira_unknown_injury_s3.png"
+    },
+    {
+      "is_football": true,
+      "event": "injury",
+      "is_real_move": false,
       "player": "J.Timber",
       "from_club": "Arsenal",
       "to_club": null,
@@ -21455,45 +21458,10 @@
       "rumour": true,
       "draft_caption": "REPORTED | Michael Olise\n\n#FPLVortex #Transfers",
       "draft_image": "queue/pending/michael_olise_unknown_transfer_s1.png"
-    },
-    {
-      "is_football": true,
-      "event": "injury",
-      "is_real_move": false,
-      "player": "F\u00e1bio Vieira",
-      "from_club": "Arsenal",
-      "to_club": null,
-      "from_key": null,
-      "to_key": null,
-      "fee": null,
-      "contract": null,
-      "conditional": null,
-      "diagnosis": "has joined Hamburger on loan for the rest of the season.",
-      "expected_return": "0% chance next match",
-      "next_match": null,
-      "stage": 3,
-      "collapsed": false,
-      "historical": false,
-      "headline": "F\u00e1bio Vieira",
-      "body": "F\u00e1bio Vieira (Arsenal): has joined Hamburger on loan for the rest of the season.",
-      "confidence": 0.95,
-      "from_fallback": false,
-      "direction_confident": true,
-      "from_video": false,
-      "has_written_claim": true,
-      "fpl_official": true,
-      "id": "fpl_23_2025-09-02T13:38:06.128321Z",
-      "sources": [
-        "OfficialFPL"
-      ],
-      "mode": "confirmed",
-      "key": "f\u00e1bio_vieira_unknown_injury",
-      "draft_caption": "INJURY | F\u00e1bio Vieira\n\n#FPLVortex #InjuryNews #Arsenal",
-      "draft_image": "queue/pending/fbio_vieira_unknown_injury_s3.png"
     }
   ],
   "posts_by_type_today": {
-    "injury": 4
+    "injury": 6
   },
   "posts_by_type_date": "2026-06-21"
 }
