@@ -26,6 +26,7 @@ _DEFAULTS = {
         "tweets_per_account": 8,
         "post_jitter_seconds": [0, 15],
         "fpl_min_news_len": 4,
+        "fpl_recent_days": 3,
     },
     "journalists": [],
     "media_accounts": [],
