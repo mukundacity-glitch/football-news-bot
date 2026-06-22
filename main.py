@@ -131,14 +131,20 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # ── JOURNALISTS ──────────────────────────────────────────────────────────
 JOURNALISTS = [
+    # Elite tier — "here we go" / confirmed news
     "FabrizioRomano", "David_Ornstein", "_pauljoyce", "sistoney67",
     "SamiMokbel_BBC", "JacobsBen", "JamesPearceLFC", "SachaTavolieri",
     "Plettigoal", "MatteoMoretto", "AlfredoPedulla", "DiMarzio",
-    "SkySportsNews", "BBCSport", "TheAthleticFC", "guardianfootball",
-    "lequipe", "marca", "diarioas", "kicker", "TransferNewsLive",
-    "premierleague", "OfficialFPL", "Arsenal", "ManCity", "LFC", "ChelseaFC",
-    "ManUtd", "SpursOfficial", "NUFC", "NFFC",
-    "AlexCrabb1", "Transferzone00",
+    # Trusted media
+    "SkySportsNews", "BBCSport", "TheAthleticFC", "guardian_sport",
+    "lequipe", "marca", "diarioas", "kicker",
+    "alex_crook", "AlexCrabb31", "Transferzone00",
+    # PL official accounts (injury/squad news)
+    "premierleague", "OfficialFPL", "PremierInjuries",
+    "Arsenal", "AVFCOfficial", "ManCity", "LFC", "ChelseaFC",
+    "ManUtd", "SpursOfficial", "NUFC", "NFFC", "Everton",
+    "WestHam", "CPFC", "OfficialBHAFC", "Wolves", "BrentfordFC",
+    "FulhamFC", "AFCBournemouth", "lcfc",
 ]
 NITTER_INSTANCES = [
     "https://nitter.net",
@@ -154,7 +160,7 @@ OFFICIAL_ACCOUNTS = {
     "lcfc", "liverpoolfc", "lfc", "mancity", "manutd", "newcastle_nufc", "nufc",
     "nffc", "southamptonfc", "spursofficial", "westham", "wolves",
 }
-OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {"officialfpl", "fpl", "premierleague"}
+OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {"officialfpl", "fpl", "premierleague", "premierinjuries"}
 ELITE_TRUSTED = {
     "fabrizioromano", "david_ornstein", "_pauljoyce", "sistoney67",
     "samimokbel_bbc", "jacobsben", "jamespearcelfc", "sachatavolieri",
@@ -163,8 +169,8 @@ ELITE_TRUSTED = {
 TRUSTED_REPORTERS = ELITE_TRUSTED
 TRUSTED_MEDIA = {
     "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
-    "guardianfootball", "lequipe", "marca", "diarioas", "as", "kicker",
-    "transfernewslive", "alexcrabb1",
+    "guardian_sport", "lequipe", "marca", "diarioas", "as", "kicker",
+    "alex_crook", "alexcrabb31",
 }
 # Aggregators / rumour pages: deliberately left in NO tier (tier 0). Their
 # items only reach a post when corroborated by a trusted reporter, matching the
@@ -346,7 +352,7 @@ def hashtag_for(name_or_key: str):
 
 # ── STATE ────────────────────────────────────────────────────────────────
 def load_data() -> dict:
-    fresh = {"daily": {"date": "", "count": 0, "limit": 17}, "stories": {}, "posted_ids": []}
+    fresh = {"daily": {"date": "", "count": 0, "limit": 24}, "stories": {}, "posted_ids": []}
     if POSTED_FILE.exists():
         try:
             with open(POSTED_FILE) as f: d = json.load(f)
@@ -371,7 +377,7 @@ def save_data(data: dict):
 def check_daily_limit(data: dict) -> bool:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if data["daily"]["date"] != today:
-        data["daily"] = {"date": today, "count": 0, "limit": 17}
+        data["daily"] = {"date": today, "count": 0, "limit": 24}
     return data["daily"]["count"] < data["daily"]["limit"]
 
 def increment_daily(data: dict):
@@ -2109,7 +2115,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
         print(f"[DRY-RUN] could not parse fixtures: {e}")
         return
     data = {"daily": {"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                      "count": 0, "limit": 17},
+                      "count": 0, "limit": 24},
             "stories": {}, "posted_ids": [], "pending": {}, "extracted": {},
             "posted_hashes": [], "posted_headlines": []}
     total_accepted = total_dup_blocked = total_img_ok = total_img_fail = 0
