@@ -111,7 +111,50 @@ except Exception as _e:
 
 _GEMINI_LAST_MODEL = None
 
-# ── SECRETS ──────────────────────────────────────────────────────────────
+# ── GROQ (fallback when Gemini quota exhausted) ──────────────────────────
+GROQ_TIMEOUT_S = 20
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+try:
+    import urllib.request as _urllib_req
+    _GROQ_KEY = os.getenv("GROQ_API_KEY")
+    _GROQ_OK = bool(_GROQ_KEY)
+except Exception:
+    _GROQ_KEY = None
+    _GROQ_OK = False
+
+def _groq_generate(prompt: str):
+    """Call Groq API with Llama 3.3 70B. Returns (text, model_id) or (None, None)."""
+    if not _GROQ_OK or not _GROQ_KEY:
+        return None, None
+    try:
+        payload = json.dumps({
+            "model": GROQ_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": 1000,
+        }).encode("utf-8")
+        req = _urllib_req.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {_GROQ_KEY}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with _urllib_req.urlopen(req, timeout=GROQ_TIMEOUT_S) as resp:
+            data = json.loads(resp.read())
+        text = data["choices"][0]["message"]["content"]
+        if text:
+            print(f"  [GROQ] using model: {GROQ_MODEL}")
+            return text, GROQ_MODEL
+        return None, None
+    except Exception as e:
+        msg = str(e)
+        short = (msg[:120] + "…") if len(msg) > 120 else msg
+        print(f"  [GROQ] failed ({short}) — falling back to regex")
+        return None, None
 X_AUTH_TOKEN = (os.getenv("X_AUTH_TOKEN") or "").strip()
 X_CT0_TOKEN = (os.getenv("X_CT0_TOKEN") or "").strip()
 X_POST_AUTH_TOKEN = (os.getenv("X_POST_AUTH_TOKEN") or "").strip()
@@ -352,7 +395,7 @@ def hashtag_for(name_or_key: str):
 
 # ── STATE ────────────────────────────────────────────────────────────────
 def load_data() -> dict:
-    fresh = {"daily": {"date": "", "count": 0, "limit": 24}, "stories": {}, "posted_ids": []}
+    fresh = {"daily": {"date": "", "count": 0, "limit": 17}, "stories": {}, "posted_ids": []}
     if POSTED_FILE.exists():
         try:
             with open(POSTED_FILE) as f: d = json.load(f)
@@ -367,6 +410,7 @@ def load_data() -> dict:
     d.setdefault("extracted", {})
     d.setdefault("posted_hashes", [])
     d.setdefault("posted_headlines", [])
+    d.setdefault("posted_player_events", [])
     return d
 
 def save_data(data: dict):
@@ -377,7 +421,7 @@ def save_data(data: dict):
 def check_daily_limit(data: dict) -> bool:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if data["daily"]["date"] != today:
-        data["daily"] = {"date": today, "count": 0, "limit": 24}
+        data["daily"] = {"date": today, "count": 0, "limit": 17}
     return data["daily"]["count"] < data["daily"]["limit"]
 
 def increment_daily(data: dict):
@@ -462,14 +506,25 @@ def _gemini_generate(prompt: str):
     return None, None
 
 def extract_story_llm(tweet_text: str):
-    if not _GEMINI_OK: return None
-    text, _model = _gemini_generate(_EXTRACT_PROMPT.format(tweet=tweet_text))
-    if not text: return None
-    try:
-        return json.loads(text[text.find("{"): text.rfind("}") + 1])
-    except Exception as e:
-        print(f"  [LLM] JSON parse failed, using fallback: {e}")
-        return None
+    prompt = _EXTRACT_PROMPT.format(tweet=tweet_text)
+    # 1. Try Gemini chain first
+    if _GEMINI_OK:
+        text, _model = _gemini_generate(prompt)
+        if text:
+            try:
+                return json.loads(text[text.find("{"): text.rfind("}") + 1])
+            except Exception as e:
+                print(f"  [LLM] Gemini JSON parse failed: {e}")
+    # 2. Gemini exhausted/failed — try Groq
+    if _GROQ_OK:
+        text, _model = _groq_generate(prompt)
+        if text:
+            try:
+                return json.loads(text[text.find("{"): text.rfind("}") + 1])
+            except Exception as e:
+                print(f"  [LLM] Groq JSON parse failed: {e}")
+    # 3. Both failed — regex fallback handles it
+    return None
 
 _FALLBACK_BANNED_SOLO = {
     "neil", "silva", "alonso", "robinson", "edwards", "wilder", "obi",
@@ -810,18 +865,36 @@ def _norm_text(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 def content_hash(story: dict) -> str:
+    # NOTE: headline is deliberately EXCLUDED. The same player+event+direction
+    # reported by different journalists with different wording is the SAME news
+    # and must dedupe to the same hash. Genuine updates (stage progression or a
+    # collapse) are allowed separately by should_post() via the stage/status
+    # system, not by this hash. Including the headline here was the bug that let
+    # the same Álvarez story post 3x with slightly different phrasings.
     parts = [
         _event_family(story.get("event")),
         _norm_text(story.get("player")),
         _norm_text(story.get("from_key") or story.get("from_club")),
         _norm_text(story.get("to_key") or story.get("to_club")),
-        _norm_text(story.get("headline")),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
-def is_duplicate_content(story: dict, data: dict, threshold: float = 0.90):
+def is_duplicate_content(story: dict, data: dict, threshold: float = 0.82):
+    # A collapse ("deal off") is a genuine status change, not a duplicate — let
+    # it through the content checks; should_post() decides if it's post-worthy.
+    if story.get("collapsed"):
+        return False, ""
     h = content_hash(story)
     if h in data.get("posted_hashes", []): return True, "content_hash"
+    # Secondary guard: same player + same event family already posted recently,
+    # regardless of how the club was extracted or worded. Catches the case where
+    # one journalist says "to Barcelona", another "Barça", another leaves it
+    # blank — all the SAME story. A genuine collapse/progression is still allowed
+    # because should_post() runs separately on the stage/status system.
+    pe_key = f"{_norm_text(story.get('player'))}|{_event_family(story.get('event'))}"
+    if pe_key.strip("|") and pe_key in data.get("posted_player_events", []):
+        if not story.get("collapsed"):
+            return True, "same_player_event"
     head = _norm_text(story.get("headline") or story.get("player"))
     if head:
         for prev in data.get("posted_headlines", []):
@@ -836,8 +909,12 @@ def record_content_dedup(story: dict, data: dict):
     head = _norm_text(story.get("headline") or story.get("player"))
     if head and head not in data.setdefault("posted_headlines", []):
         data["posted_headlines"].append(head)
+    pe_key = f"{_norm_text(story.get('player'))}|{_event_family(story.get('event'))}"
+    if pe_key.strip("|") and pe_key not in data.setdefault("posted_player_events", []):
+        data["posted_player_events"].append(pe_key)
     if len(data["posted_hashes"]) > 2000: data["posted_hashes"] = data["posted_hashes"][-2000:]
     if len(data["posted_headlines"]) > 2000: data["posted_headlines"] = data["posted_headlines"][-2000:]
+    if len(data.get("posted_player_events", [])) > 2000: data["posted_player_events"] = data["posted_player_events"][-2000:]
 
 def build_story_key(player, club_key, event) -> str:
     p = (player or "unknown").lower().replace(" ", "_")
@@ -2115,7 +2192,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
         print(f"[DRY-RUN] could not parse fixtures: {e}")
         return
     data = {"daily": {"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                      "count": 0, "limit": 24},
+                      "count": 0, "limit": 17},
             "stories": {}, "posted_ids": [], "pending": {}, "extracted": {},
             "posted_hashes": [], "posted_headlines": []}
     total_accepted = total_dup_blocked = total_img_ok = total_img_fail = 0
@@ -2187,8 +2264,9 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
 
 async def main(post: bool = True, allow_rumours: bool = False):
     mode_str = "LIVE" if post else "DRAFT-ONLY"
+    llm_status = "Gemini" if _GEMINI_OK else ("Groq" if _GROQ_OK else "regex-only")
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
-          f"(LLM={'Gemini' if _GEMINI_OK else 'off/fallback'}, mode={mode_str})")
+          f"(LLM={llm_status}, mode={mode_str})")
     init_club_data()
     fpl = fetch_fpl_data()
     data = load_data()
@@ -2319,3 +2397,4 @@ if __name__ == "__main__":
         asyncio.run(run_dry_run(fixtures_path=args.fixtures, runs=args.runs))
     else:
         asyncio.run(main(post=not args.draft_only, allow_rumours=args.allow_rumours))
+
