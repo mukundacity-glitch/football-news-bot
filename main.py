@@ -411,6 +411,7 @@ def load_data() -> dict:
     d.setdefault("posted_hashes", [])
     d.setdefault("posted_headlines", [])
     d.setdefault("posted_player_events", [])
+    d.setdefault("posted_collapses", [])
     return d
 
 def save_data(data: dict):
@@ -665,7 +666,23 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         to_key = clubs[0] if (len(clubs) == 1) else None
         direction_confident = False
 
-    is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
+    # Collapse vs rejected-approach are DIFFERENT:
+    #  - "deal collapsed / called off / move off" = something ADVANCED then died.
+    #  - "offer/bid rejected / club rebuff/reject" = an approach that NEVER
+    #    advanced; the player is effectively STAYING. That is a non-move, not a
+    #    collapsed transfer, and should not get a dramatic "DEAL OFF" card.
+    deal_collapsed = has_word(["collapsed", "called off", "deal off", "move off",
+                               "deal collapses", "transfer collapses", "off the table"], tl)
+    offer_rejected = bool(re.search(
+        r"\b(reject|rejects|rejected|rebuff|rebuffs|rebuffed|turn(s|ed)? down|"
+        r"knock(s|ed)? back|snub(s|bed)?)\b", tl)) and bool(re.search(
+        r"\b(offer|bid|approach|proposal)\b", tl))
+
+    is_collapsed = deal_collapsed
+    # A pure rejected-offer with no prior advanced stage = the player stays put.
+    if offer_rejected and not deal_collapsed:
+        event = "stay"
+        is_collapsed = False
 
     if event in ("stay", "renewal"):
         if to_key and not from_key:
@@ -678,6 +695,29 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
 
     summary = _summarise(name, event, from_key, to_key, stage, is_collapsed)
 
+    # CONFIDENCE IS EARNED. Per the "post with safe fallback, skip only when
+    # unusable" policy: a story with a clearly identified player AND a meaningful
+    # club signal is postable even if other signals are weak — the safe-fallback
+    # image/caption handle imperfect detail. Bare guesses (no real player, or no
+    # club at all) stay below the gate and are skipped. No per-story rules.
+    has_real_player = bool(name and len(re.split(r"[\s\-']+", name.strip())) >= 2)
+    # "meaningful club signal" = a resolved PL key OR any named club detected.
+    has_club_signal = bool(from_key or to_key or from_anchor or to_anchor or clubs)
+    strong_move = bool(re.search(
+        r"\b(here we go|official|confirmed|completed|sign(s|ed)?|joins?|joined|"
+        r"medical|done deal|agree(s|d)?|personal terms)\b", tl))
+    strong_injury = has_word(["ruled out", "injury", "injured", "hamstring",
+                              "surgery", "scan", "suspended", "suspension",
+                              "banned", "red card", "sent off"], tl)
+
+    conf = 0.30  # base: a bare guess is not trusted
+    if has_real_player and has_club_signal:
+        conf = 0.50          # postable floor: real player + real club signal
+    if strong_move or strong_injury: conf += 0.15
+    if (from_key or to_key):         conf += 0.10  # resolved PL club = stronger
+    if direction_confident:          conf += 0.05
+    conf = round(min(conf, 0.85), 2)  # regex never claims LLM-level certainty
+
     return {
         "is_football": True, "event": event,
         "is_real_move": event in ("transfer", "loan", "loan_option"),
@@ -688,7 +728,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         "fee": None, "contract": None, "conditional": None, "fpl_impact": None,
         "stage": stage, "collapsed": is_collapsed,
         "headline": name if name else "Transfer update",
-        "body": summary, "confidence": 0.5,
+        "body": summary, "confidence": conf,
         "direction_confident": direction_confident,
         "from_fallback": True,
     }
@@ -880,21 +920,24 @@ def content_hash(story: dict) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 def is_duplicate_content(story: dict, data: dict, threshold: float = 0.82):
-    # A collapse ("deal off") is a genuine status change, not a duplicate — let
-    # it through the content checks; should_post() decides if it's post-worthy.
+    pe_key = f"{_norm_text(story.get('player'))}|{_event_family(story.get('event'))}"
+    # A collapse is a genuine status change, so it is NOT blocked by the normal
+    # "already posted" rule — BUT it must still only post ONCE. We track posted
+    # collapses separately: the first collapse for a story posts, repeats of the
+    # same collapse (same player+event) are blocked. This stops the C. Jones
+    # "DEAL OFF" card reposting every run.
     if story.get("collapsed"):
+        if pe_key.strip("|") and pe_key in data.get("posted_collapses", []):
+            return True, "collapse_already_posted"
         return False, ""
     h = content_hash(story)
     if h in data.get("posted_hashes", []): return True, "content_hash"
     # Secondary guard: same player + same event family already posted recently,
     # regardless of how the club was extracted or worded. Catches the case where
     # one journalist says "to Barcelona", another "Barça", another leaves it
-    # blank — all the SAME story. A genuine collapse/progression is still allowed
-    # because should_post() runs separately on the stage/status system.
-    pe_key = f"{_norm_text(story.get('player'))}|{_event_family(story.get('event'))}"
+    # blank — all the SAME story. Genuine progression is allowed by should_post().
     if pe_key.strip("|") and pe_key in data.get("posted_player_events", []):
-        if not story.get("collapsed"):
-            return True, "same_player_event"
+        return True, "same_player_event"
     head = _norm_text(story.get("headline") or story.get("player"))
     if head:
         for prev in data.get("posted_headlines", []):
@@ -912,9 +955,13 @@ def record_content_dedup(story: dict, data: dict):
     pe_key = f"{_norm_text(story.get('player'))}|{_event_family(story.get('event'))}"
     if pe_key.strip("|") and pe_key not in data.setdefault("posted_player_events", []):
         data["posted_player_events"].append(pe_key)
+    if story.get("collapsed") and pe_key.strip("|"):
+        if pe_key not in data.setdefault("posted_collapses", []):
+            data["posted_collapses"].append(pe_key)
     if len(data["posted_hashes"]) > 2000: data["posted_hashes"] = data["posted_hashes"][-2000:]
     if len(data["posted_headlines"]) > 2000: data["posted_headlines"] = data["posted_headlines"][-2000:]
     if len(data.get("posted_player_events", [])) > 2000: data["posted_player_events"] = data["posted_player_events"][-2000:]
+    if len(data.get("posted_collapses", [])) > 2000: data["posted_collapses"] = data["posted_collapses"][-2000:]
 
 def build_story_key(player, club_key, event) -> str:
     p = (player or "unknown").lower().replace(" ", "_")
@@ -1020,6 +1067,35 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
                    "anniversary", "birthday", "wins the", "award", "fifa the best",
                    "ballon d'or", "merch", "video game", "ea sports"]
     if any(k in tl for k in NON_NEWS_KW): return False, "off_topic_content"
+
+    # OPINION / INTERVIEW / QUOTE GUARD — blocks "Mbappé praises Olise",
+    # "Messi feels good, not focused on age", punditry and reaction tweets that
+    # mention a player but report NO transfer/injury/suspension/manager EVENT.
+    # These were being forced into bogus TRANSFER RUMOUR cards by the regex
+    # fallback. A tweet is opinion/quote noise if it contains an opinion verb
+    # AND lacks any hard move/availability signal.
+    OPINION_MARKERS = [
+        "praise", "praises", "praised", "hails", "hailed", "admits", "admit",
+        "feels", "feeling", "insists", "believes", "reacts", "reaction",
+        "speaks", "speaks out", "responds", "slams", "criticis", "warns",
+        "says he", "happy at", "loves", "enjoying", "not focused", "focused on",
+        "wants to win", "dreams of", "favourite", "best in the world",
+        "interview", "exclusive interview", "opens up", "reveals he",
+        "physically good", "in great shape", "confident", "motivated",
+    ]
+    HARD_NEWS_SIGNAL = [
+        "sign", "signing", "signed", "joins", "joined", "join", "deal", "fee",
+        "bid", "transfer", "medical", "here we go", "loan", "contract",
+        "agreement", "agreed", "personal terms", "move to", "set to join",
+        "close to", "ruled out", "injury", "injured", "hamstring", "scan",
+        "surgery", "suspended", "suspension", "banned", "red card", "sent off",
+        "sack", "appoint", "head coach", "new manager", "completed",
+    ]
+    has_opinion = any(k in tl for k in OPINION_MARKERS)
+    has_hard_news = any(k in tl for k in HARD_NEWS_SIGNAL)
+    if has_opinion and not has_hard_news:
+        return False, "opinion_or_quote_no_event"
+
     if not story.get("is_football"): return False, "not_football"
     if tweet_too_old(story.get("created_at")): return False, f"older_than_{MAX_TWEET_AGE_DAYS}d"
     if story.get("historical") and not ALLOW_HISTORICAL_POSTS: return False, "historical_news"
@@ -1066,12 +1142,21 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
     big_player = is_big_player(story["player"], fpl_data) or is_big_name_player(story["player"])
     big_club = is_big_club_name(story.get("to_club")) or is_big_club_name(story.get("from_club"))
     if big_player or big_club: return True, "ok_big_name"
-    # UNLOCK: elite source + any named club = worth posting
+    # UNLOCK: elite source BUT the named club must be a PL or elite European
+    # club — not just ANY club. This is what stops obscure lower-league moves
+    # (e.g. Séverin Nioule → Sporting Charleroi) being posted just because a
+    # tier-2 reporter mentioned them. FPL relevance requires a relevant club.
     tiers = [source_tier(s) for s in (sources or [])]
     elite_source = any(t == 2 for t in tiers)
-    any_club = bool(story.get("to_club") or story.get("from_club") or
-                    story.get("to_key") or story.get("from_key"))
-    if elite_source and any_club: return True, "ok_elite_source"
+    relevant_club = False
+    for nm in (story.get("to_club"), story.get("from_club")):
+        if nm and (nm.lower() in PL_CLUB_NAMES or is_big_club_name(nm)
+                   or is_bundesliga_or_laliga_club(nm)):
+            relevant_club = True
+            break
+    if bool(story.get("to_key") or story.get("from_key")):
+        relevant_club = True  # any resolved key is a PL club
+    if elite_source and relevant_club: return True, "ok_elite_source"
     return False, "not_fpl_relevant"
 
 def classify_post(story, sources):
@@ -1126,6 +1211,21 @@ def validate_story(story, fpl_data=None):
         leak = (story.get("body", "") + " " + story.get("headline", "")).lower()
         if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak): return False, "event_data_mismatch"
     if ev == "manager" and not (story.get("to_key") or story.get("to_club")): return False, "manager_no_club"
+
+    # ENTITY COHERENCE (generalized, no name rules): if the detected player
+    # resolves in FPL, his REAL current club should be consistent with the
+    # story. For a transfer, his current club should be the from-side (or the
+    # to-side if already moved). If FPL says he plays for a club that is NEITHER
+    # the from nor the to club, the player or a club was mis-detected — skip
+    # rather than post a wrong pairing. Only applies when we have hard FPL data
+    # AND a resolved opposing club, so it never fires on legitimately unknown data.
+    if ev in ("transfer", "loan", "loan_option") and fpl_data is not None:
+        el = find_player_in_fpl(player, fpl_data)
+        cur = fpl_team_key(el, fpl_data) if el else None
+        fk = story.get("from_key"); tk = story.get("to_key")
+        if cur and (fk or tk) and cur != fk and cur != tk:
+            # The player's real club matches neither side of the reported move.
+            return False, "player_club_mismatch"
     return True, "ok"
 
 # ── LABELS ───────────────────────────────────────────────────────────────
@@ -1156,18 +1256,36 @@ def status_label(story, mode):
 BASE_TAGS = ["#FPLVortex"]
 
 def build_hashtags(story):
-    ev = story["event"]
-    tags = list(BASE_TAGS)
-    if ev in ("injury", "suspension"): tags.append("#InjuryNews")
-    elif ev in ("transfer", "loan", "loan_option", "renewal", "stay"): tags.append("#Transfers")
-    else: tags.append("#FootballNews")
+    """SEO hashtags, ordered most-relevant first, capped at 4 so the caption
+    stays short for non-premium X. Order: club tag(s) first (highest search
+    value), then the event-type tag, then #PremierLeague, then brand. Generic
+    #FootballNews is only used when nothing more specific applies."""
+    ev = story.get("event")
+    club_tags = []
     for key, name in ((story.get("to_key"), story.get("to_club")),
                       (story.get("from_key"), story.get("from_club"))):
         ht = hashtag_for(key) or hashtag_for(name)
-        if ht and ht not in tags: tags.append(ht)
-    if (story.get("to_key") or story.get("from_key")) and "#PremierLeague" not in tags:
-        tags.append("#PremierLeague")
-    return " ".join(tags[:4])
+        if ht and ht not in club_tags:
+            club_tags.append(ht)
+
+    if ev in ("injury", "suspension"):
+        event_tag = "#InjuryNews"
+    elif ev in ("transfer", "loan", "loan_option", "renewal", "stay"):
+        event_tag = "#Transfers"
+    elif ev == "manager":
+        event_tag = "#PremierLeague"  # manager moves index better under the league tag
+    else:
+        event_tag = "#FootballNews"
+
+    is_pl = bool(story.get("to_key") or story.get("from_key"))
+    ordered = []
+    # 1) club tags (best search value), 2) event tag, 3) league tag, 4) brand
+    for t in club_tags:
+        if t not in ordered: ordered.append(t)
+    if event_tag not in ordered: ordered.append(event_tag)
+    if is_pl and "#PremierLeague" not in ordered: ordered.append("#PremierLeague")
+    if "#FPLVortex" not in ordered: ordered.append("#FPLVortex")
+    return " ".join(ordered[:4])
 
 # ── TWEET TEXT ───────────────────────────────────────────────────────────
 def twitter_len(text: str) -> int:
@@ -1198,11 +1316,19 @@ def trim_for_twitter(body: str, limit: int = 278) -> str:
 def build_tweet_body(story, sources, mode) -> str:
     label = status_label(story, mode)
     head = story.get("headline") or story.get("player") or "Update"
-    # Short prefix: "RUMOUR |" or "OFFICIAL |" etc + headline only
-    if mode == "rumour" and label == "RUMOUR":
-        first_line = f"Unconfirmed report RUMOUR | {head}"
+    # Concise, non-redundant prefix. The old "Unconfirmed report RUMOUR | ..."
+    # repeated itself; a single clear tag per story type reads cleaner and
+    # leaves more room within X's non-premium character limit.
+    ev = story.get("event")
+    if story.get("collapsed"):
+        prefix = "DEAL OFF"
+    elif mode == "rumour":
+        prefix = "RUMOUR"
+    elif label and label != "RUMOUR":
+        prefix = label            # OFFICIAL / INJURY / SUSPENSION / LOAN / etc.
     else:
-        first_line = f"{label} | {head}"
+        prefix = (EVENT_PREFIX.get(ev) or "UPDATE")
+    first_line = f"{prefix} | {head}"
     body = first_line + "\n\n" + build_hashtags(story)
     return body
 
@@ -1662,13 +1788,27 @@ def create_player_card(story, sources, filename, mode="confirmed"):
     LEGENDS = {"harry kane": "78830"}
     legend_pid = LEGENDS.get(player_name.lower())
     photo = None
-    if player_el or legend_pid:
+
+    # MISLEADING-KIT GUARD (logic, not hardcoding): the FPL photo shows the
+    # player in his CURRENT club's kit. For an unconfirmed rumour where his
+    # current club is NOT part of this story, that kit can imply a move that
+    # hasn't happened (e.g. Fernandes in a Southampton shirt on a Man Utd card).
+    # So we only use the player photo when it can't mislead:
+    #   - the move is CONFIRMED/OFFICIAL (mode != rumour, not collapsed), OR
+    #   - the player's current club matches a club in THIS story (verified).
+    # Otherwise we skip it and fall back to a neutral destination-crest visual.
+    confirmed = (mode != "rumour") and not collapsed
+    photo_safe = confirmed or _photo_verified(player_el, fpl, from_key, to_key)
+    legend_ok = bool(legend_pid)  # curated legends are always correct
+
+    if (player_el and photo_safe) or legend_ok:
         pid = legend_pid or (player_el.get("code") if player_el else None)
         if pid:
             pp = Path(f"players/{pid}.png")
             if not pp.exists():
                 _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
             photo = _safe_open_rgba(pp)
+    # Tweet's own image is a safe, real photo of the event — use if no FPL photo.
     if photo is None and story.get("media_url"):
         tp = Path(f"players/tweet_{story.get('id')}.jpg")
         if not tp.exists():
@@ -1677,19 +1817,24 @@ def create_player_card(story, sources, filename, mode="confirmed"):
 
     if photo is not None:
         # COVER-fit: fill the box edge-to-edge, center-crop with a slight upward
-        # bias so faces are kept; round the corners to match the panel. This
-        # makes the image big, sharp, centered and never tiny/letterboxed.
+        # bias so faces are kept; round the corners to match the panel.
         filled = ImageOps.fit(photo, (PB_W, pb_h), Image.Resampling.LANCZOS,
                               centering=(0.5, 0.38)).convert("RGBA")
         round_mask = Image.new("L", (PB_W, pb_h), 0)
         ImageDraw.Draw(round_mask).rounded_rectangle([0, 0, PB_W, pb_h], radius=20, fill=255)
-        # respect the photo's own transparency (FPL cut-outs) so the panel shows
-        # through instead of a black box; opaque photos stay fully visible.
         paste_mask = ImageChops.multiply(filled.getchannel("A"), round_mask)
         img.paste(filled, (pbx0, pby0), paste_mask)
     else:
-        # guaranteed silhouette IMAGE filling the same box (never empty)
-        _draw_player_silhouette(img, draw, fcx, pby0, PB_W, pb_h)
+        # NEUTRAL FALLBACK: prefer a large destination/origin crest (never
+        # misleading) centred in the photo panel; only if no crest is available
+        # do we draw the generic player silhouette.
+        big_crest = _load_crest(to_key or from_key, box=min(PB_W, pb_h) - 30)
+        if big_crest is not None:
+            img.paste(big_crest,
+                      (fcx - big_crest.width // 2, pby0 + (pb_h - big_crest.height) // 2),
+                      big_crest)
+        else:
+            _draw_player_silhouette(img, draw, fcx, pby0, PB_W, pb_h)
 
     # ---------- LEFT: wordmark, label, name, info ----------
     LX = 70
@@ -2397,4 +2542,3 @@ if __name__ == "__main__":
         asyncio.run(run_dry_run(fixtures_path=args.fixtures, runs=args.runs))
     else:
         asyncio.run(main(post=not args.draft_only, allow_rumours=args.allow_rumours))
-
