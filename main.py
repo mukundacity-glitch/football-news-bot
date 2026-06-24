@@ -2148,16 +2148,26 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
           f"1/run × 30-min cron, hour cap {MAX_POSTS_PER_HOUR})")
     print(f"  Classifier         : regex-only (no LLM)")
     print(f"  Cards written to   : {dryrun_dir}/")
+    # ... (End of run_dry_run function)
     print("[DRY-RUN] ==========================================")
-    if total_img_fail == 0: print("[DRY-RUN] PASS: no blank/broken images.")
-    else: print("[DRY-RUN] FAIL: some images did not render — investigate above.")
-    async def main(post: bool = True, allow_rumours: bool = False):
+    if total_img_fail == 0: 
+        print("[DRY-RUN] PASS: no blank/broken images.")
+    else: 
+        print("[DRY-RUN] FAIL: some images did not render — investigate above.")
+
+
+# 1. Unindent main to the absolute left edge (module level)
+async def main(post: bool = True, allow_rumours: bool = False):
+    # 2. Indent the function body by 4 spaces
     mode_str = "LIVE" if post else "DRAFT-ONLY"
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
           f"(classifier=regex, mode={mode_str})")
+    
     init_club_data()
     fpl = fetch_fpl_data()
     data = load_data()
+    
+    # ... rest of your main() logic
 
     # Build Twikit client only if tokens are present; otherwise rely on Nitter
     read_client = None
