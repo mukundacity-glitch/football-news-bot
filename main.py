@@ -1350,31 +1350,30 @@ def _render_html_sync(html_content, filename, error_box=None):
             import traceback
             error_box.append(traceback.format_exc())
 
+
 def create_transfer_image(story, sources, filename, collapsed=False):
     """Generates a premium sports broadcast graphic using HTML/CSS and Playwright."""
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
     player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
-    
+
     to_club = story.get("to_club") or (story.get("to_key") or "").replace("_", " ")
     from_club = story.get("from_club") or (story.get("from_key") or "").replace("_", " ")
-    
-    # Determine Status and Colors
+
     mode = story.get("mode", "confirmed")
     if collapsed or story.get("collapsed"):
         status = "DEAL COLLAPSED"
-        badge_color = "#e31e24" # Red
+        badge_color = "#e31e24"
     elif mode == "rumour":
         status = "TRANSFER RUMOUR"
-        badge_color = "#e31e24" # Red
+        badge_color = "#e31e24"
     else:
         status = "OFFICIAL" if story.get("stage", 1) >= 4 else "CONFIRMED"
-        badge_color = "#54e07c" # FPL Vortex Green
-        
+        badge_color = "#54e07c"
+
     club_color = get_club_color(story.get("to_key") or story.get("from_key"))
     source_text = " · ".join(f"@{s}" for s in sources[:2])
 
-    # Fetch Player Photo
     photo_data_uri = None
     pid = player_el.get("code") if player_el else None
     if pid:
@@ -1385,7 +1384,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             import base64
             photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
 
-    # FIX 3: Fetch the Club Crest Logo as Base64 to inject into the HTML card
     crest_key = story.get("to_key") or story.get("from_key")
     crest_data_uri = ""
     if crest_key:
@@ -1403,14 +1401,13 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     else:
         photo_img_html = '<h1 style="z-index: 1; font-size: 150px; color: rgba(255,255,255,0.1); margin: 0;">V</h1>'
 
-    # The HTML/CSS Template
     html_content = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@700;900&display=swap');
-            
+
             body {{
                 margin: 0;
                 padding: 0;
@@ -1423,7 +1420,7 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 overflow: hidden;
                 position: relative;
             }}
-            
+
             .accent-slash {{
                 position: absolute;
                 width: 200%;
@@ -1460,7 +1457,7 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             }}
 
             .wordmark {{
-                font-size: 55px; /* UP from 40px */
+                font-size: 55px;
                 font-weight: 900;
                 margin-bottom: 35px;
                 text-shadow: 0 4px 10px rgba(0,0,0,0.5);
@@ -1472,17 +1469,17 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 background: {badge_color};
                 color: #fff;
                 padding: 18px 36px;
-                font-size: 50px; /* UP from 38px */
+                font-size: 50px;
                 font-weight: 900;
                 border-radius: 12px;
                 letter-spacing: 3px;
                 margin-bottom: 30px;
                 text-transform: uppercase;
                 box-shadow: 0 8px 20px rgba(0,0,0,0.4);
-            }
+            }}
 
             .player-name {{
-                font-size: 115px; /* UP from 90px */
+                font-size: 115px;
                 font-weight: 900;
                 line-height: 1.1;
                 text-transform: uppercase;
@@ -1494,9 +1491,9 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 display: grid;
                 grid-template-columns: max-content 1fr;
                 gap: 28px 50px;
-                font-size: 52px; /* UP from 40px */
+                font-size: 52px;
             }}
-            
+
             .detail-label {{ color: #96a8c4; font-weight: 700; text-transform: uppercase; }}
             .detail-value {{ font-weight: 900; text-transform: uppercase; }}
             .detail-value.from {{ color: #e31e24; font-weight: 900; text-transform: uppercase; }}
@@ -1517,7 +1514,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 overflow: hidden;
             }}
 
-            /* FIX 3: Add CSS for the Club Logo inside the Photo Panel */
             .crest-badge {{
                 position: absolute;
                 top: 16px;
@@ -1537,7 +1533,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 z-index: 0;
             }}
 
-            /* FIX 4: Increased footer font size */
             .footer {{
                 position: absolute;
                 bottom: 0;
@@ -1566,7 +1561,7 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 <div class="wordmark">FPL <span>VORTEX</span></div>
                 <div><div class="status-badge">{status}</div></div>
                 <div class="player-name">{player_name}</div>
-                
+
                 <div class="details-grid">
                     <div class="detail-label">From</div>
                     <div class="detail-value from">{from_club or "TBD"}</div>
@@ -1579,7 +1574,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
 
             <div class="right-column">
                 <div class="photo-panel">
-                    <!-- FIX 3: Inject the Logo here -->
                     {crest_img_html}
                     {photo_img_html}
                 </div>
@@ -1594,7 +1588,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     </html>
     """
 
-    # FIX 2: Run Playwright in a background thread to prevent the async crash!
     try:
         import threading
         error_box = []
@@ -1603,15 +1596,14 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         t.join()
         if error_box:
             print("  [THREAD TRACEBACK]\n" + error_box[0])
-        
+
         if not Path(filename).exists() or Path(filename).stat().st_size < 1000:
             raise RuntimeError("Thread completed but image missing")
-            
+
     except Exception as e:
         import traceback; traceback.print_exc()
         from PIL import Image
-        Image.new('RGB', (1380, 776), color = (11, 18, 32)).save(filename)
-
+        Image.new('RGB', (1380, 776), color=(11, 18, 32)).save(filename)
 def create_injury_image(story, sources, filename):
     W, H = 1380, 776
     fpl = fetch_fpl_data()
