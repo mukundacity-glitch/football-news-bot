@@ -42,6 +42,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageChops
 from pilmoji import Pilmoji
 
+font = ImageFont.load_default()
+
 # ── TWIKIT PATCH (inline) ────────────────────────────────────────────────
 try:
     _tx_mod = __import__(
