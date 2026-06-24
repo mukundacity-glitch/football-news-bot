@@ -1397,6 +1397,12 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             import base64
             crest_data_uri = "data:image/png;base64," + base64.b64encode(cp.read_bytes()).decode("ascii")
 
+    crest_img_html = f'<img class="crest-badge" src="{crest_data_uri}" />' if crest_data_uri else ''
+    if photo_data_uri:
+        photo_img_html = f'<img src="{photo_data_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />'
+    else:
+        photo_img_html = '<h1 style="z-index: 1; font-size: 150px; color: rgba(255,255,255,0.1); margin: 0;">V</h1>'
+
     # The HTML/CSS Template
     html_content = f"""
     <!DOCTYPE html>
@@ -1574,8 +1580,8 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             <div class="right-column">
                 <div class="photo-panel">
                     <!-- FIX 3: Inject the Logo here -->
-                    {f'<img class="crest-badge" src="{crest_data_uri}" />' if crest_data_uri else ''}
-                    {f'<img src="{photo_data_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />' if photo_data_uri else '<h1 style="z-index: 1; font-size: 150px; color: rgba(255,255,255,0.1); margin: 0;">V</h1>'}
+                    {crest_img_html}
+                    {photo_img_html}
                 </div>
             </div>
         </div>
