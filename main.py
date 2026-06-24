@@ -637,20 +637,20 @@ def detect_historical(text: str) -> bool:
     return False
 
 
-def build_story(tweet_text: str, fpl_data=None) -> dict:
-    """Rule-based story extraction — no LLM dependency."""
-    s = extract_story_fallback(tweet_text, fpl_data)
-    # Mark as primary classifier (not a fallback) so direction_confident gates work
-    s["from_fallback"] = False
-    s.setdefault("direction_confident", True)
-    s["body"] = _clean_source_text(s.get("body") or "")
-    s["from_key"] = s.get("from_key") or resolve_club_key(s.get("from_club"))
-    s["to_key"] = s.get("to_key") or resolve_club_key(s.get("to_club"))
-
+Find:
     if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
         el = find_player_in_fpl(s["player"], fpl_data)
         actual_club = fpl_team_key(el, fpl_data) if el else None
         if actual_club:
+            s["from_key"] = actual_club
+            s["from_club"] = actual_club.replace("_", " ")
+
+Replace with:
+    if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
+        el = find_player_in_fpl(s["player"], fpl_data)
+        is_free_agent = bool(el and el.get("team", 0) == 0)
+        actual_club = fpl_team_key(el, fpl_data) if el else None
+        if actual_club and not is_free_agent and not s.get("from_key"):
             s["from_key"] = actual_club
             s["from_club"] = actual_club.replace("_", " ")
 
@@ -1303,8 +1303,21 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
     player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
-    to_key = story.get("to_key")
-    from_key = story.get("from_key")
+    
+    to_club = story.get("to_club") or (story.get("to_key") or "").replace("_", " ")
+    from_club = story.get("from_club") or (story.get("from_key") or "").replace("_", " ")
+
+    LEGENDS = {"harry kane": "78830"}
+    legend_pid = LEGENDS.get(player_name.lower())
+    photo_data_uri = None
+    pid = legend_pid or (player_el.get("code") if player_el else None)
+    if pid:
+        pp = Path(f"players/{pid}.png")
+        if not pp.exists():
+            _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
+        if pp.exists() and pp.stat().st_size >= 500:
+            import base64
+            photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
 
     NAVY = (11, 18, 32)
     GOLD = (212, 175, 55)
@@ -1617,6 +1630,8 @@ def create_image(story, sources, filename, rumour=False):
             
             .detail-label {{ color: #96a8c4; font-weight: 700; text-transform: uppercase; }}
             .detail-value {{ font-weight: 900; text-transform: uppercase; }}
+            .detail-value.from {{ color: #e31e24; font-weight: 900; text-transform: uppercase; }}
+            .detail-value.to {{ color: #54e07c; font-weight: 900; text-transform: uppercase; }}
 
             /* Glassmorphism Photo Panel */
             .photo-panel {{
@@ -1632,6 +1647,15 @@ def create_image(story, sources, filename, rumour=False):
                 box-shadow: 0 20px 50px rgba(0,0,0,0.5);
                 position: relative;
                 overflow: hidden;
+            }}
+            .crest-badge {{
+                position: absolute;
+                top: 16px;
+                right: 16px;
+                width: 64px;
+                height: 64px;
+                z-index: 2;
+                filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5));
             }}
 
             .photo-panel::before {{
@@ -1674,9 +1698,9 @@ def create_image(story, sources, filename, rumour=False):
                 
                 <div class="details-grid">
                     <div class="detail-label">From</div>
-                    <div class="detail-value">{from_club or "TBD"}</div>
+                    <div class="detail-value from">{from_club or "TBD"}</div>
                     <div class="detail-label">To</div>
-                    <div class="detail-value">{to_club or "TBD"}</div>
+                    <div class="detail-value to">{to_club or "TBD"}</div>
                     <div class="detail-label">Fee</div>
                     <div class="detail-value" style="color: #54e07c;">{story.get('fee') or "Undisclosed"}</div>
                 </div>
@@ -1684,7 +1708,7 @@ def create_image(story, sources, filename, rumour=False):
 
             <div class="right-column">
                 <div class="photo-panel">
-                    <h1 style="z-index: 1; font-size: 150px; color: rgba(255,255,255,0.1); margin: 0;">V</h1>
+                    {f'<img src="{photo_data_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />' if photo_data_uri else '<h1 style="z-index: 1; font-size: 150px; color: rgba(255,255,255,0.1); margin: 0;">V</h1>'}
                 </div>
             </div>
         </div>
