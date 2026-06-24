@@ -359,12 +359,22 @@ def load_data() -> dict:
     # Clean up any pipe-format "player|event" keys written by a previous buggy build
     d["posted_hashes"] = [h for h in d["posted_hashes"] if "|" not in h]
 
-    # --- TARGETED RESET (Wilson and Verkooijen Repost) ---
-    d["posted_headlines"] = [h for h in d["posted_headlines"] if "wilson" not in h.lower() and "verkooijen" not in h.lower()]
-    d["posted_hashes"] = [] 
-    d["posted_ids"] = [] 
+    # --- TARGETED RESET (Dubravka + Wilson + Verkooijen one-time repost) ---
+    _reset_names = {"dubravka", "wilson", "verkooijen"}
+    d["posted_headlines"] = [
+        h for h in d["posted_headlines"]
+        if not any(n in h.lower() for n in _reset_names)
+    ]
+    d["posted_hashes"] = [
+        h for h in d["posted_hashes"]
+        if not any(n in h.lower() for n in _reset_names)
+    ]
+    d["posted_ids"] = [
+        i for i in d["posted_ids"]
+        if not any(n in str(i).lower() for n in _reset_names)
+    ]
     for k in list(d.get("stories", {}).keys()):
-        if "wilson" in k or "verkooijen" in k:
+        if any(n in k.lower() for n in _reset_names):
             del d["stories"][k]
     # ------------------------------------------------------------
 
@@ -637,23 +647,13 @@ def detect_historical(text: str) -> bool:
     return False
 
 
-Find:
-    if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
-        el = find_player_in_fpl(s["player"], fpl_data)
-        actual_club = fpl_team_key(el, fpl_data) if el else None
-        if actual_club:
-            s["from_key"] = actual_club
-            s["from_club"] = actual_club.replace("_", " ")
-
-Replace with:
-    if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
+if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
         el = find_player_in_fpl(s["player"], fpl_data)
         is_free_agent = bool(el and el.get("team", 0) == 0)
         actual_club = fpl_team_key(el, fpl_data) if el else None
         if actual_club and not is_free_agent and not s.get("from_key"):
             s["from_key"] = actual_club
             s["from_club"] = actual_club.replace("_", " ")
-
     try: s["stage"] = max(1, min(4, int(s.get("stage", 1))))
     except Exception: s["stage"] = 1
     s["collapsed"] = bool(s.get("collapsed"))
