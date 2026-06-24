@@ -552,6 +552,16 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     # An on-loan signal must win over injury wording. Recycled lines like
     # "X ruled out ... has joined Y on loan" otherwise misfire as injuries.
     loan_signal = ("on loan" in tl) or bool(re.search(r"\bjoine?d?\b.*\bon loan\b", tl))
+    # A real transfer needs a TRANSFER ACTION word — not just a name + a club.
+    # This stops press quotes / match reaction ("Rice urges England positivity")
+    # being defaulted into a TRANSFER card. No default-to-transfer.
+    transfer_signal = has_word(
+        ["transfer", "sign", "signs", "signed", "signing", "joins", "joined",
+         "join", "deal", "fee", "bid", "offer", "move", "moves", "moving",
+         "medical", "here we go", "talks", "target", "targets", "pursue",
+         "pursuing", "interested", "interest", "wants", "agree", "agreed",
+         "agreement", "personal terms", "close to", "set to join", "swoop",
+         "approach", "linked", "chase", "chasing", "snap up", "capture"], tl)
     if has_word(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl): event = "suspension"
     elif loan_signal: event = "loan"
     elif has_word(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt"], tl): event = "injury"
@@ -559,7 +569,8 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     elif has_word(["new deal", "new contract", "signs new", "extension", "renew"], tl): event = "renewal"
     elif has_word(["stay", "staying", "no exit", "not for sale", "remain"], tl) and not has_word(["sign for", "joins", "move to"], tl): event = "stay"
     elif has_word(["loan"], tl): event = "loan"
-    else: event = "transfer"
+    elif transfer_signal: event = "transfer"
+    else: event = "other"   # no event signal at all -> not news, will be skipped
 
     stage = 4 if has_word(["here we go", "official", "confirmed", "completed", "joins"], tl) else \
         2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
@@ -1097,6 +1108,10 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
         return False, "opinion_or_quote_no_event"
 
     if not story.get("is_football"): return False, "not_football"
+    # No recognizable event (not transfer/injury/suspension/manager/loan/etc.)
+    # means this isn't postable news — e.g. a press quote or match reaction that
+    # merely mentions a player and a team. Skip rather than force a card.
+    if story.get("event") == "other": return False, "no_event_type"
     if tweet_too_old(story.get("created_at")): return False, f"older_than_{MAX_TWEET_AGE_DAYS}d"
     if story.get("historical") and not ALLOW_HISTORICAL_POSTS: return False, "historical_news"
     if story.get("confidence", 0) < 0.45: return False, "low_confidence"
