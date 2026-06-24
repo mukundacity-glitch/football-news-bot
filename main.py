@@ -1772,8 +1772,7 @@ async def post_item(post_client, item, data):
         return True
 
     return False
-
-# ── SCRAPER CORE ─────────────────────────────────────────────────────────
+  # ── SCRAPER CORE ─────────────────────────────────────────────────────────
 MAX_TWEET_AGE_DAYS = 3
 
 def _parse_tweet_date(raw):
@@ -1804,7 +1803,8 @@ def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS):
         return False
     age = datetime.now(timezone.utc) - dt
     return age.total_seconds() > max_days * 86400
-  def get_nitter_tweets(username):
+
+def get_nitter_tweets(username):
     headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
     for inst in NITTER_INSTANCES:
         try:
@@ -1817,21 +1817,14 @@ def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS):
                 link, desc, pubdate = it.find("link"), it.find("description"), it.find("pubDate")
                 if link is None: 
                     continue
+                
                 tid = link.text.strip().split("/")[-1].split("#")[0]
                 desc_text = desc.text if desc is not None and desc.text else ""
                 text = re.sub(r'\<[^\>]+\>', '', desc_text).strip()
+                
                 created_at = pubdate.text.strip() if pubdate is not None and pubdate.text else None
-                out.append({"id": tid, "text": text, "created_at": created_at})
-            if out:
-                return out
-        except Exception:
-            continue
-            
-    return []
 
-                pub = it.find("pubDate")
-                created_at = pub.text.strip() if pub is not None and pub.text else None
-
+                # Image extraction logic
                 media_url = None
                 img_match = re.search(r'<img[^>]+src="([^">]+)"', desc_text)
                 if img_match:
@@ -1839,9 +1832,20 @@ def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS):
                     if media_url.startswith("/"):
                         media_url = f"{inst}{media_url}"
 
-                if tid and text: out.append({"id": tid, "text": text, "media_url": media_url, "created_at": created_at})
-            if out: return out
-        except Exception: continue
+                if tid and text: 
+                    out.append({
+                        "id": tid, 
+                        "text": text, 
+                        "media_url": media_url, 
+                        "created_at": created_at
+                    })
+                    
+            if out: 
+                return out
+                
+        except Exception: 
+            continue
+            
     return []
 
 async def get_twikit_tweets(read_client, username, count=20, retries=2):
