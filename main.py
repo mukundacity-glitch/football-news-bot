@@ -1804,30 +1804,30 @@ def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS):
         return False
     age = datetime.now(timezone.utc) - dt
     return age.total_seconds() > max_days * 86400
-
-def get_nitter_tweets(username):
+  def get_nitter_tweets(username):
     headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
     for inst in NITTER_INSTANCES:
-    try:
-        r = requests.get(f"{inst}/{username}/rss", headers=headers, timeout=10)
-        if r.status_code != 200: 
-            continue
-        root = ET.fromstring(r.content)
-        out = []
-        for it in root.findall(".//item")[:8]:
-            link, desc, pubdate = it.find("link"), it.find("description"), it.find("pubDate")
-            if link is None: 
+        try:
+            r = requests.get(f"{inst}/{username}/rss", headers=headers, timeout=10)
+            if r.status_code != 200: 
                 continue
-            tid = link.text.strip().split("/")[-1].split("#")[0]
-            desc_text = desc.text if desc is not None and desc.text else ""
-            text = re.sub(r'\<[^\>]+\>', '', desc_text).strip()
-            created_at = pubdate.text.strip() if pubdate is not None and pubdate.text else None
-            out.append({"id": tid, "text": text, "created_at": created_at})
-        if out:
-            return out
-    except Exception:
-        continue
-return []
+            root = ET.fromstring(r.content)
+            out = []
+            for it in root.findall(".//item")[:8]:
+                link, desc, pubdate = it.find("link"), it.find("description"), it.find("pubDate")
+                if link is None: 
+                    continue
+                tid = link.text.strip().split("/")[-1].split("#")[0]
+                desc_text = desc.text if desc is not None and desc.text else ""
+                text = re.sub(r'\<[^\>]+\>', '', desc_text).strip()
+                created_at = pubdate.text.strip() if pubdate is not None and pubdate.text else None
+                out.append({"id": tid, "text": text, "created_at": created_at})
+            if out:
+                return out
+        except Exception:
+            continue
+            
+    return []
 
                 pub = it.find("pubDate")
                 created_at = pub.text.strip() if pub is not None and pub.text else None
