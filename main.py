@@ -2151,7 +2151,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
     print("[DRY-RUN] ==========================================")
     if total_img_fail == 0: print("[DRY-RUN] PASS: no blank/broken images.")
     else: print("[DRY-RUN] FAIL: some images did not render — investigate above.")
-      async def main(post: bool = True, allow_rumours: bool = False):
+    async def main(post: bool = True, allow_rumours: bool = False):
     mode_str = "LIVE" if post else "DRAFT-ONLY"
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
           f"(classifier=regex, mode={mode_str})")
