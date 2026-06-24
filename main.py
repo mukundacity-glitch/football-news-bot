@@ -1453,15 +1453,15 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 justify-content: flex-end;
             }}
 
-            .wordmark {
+            .wordmark {{
                 font-size: 55px; /* UP from 40px */
                 font-weight: 900;
                 margin-bottom: 35px;
                 text-shadow: 0 4px 10px rgba(0,0,0,0.5);
-            }
-            .wordmark span { color: #54e07c; }
+            }}
+            .wordmark span {{ color: #54e07c; }}
 
-            .status-badge {
+            .status-badge {{
                 display: inline-block;
                 background: {badge_color};
                 color: #fff;
