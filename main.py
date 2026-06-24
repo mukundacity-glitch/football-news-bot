@@ -584,21 +584,31 @@ def _summarise(name, event, from_key, to_key, stage, collapsed):
     who = name or "The player"
     fc = from_key.replace("_", " ") if from_key else None
     tc = to_key.replace("_", " ") if to_key else None
-    if event == "injury": return f"{who} is being assessed and the club is monitoring the situation."
-    if event == "suspension": return f"{who} faces a suspension and is set to miss upcoming action."
-    if event == "manager": return f"{who} is linked with a managerial move{f' to {tc}' if tc else ''}."
+    
+    if event == "injury": 
+        return f"{who} is being assessed and the club is monitoring the situation."
+    if event == "suspension": 
+        return f"{who} faces a suspension and is set to miss upcoming action."
+    if event == "manager": 
+        return f"{who} is linked with a managerial move{f' to {tc}' if tc else ''}."
     if event in ("renewal", "stay"):
         base = f"{who} is set to stay" + (f" at {fc or tc}" if (fc or tc) else "")
         return base + "; no exit is planned at this stage."
-    if collapsed: return f"A reported move for {who}{f' to {tc}' if tc else ''} has broken down."
+    if collapsed: 
+        return f"A reported move for {who}{f' to {tc}' if tc else ''} has broken down."
+        
     verb = {1: "is being linked with", 2: "is in advanced talks over", 3: "is close to", 4: "is set to complete"}[stage]
-    if tc and fc: return f"{who} {verb} a move from {fc} to {tc}."
-    if tc: return f"{who} {verb} a move to {tc}."
+    
+    if tc and fc: 
+        return f"{who} {verb} a move from {fc} to {tc}."
+    if tc: 
+        return f"{who} {verb} a move to {tc}."
     return f"{who} {verb} a transfer."
 
 _VIDEO_MARKERS = re.compile(
     r'(youtu\.be|youtube\.com|/video|watch\?v=|\bfull video\b|\bwatch:?\b|'
     r'\blive\s*stream\b|\bpodcast\b|\bepisode\b|\bclip\b|🎥|▶️|📺)', re.I)
+    
 _CLAIM_MARKERS = re.compile(
     r'\b(agree[d]?|sign[ed|ing]*|join[s|ed|ing]*|move[s|d]*|deal|bid|offer|'
     r'medical|here we go|loan|contract|talks|fee|ruled out|injur|suspend|'
@@ -646,24 +656,29 @@ def detect_historical(text: str) -> bool:
         return True
     return False
 
-
-if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
+# ── LOGIC BLOCK (Ensure this sits cleanly inside its parent function) ────
+    if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
         el = find_player_in_fpl(s["player"], fpl_data)
         is_free_agent = bool(el and el.get("team", 0) == 0)
         actual_club = fpl_team_key(el, fpl_data) if el else None
+        
         if actual_club and not is_free_agent and not s.get("from_key"):
             s["from_key"] = actual_club
             s["from_club"] = actual_club.replace("_", " ")
 
-    try: s["stage"] = max(1, min(4, int(s.get("stage", 1))))
-    except Exception: s["stage"] = 1
+    try: 
+        s["stage"] = max(1, min(4, int(s.get("stage", 1))))
+    except Exception: 
+        s["stage"] = 1
+        
     s["collapsed"] = bool(s.get("collapsed"))
     s["historical"] = detect_historical(tweet_text)
 
     if looks_like_video_post(tweet_text):
         s["from_video"] = True
         s["has_written_claim"] = has_written_claim(tweet_text)
-        if s["stage"] > 2: s["stage"] = 2
+        if s["stage"] > 2: 
+            s["stage"] = 2
     else:
         s["from_video"] = False
         s["has_written_claim"] = True
@@ -678,14 +693,16 @@ if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan
 def fetch_fpl_data():
     cache = Path("fpl_cache.json")
     if cache.exists() and (datetime.now().timestamp() - cache.stat().st_mtime < 86400):
-        with open(cache) as f: return json.load(f)
+        with open(cache) as f: 
+            return json.load(f)
     try:
         req = urllib.request.Request(
             "https://fantasy.premierleague.com/api/bootstrap-static/",
             headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req) as resp:
             data = json.loads(resp.read())
-        with open(cache, "w") as f: json.dump(data, f)
+        with open(cache, "w") as f: 
+            json.dump(data, f)
         _build_country_block(data)
         return data
     except Exception:
