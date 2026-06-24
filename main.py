@@ -1756,13 +1756,13 @@ def _parse_tweet_date(raw):
     if isinstance(raw, datetime):
         return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
     s = str(raw).strip()
-    for fmt in ("%a %b %d %H:%M:%S %z %Y",
-                "%a, %d %b %Y %H:%M:%S %z",
-                "%a, %d %b %Y %H:%M:%S %Z",
+    s_norm = re.sub(r'\b(GMT|UTC)\b', '+0000', s)
+    for fmt in ("%a, %d %b %Y %H:%M:%S %z",
+                "%a %b %d %H:%M:%S %z %Y",
                 "%Y-%m-%dT%H:%M:%S%z",
                 "%Y-%m-%d %H:%M:%S%z"):
         try:
-            dt = datetime.strptime(s, fmt)
+            dt = datetime.strptime(s_norm, fmt)
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             continue
