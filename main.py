@@ -1767,9 +1767,8 @@ async def post_item(post_client, item, data):
         print(f"  POST BLOCKED (no image could be produced): {item.get('player')!r}")
         return False
 
-        media_id = await post_client.upload_media(image_path, media_type="image/png")
+    media_id = await post_client.upload_media(image_path, media_type="image/png")
     posted_live = False
-
     try:
         await post_client.create_tweet(text=caption, media_ids=[media_id])
         posted_live = True
