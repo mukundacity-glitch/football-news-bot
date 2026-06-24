@@ -1318,6 +1318,15 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         if pp.exists() and pp.stat().st_size >= 500:
             import base64
             photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
+    if not photo_data_uri:
+        tweet_img_url = story.get("media_url")
+        if tweet_img_url:
+            tp = Path(f"players/tweet_{hashlib.md5(tweet_img_url.encode()).hexdigest()[:12]}.png")
+            if not tp.exists():
+                _download_asset(tweet_img_url, tp)
+            if tp.exists() and tp.stat().st_size >= 500:
+                import base64
+                photo_data_uri = "data:image/png;base64," + base64.b64encode(tp.read_bytes()).decode("ascii")
 
     NAVY = (11, 18, 32)
     GOLD = (212, 175, 55)
@@ -1797,15 +1806,16 @@ async def post_item(post_client, item, data):
 
     def _img_ok():
         return os.path.exists(image_path) and os.path.getsize(image_path) >= 1000
-        if not _img_ok():
-            print(f"  [IMG] post-time card missing — regenerating: {item.get('player')!r}")
-            try:
-                if item.get("event") == "injury":
-                    create_injury_image(item, item["sources"], image_path)
-                else:
-                    create_transfer_image(item, item["sources"], image_path, collapsed=item.get("collapsed", False))
-            except Exception as e:
-                print(f"  [IMG] regeneration raised: {e}")
+
+    if not _img_ok():
+        print(f"  [IMG] post-time card missing — regenerating: {item.get('player')!r}")
+        try:
+            if item.get("event") == "injury":
+                create_injury_image(item, item["sources"], image_path)
+            else:
+                create_transfer_image(item, item["sources"], image_path, collapsed=item.get("collapsed", False))
+        except Exception as e:
+            print(f"  [IMG] regeneration raised: {e}")
     if not _img_ok():
         print(f"  [IMG] forcing BREAKING NEWS fallback card: {item.get('player')!r}")
         try:
