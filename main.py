@@ -850,7 +850,7 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
     if not story.get("is_football"): return False, "not_football"
     if tweet_too_old(story.get("created_at")): return False, f"older_than_{MAX_TWEET_AGE_DAYS}d"
     if story.get("historical") and not ALLOW_HISTORICAL_POSTS: return False, "historical_news"
-    if story.get("confidence", 0) < 0.45: return False, "low_confidence"
+    if story.get("confidence", 0) < 0.40: return False, "low_confidence"
     if any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl) for w in STAFF_BLOCK_KW): return False, "staff_or_offpitch"
     if not story.get("player"): return False, "no_player"
     mixed = detect_mixed_story(story, raw_text)
