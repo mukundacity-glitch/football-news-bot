@@ -294,17 +294,23 @@ PL_CLUB_NAMES = set()
 
 def init_club_data():
     global CLUB_NAME_SET, CLUB_HASHTAGS, PL_CLUB_NAMES
+
     try:
         import warnings
         warnings.filterwarnings("ignore", category=UserWarning)
-        d = get_club_data()
+
+        d = get_club_data() or {}
+
     except Exception as e:
         print(f"[CLUBS] get_club_data failed: {e}")
-        return
+        d = {}
+
     CLUB_HASHTAGS = d.get("club_hashtags", {}) or {}
-    PL_CLUB_NAMES = set(d.get("pl_clubs", []) or []) | {a for a in CLUB_ALIASES}
+    PL_CLUB_NAMES = set(d.get("pl_clubs", []) or []) | set(CLUB_ALIASES.keys())
+
     CLUB_NAME_SET = set(CLUB_HASHTAGS.keys()) | set((d.get("short_names", {}) or {}).keys())
     CLUB_NAME_SET |= set(CLUB_ALIASES.keys())
+
     _build_club_word_fragments()
 
 def _build_club_word_fragments():
@@ -1001,7 +1007,10 @@ def validate_story(story, fpl_data=None):
         
         # New "Catch-All": Check if ANY club alias exists anywhere in the tweet body/text
         tweet_body = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-        has_any_club = any(re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tweet_body) for alias in CLUB_ALIASES)
+        has_any_club = any(
+            re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tweet_body)
+            for alias in CLUB_ALIASES
+        )
         
         if not (tk or story.get("to_club") or fk or story.get("from_club") or has_any_club): 
             return False, "no_clubs"
@@ -1059,7 +1068,7 @@ _TWEET_TEMPLATES = {
         "🚨 HERE WE GO | {player} is officially a {dest} player!",
         "💎 SIGNED & SEALED | {player} has finalized his move to {dest}!",
         "🤝 IT'S ANNOUNCED | {player} unrevealed as a new signing for {dest}!",
-        "🏟️ NEW ERA | {player} takes on a new chapter at {dest}!",
+        "🏟️ NEW ERA | {player} begins a new chapter at {dest}!",
     ],
     "TRANSFER": [
         "🔴 TRANSFER | {player} linked with a move to {dest}.",
@@ -1734,6 +1743,13 @@ async def post_item(post_client, item, data):
     try:
         await post_client.create_tweet(text=caption, media_ids=[media_id])
         posted_live = True
+except KeyError as ke:
+    key = str(ke).strip("'\"")
+    if key in _TWIKIT_SUCCESS_PARSE_KEYS:
+        print(f"  [WARN] twikit KeyError({ke}) after create_tweet — tweet is live; recording as posted to prevent duplicate.")
+        posted_live = True
+    else:
+        raise
     except KeyError as ke:
         key = str(ke).strip("'\"")
         if key in _TWIKIT_SUCCESS_PARSE_KEYS:
