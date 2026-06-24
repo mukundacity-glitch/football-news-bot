@@ -1773,15 +1773,15 @@ async def post_item(post_client, item, data):
 
     def _img_ok():
         return os.path.exists(image_path) and os.path.getsize(image_path) >= 1000
-   if not _img_ok():
-        print(f"  [IMG] post-time card missing — regenerating: {item.get('player')!r}")
-        try:
-            if item.get("event") == "injury":
-                create_injury_image(item, item["sources"], image_path)
-            else:
-                create_transfer_image(item, item["sources"], image_path, collapsed=item.get("collapsed", False))
-        except Exception as e:
-            print(f"  [IMG] regeneration raised: {e}")
+        if not _img_ok():
+            print(f"  [IMG] post-time card missing — regenerating: {item.get('player')!r}")
+            try:
+                if item.get("event") == "injury":
+                    create_injury_image(item, item["sources"], image_path)
+                else:
+                    create_transfer_image(item, item["sources"], image_path, collapsed=item.get("collapsed", False))
+            except Exception as e:
+                print(f"  [IMG] regeneration raised: {e}")
     if not _img_ok():
         print(f"  [IMG] forcing BREAKING NEWS fallback card: {item.get('player')!r}")
         try:
