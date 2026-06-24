@@ -19,6 +19,7 @@ Pass --draft-only to only build cards into queue/pending/ (no posting), or
 """
 
 from clubs_cache import get_club_data
+from playwright.sync_api import sync_playwright
 import os
 import re
 import json
@@ -624,6 +625,14 @@ def build_story(tweet_text: str, fpl_data=None) -> dict:
     s["body"] = _clean_source_text(s.get("body") or "")
     s["from_key"] = s.get("from_key") or resolve_club_key(s.get("from_club"))
     s["to_key"] = s.get("to_key") or resolve_club_key(s.get("to_club"))
+
+    if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
+        el = find_player_in_fpl(s["player"], fpl_data)
+        actual_club = fpl_team_key(el, fpl_data) if el else None
+        if actual_club:
+            s["from_key"] = actual_club
+            s["from_club"] = actual_club.replace("_", " ")
+
     try: s["stage"] = max(1, min(4, int(s.get("stage", 1))))
     except Exception: s["stage"] = 1
     s["collapsed"] = bool(s.get("collapsed"))
@@ -710,7 +719,17 @@ def content_hash(story: dict) -> str:
 def is_duplicate_content(story: dict, data: dict, threshold: float = 0.90):
     h = content_hash(story)
     if h in data.get("posted_hashes", []): return True, "content_hash"
-    head = _norm_text(story.get("headline") or story.get("player"))
+    
+    player_name = _norm_text(story.get("player") or "")
+    event_type = _norm_text(story.get("event") or "")
+    stage_num = str(story.get("stage", 1))
+    is_collapsed = "collapsed" if story.get("collapsed") else "active"
+    
+    if not player_name:
+        return False, ""
+        
+    head = f"{player_name}_{event_type}_stage{stage_num}_{is_collapsed}"
+    
     if head:
         for prev in data.get("posted_headlines", []):
             if difflib.SequenceMatcher(None, head, prev).ratio() >= threshold:
@@ -1155,9 +1174,8 @@ def _safe_open_rgba(path: Path):
         im = Image.open(path)
         im.load()
         return im.convert("RGBA")
-    except Exception:
-        try: path.unlink()
-        except Exception: pass
+    except Exception as e:
+        print(f"  [IMG ERROR] PIL failed to open or convert {path}: {e}")
         return None
 
 def _fit_contain(im, w, h):
@@ -1415,242 +1433,232 @@ def _create_fallback_card(story, sources, filename):
     bf = get_premium_font(30, "Bold")
     draw.text((60, H - 64), f"Source: {src}  |  {CHANNEL_HANDLE}", font=bf, fill=(190, 200, 220))
     img.save(filename)
+from playwright.sync_api import sync_playwright
 
-# ── UNIFIED PLAYER CARD (Doku-style) ─────────────────────────────────────
-_LBL_RED = (227, 30, 36)
-_LBL_GREEN = (84, 224, 124)
+def get_club_color(club_key):
+    """Retrieve the exact RGB string for the destination club."""
+    color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
+    return f"rgb({color_tuple[0]}, {color_tuple[1]}, {color_tuple[2]})"
 
-def _draw_player_silhouette(img, draw, cx, top, box_w, box_h):
-    size = min(box_w, box_h)
-    pad = int(size * 0.06)
-    draw.rounded_rectangle([cx - box_w // 2 + pad, top + pad,
-                            cx + box_w // 2 - pad, top + box_h - pad],
-                           radius=int(size * 0.10), fill=(26, 38, 64, 255))
-    fill = (150, 168, 196, 255)
-    head_r = int(size * 0.16)
-    head_cy = top + int(box_h * 0.30)
-    draw.ellipse([cx - head_r, head_cy - head_r, cx + head_r, head_cy + head_r], fill=fill)
-    sw = int(size * 0.36)
-    sh_top = top + int(box_h * 0.50)
-    sh_bot = top + box_h - pad
-    draw.ellipse([cx - sw, sh_top, cx + sw, sh_bot], fill=fill)
-
-def _label_lines(story, mode):
-    ev = story.get("event")
-    if story.get("historical"):
-        return ("HISTORICAL", _LBL_RED, None, None)
-    if story.get("collapsed"):
-        return ("TRANSFER", _LBL_RED, "OFF", _LBL_GREEN)
-    if ev == "injury":
-        return ("INJURY", _LBL_RED, None, None)
-    if ev == "suspension":
-        return ("SUSPENSION", _LBL_RED, None, None)
-    if ev == "manager":
-        return ("MANAGER", _LBL_RED, "NEWS", _LBL_GREEN)
-    if ev in ("renewal", "stay"):
-        return ("CONTRACT", _LBL_RED, "EXTENSION", _LBL_GREEN)
-    top = "LOAN" if ev in ("loan", "loan_option") else "TRANSFER"
-    if mode == "rumour":
-        return (top, _LBL_RED, "RUMOUR", _LBL_GREEN)
-    tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    if story.get("stage", 1) >= 4 or any(
-            w in tl for w in ("official", "here we go", "completed", "confirmed")):
-        return (top, _LBL_RED, "OFFICIAL", _LBL_GREEN)
-    return (top, _LBL_RED, "CONFIRMED", _LBL_GREEN)
-
-def _pretty_club(s):
-    s = (s or "").strip()
-    return s.title() if s.islower() else s
-
-def create_player_card(story, sources, filename, mode="confirmed"):
-    W, H = 1380, 776
+def create_image(story, sources, filename, rumour=False):
+    """Generates a premium sports broadcast graphic using HTML/CSS and Playwright."""
+    
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
     player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
-    to_key = story.get("to_key"); from_key = story.get("from_key")
-    ev = story.get("event", "transfer"); collapsed = bool(story.get("collapsed"))
-
-    NAVY = (11, 18, 32); GOLD = (212, 175, 55)
-    accent = (120, 30, 34) if collapsed else (30, 55, 110)
-    img = Image.new("RGB", (W, H), NAVY)
-    sheen = Image.new("L", (1, H), 0)
-    for yy in range(H):
-        sheen.putpixel((0, yy), int(30 * (1 - abs(yy - H / 2) / (H / 2))))
-    img.paste(Image.new("RGB", (W, H), (28, 40, 70)), (0, 0), sheen.resize((W, H)))
-    _draw_diagonal_accents(img, accent, GOLD)
-    draw = ImageDraw.Draw(img, "RGBA")
-
-    FX0, FY0, FX1, FY1 = 840, 150, 1320, H - 112
-    draw.rounded_rectangle([FX0, FY0, FX1, FY1], radius=26,
-                           fill=(17, 26, 44), outline=(255, 255, 255, 32), width=3)
-    fcx = (FX0 + FX1) // 2
-
-    crest_key = to_key or from_key
-    crest = _load_crest(crest_key, box=118) if crest_key else None
-    crest_top = FY0 + 20
-    crest_bottom = crest_top + (crest.height if crest is not None else 96)
-    if crest is not None:
-        img.paste(crest, (fcx - crest.width // 2, crest_top), crest)
-
-    PB_W = 372
-    pbx0 = fcx - PB_W // 2
-    pby0 = crest_bottom + 14
-    pby1 = FY1 - 18
-    pbx1 = pbx0 + PB_W
-    pb_h = pby1 - pby0
-
-    LEGENDS = {"harry kane": "78830"}
-    legend_pid = LEGENDS.get(player_name.lower())
-    photo = None
-    if player_el or legend_pid:
-        pid = legend_pid or (player_el.get("code") if player_el else None)
-        if pid:
-            pp = Path(f"players/{pid}.png")
-            if not pp.exists():
-                _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
-            photo = _safe_open_rgba(pp)
-    if photo is None and story.get("media_url"):
-        tp = Path(f"players/tweet_{story.get('id')}.jpg")
-        if not tp.exists():
-            _download_asset(story["media_url"], tp)
-        photo = _safe_open_rgba(tp)
-
-    if photo is not None:
-        filled = ImageOps.fit(photo, (PB_W, pb_h), Image.Resampling.LANCZOS,
-                              centering=(0.5, 0.38)).convert("RGBA")
-        round_mask = Image.new("L", (PB_W, pb_h), 0)
-        ImageDraw.Draw(round_mask).rounded_rectangle([0, 0, PB_W, pb_h], radius=20, fill=255)
-        paste_mask = ImageChops.multiply(filled.getchannel("A"), round_mask)
-        img.paste(filled, (pbx0, pby0), paste_mask)
-    else:
-        # No player photo — try big club crest filling the photo box.
-        # Priority: destination club, then origin club. Silhouette is absolute last resort.
-        big_crest_key = to_key or from_key
-        big_crest = _load_crest(big_crest_key, box=min(PB_W, pb_h) - 40) if big_crest_key else None
-        if big_crest is not None:
-            # Soft rounded backdrop same as photo panel
-            draw.rounded_rectangle([pbx0, pby0, pbx1, pby1], radius=20, fill=(17, 26, 44, 220))
-            # Subtle concentric glow rings behind crest
-            cx_c = fcx; cy_c = pby0 + pb_h // 2
-            for r in range(min(PB_W, pb_h) // 2, 20, -40):
-                draw.ellipse([cx_c - r, cy_c - r, cx_c + r, cy_c + r],
-                             outline=(255, 255, 255, 18), width=2)
-            # Paste crest centred in the box
-            img.paste(big_crest,
-                      (cx_c - big_crest.width // 2, cy_c - big_crest.height // 2),
-                      big_crest)
-        else:
-            _draw_player_silhouette(img, draw, fcx, pby0, PB_W, pb_h)
-
-    LX = 70
-    _draw_wordmark(draw, (LX, 54))
-    top_text, top_col, bot_text, bot_col = _label_lines(story, mode)
-    lf = get_premium_font(66, "Black"); ly = 152
-    _draw_text_shadow(draw, (LX, ly), top_text, lf, top_col, offset=2)
-    lb = draw.textbbox((0, 0), top_text, font=lf); lh = lb[3] - lb[1]
-    if bot_text:
-        ly2 = ly + lh + 18
-        _draw_text_shadow(draw, (LX, ly2), bot_text, lf, bot_col, offset=2)
-        name_y = ly2 + lh + 40
-    else:
-        name_y = ly + lh + 40
-    name_up = player_name.upper()
-    NAME_MAX_W = FX0 - LX - 40
-    nsize = 86; nf = get_premium_font(nsize, "Black")
-    while draw.textlength(name_up, font=nf) > NAME_MAX_W and nsize > 44:
-        nsize -= 3; nf = get_premium_font(nsize, "Black")
-    _draw_text_shadow(draw, (LX, name_y), name_up, nf, (255, 255, 255), offset=3)
-    nb = draw.textbbox((0, 0), name_up, font=nf)
-    y = name_y + (nb[3] - nb[1]) + 34
-    info_f = get_premium_font(38, "Bold"); sub_f = get_premium_font(27, "Bold")
-    INFO_MAX_X = FX0 - 30
-
-    def _info_row(label, value, col=(255, 255, 255)):
-        nonlocal y
-        if not value: return
-        value = str(value)
-        _draw_text_shadow(draw, (LX, y + 4), label, sub_f, (150, 165, 195))
-        vx = LX + draw.textlength(label + "   ", font=sub_f)
-        avail = max(120, INFO_MAX_X - vx)
-        vsize, vf = 38, info_f
-        while vsize > 22 and max(
-                (draw.textlength(w, font=vf) for w in value.split()), default=0) > avail:
-            vsize -= 2
-            vf = get_premium_font(vsize, "Bold")
-        words, line, lines = value.split(), "", []
-        for w in words:
-            test = (line + " " + w).strip()
-            if draw.textlength(test, font=vf) > avail and line:
-                lines.append(line); line = w
-            else:
-                line = test
-        if line: lines.append(line)
-        truncated = len(lines) > 3
-        lines = lines[:3]
-        if truncated and lines:
-            lines[-1] = lines[-1].rstrip() + "…"
-        bb = draw.textbbox((0, 0), "Ag", font=vf)
-        lh = (bb[3] - bb[1]) + 6
-        for i, ln in enumerate(lines):
-            _draw_text_shadow(draw, (vx, y + i * lh), ln, vf, col)
-        y += max(60, len(lines) * lh + 8)
-
-    if ev == "injury":
-        stage = story.get("stage", 1)
-        avail = {4: "Fit again", 3: "Ruled out", 2: "Doubt", 1: "Being assessed"}.get(stage, "Being assessed")
-        _info_row("STATUS", avail); _info_row("DIAGNOSIS", story.get("diagnosis"))
-        _info_row("RETURN", story.get("expected_return"))
-    elif ev == "manager":
-        tc = story.get("to_club") or (to_key or "").replace("_", " ")
-        _info_row("CLUB", _pretty_club(tc) if tc else None)
-    else:
-        if collapsed:
-            _info_row("DEAL", "Collapsed", col=(255, 120, 120))
-        else:
-            fc = story.get("from_club") or (from_key or "").replace("_", " ")
-            tc = story.get("to_club") or (to_key or "").replace("_", " ")
-            _info_row("FROM", _pretty_club(fc) if fc else None)
-            _info_row("TO", _pretty_club(tc) if tc else None)
-        _info_row("PRICE", story.get("fee")); _info_row("CONTRACT", story.get("contract"))
-
-    draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
-    draw.rectangle([0, H - 12, W, H], fill=accent)
-    src = " · ".join(f"@{s}" for s in sources[:2])
-    bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
-    date_str = _card_date_str(story.get("created_at"))
-    df = get_premium_font(30, "Bold")
-    dw = draw.textlength(date_str, font=df)
-    bsize = 34; bf = get_premium_font(bsize, "Bold")
-    avail_w = (W - 120) - dw - 30
-    while bsize > 24 and draw.textlength(bar, font=bf) > avail_w:
-        bsize -= 1; bf = get_premium_font(bsize, "Bold")
-    bb = draw.textbbox((0, 0), bar, font=bf)
-    by = (H - 90) + (78 - (bb[3] - bb[1])) // 2 - bb[1]
-    draw.text((60, by), bar, font=bf, fill=(190, 200, 220))
-    db = draw.textbbox((0, 0), date_str, font=df)
-    dy = (H - 90) + (78 - (db[3] - db[1])) // 2 - db[1]
-    draw.text((W - 60 - dw, dy), date_str, font=df, fill=(212, 175, 55))
-    img.save(filename)
-
-
-def create_image(story, sources, filename, rumour=False):
+    
+    to_club = story.get("to_club") or (story.get("to_key") or "").replace("_", " ")
+    from_club = story.get("from_club") or (story.get("from_key") or "").replace("_", " ")
+    
+    # Determine Status and Colors
     mode = "rumour" if rumour else "confirmed"
-    def _ok():
-        return os.path.exists(filename) and os.path.getsize(filename) >= 1000
+    if story.get("collapsed"):
+        status = "DEAL COLLAPSED"
+        badge_color = "#e31e24" # Red
+    elif mode == "rumour":
+        status = "TRANSFER RUMOUR"
+        badge_color = "#e31e24" # Red
+    else:
+        status = "OFFICIAL" if story.get("stage", 1) >= 4 else "CONFIRMED"
+        badge_color = "#54e07c" # FPL Vortex Green
+        
+    club_color = get_club_color(story.get("to_key") or story.get("from_key"))
+    source_text = " · ".join(f"@{s}" for s in sources[:2])
+
+    # The HTML/CSS Template
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@700;900&display=swap');
+            
+            body {{
+                margin: 0;
+                padding: 0;
+                width: 1380px;
+                height: 776px;
+                background: linear-gradient(135deg, #0b1220 0%, #1c2846 100%);
+                font-family: 'Montserrat', sans-serif;
+                color: white;
+                display: flex;
+                overflow: hidden;
+                position: relative;
+            }}
+            
+            /* Cinematic Background Accents */
+            .accent-slash {{
+                position: absolute;
+                width: 200%;
+                height: 100px;
+                background: {club_color};
+                opacity: 0.15;
+                transform: rotate(-35deg) translateY(-200px);
+                z-index: 0;
+            }}
+            .accent-slash:nth-child(2) {{ transform: rotate(-35deg) translateY(200px); opacity: 0.05; }}
+
+            /* Layout Grid */
+            .container {{
+                width: 100%;
+                height: 100%;
+                display: flex;
+                flex-direction: row;
+                padding: 60px;
+                box-sizing: border-box;
+                z-index: 1;
+            }}
+
+            .left-column {{
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+            }}
+
+            .right-column {{
+                width: 450px;
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+            }}
+
+            /* Typography & Badges */
+            .wordmark {{
+                font-size: 40px;
+                font-weight: 900;
+                margin-bottom: 30px;
+                text-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            }}
+            .wordmark span {{ color: #54e07c; }}
+
+            .status-badge {{
+                display: inline-block;
+                background: {badge_color};
+                color: #fff;
+                padding: 10px 20px;
+                font-size: 28px;
+                font-weight: 900;
+                border-radius: 8px;
+                letter-spacing: 2px;
+                margin-bottom: 20px;
+                text-transform: uppercase;
+                box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+            }}
+
+            .player-name {{
+                font-size: 90px;
+                font-weight: 900;
+                line-height: 1.1;
+                text-transform: uppercase;
+                margin-bottom: 40px;
+                text-shadow: 0 8px 20px rgba(0,0,0,0.6);
+            }}
+
+            .details-grid {{
+                display: grid;
+                grid-template-columns: max-content 1fr;
+                gap: 15px 30px;
+                font-size: 30px;
+            }}
+            
+            .detail-label {{ color: #96a8c4; font-weight: 700; text-transform: uppercase; }}
+            .detail-value {{ font-weight: 900; text-transform: uppercase; }}
+
+            /* Glassmorphism Photo Panel */
+            .photo-panel {{
+                width: 380px;
+                height: 500px;
+                background: rgba(255, 255, 255, 0.03);
+                backdrop-filter: blur(20px);
+                border: 2px solid rgba(255, 255, 255, 0.1);
+                border-radius: 24px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+                position: relative;
+                overflow: hidden;
+            }}
+
+            .photo-panel::before {{
+                content: '';
+                position: absolute;
+                top: 0; left: 0; right: 0; bottom: 0;
+                background: radial-gradient(circle at center, {club_color} 0%, transparent 70%);
+                opacity: 0.2;
+                z-index: 0;
+            }}
+
+            .footer {{
+                position: absolute;
+                bottom: 0;
+                left: 0;
+                width: 100%;
+                height: 60px;
+                background: #141821;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 0 60px;
+                box-sizing: border-box;
+                font-size: 22px;
+                font-weight: 700;
+                color: #bec8dc;
+                border-top: 4px solid {club_color};
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="accent-slash"></div>
+        <div class="accent-slash"></div>
+
+        <div class="container">
+            <div class="left-column">
+                <div class="wordmark">FPL <span>VORTEX</span></div>
+                <div><div class="status-badge">{status}</div></div>
+                <div class="player-name">{player_name}</div>
+                
+                <div class="details-grid">
+                    <div class="detail-label">From</div>
+                    <div class="detail-value">{from_club or "TBD"}</div>
+                    <div class="detail-label">To</div>
+                    <div class="detail-value">{to_club or "TBD"}</div>
+                    <div class="detail-label">Fee</div>
+                    <div class="detail-value" style="color: #54e07c;">{story.get('fee') or "Undisclosed"}</div>
+                </div>
+            </div>
+
+            <div class="right-column">
+                <div class="photo-panel">
+                    <h1 style="z-index: 1; font-size: 150px; color: rgba(255,255,255,0.1); margin: 0;">V</h1>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div>Source: {source_text} | @FPLVortex</div>
+            <div style="color: #d4af37;">{story.get('event', 'TRANSFER').upper()}</div>
+        </div>
+    </body>
+    </html>
+    """
+
+    # Use Playwright to render the HTML and snap a screenshot
     try:
-        create_player_card(story, sources, filename, mode=mode)
-        if _ok():
-            return
-        print("  [IMG] player card produced no valid file — using fallback template")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
+            page.set_content(html_content)
+            # Wait a split second for web fonts to load
+            page.wait_for_timeout(500)
+            page.screenshot(path=filename)
+            browser.close()
     except Exception as e:
-        print(f"  [IMG] player card raised ({e}) — using fallback template")
-    try:
-        _create_fallback_card(story, sources, filename)
-        if _ok():
-            print("  [IMG] fallback BREAKING NEWS card used.")
-            return
-    except Exception as e:
-        print(f"  [IMG] fallback card ALSO failed: {e}")
+        print(f"  [IMG ERROR] Playwright failed to generate HTML card: {e}")
+        # Fallback to a blank image just to keep the bot moving if Chromium crashes
+        from PIL import Image
+        Image.new('RGB', (1380, 776), color = (11, 18, 32)).save(filename)
 
 # ── QUEUE FILES ──────────────────────────────────────────────────────────
 def _slug(item):
@@ -1988,7 +1996,7 @@ def build_draft(item, data, fpl):
 # ── MAIN ─────────────────────────────────────────────────────────────────
 AUTOPOST_MODES = {"confirmed", "rumour"}
 MAX_POSTS_PER_RUN = 3
-MAX_POSTS_PER_HOUR = 2
+MAX_POSTS_PER_HOUR = 5
 POST_JITTER_RANGE_S = (0, 15)
 
 EVENT_PRIORITY = {
