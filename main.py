@@ -162,6 +162,11 @@ X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or "").strip()
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
 # ── PATHS ────────────────────────────────────────────────────────────────
+# Bump _LOGIC_VER whenever extraction/classification logic changes. Cached
+# stories stamped with an older version are re-extracted, so a logic upgrade
+# never re-posts stories the new rules would reject (e.g. stale "transfer"
+# extractions of what is now correctly an "other"/non-news event).
+_LOGIC_VER = 3
 POSTED_FILE = Path("posted_news.json")
 PENDING_DIR = Path("queue/pending")
 POSTED_DIR = Path("queue/posted")
@@ -1463,8 +1468,37 @@ def _draw_diagonal_accents(img, accent, gold=(212, 175, 55)):
         d.polygon([(x0, 0), (x0 + 22, 0), (x0 + 22 + 90, H), (x0 + 90, H)], fill=col + (60,))
     img.paste(ov, (0, 0), ov)
 
-def _draw_wordmark(draw, xy):
+_LOGO_CACHE = {"img": None, "loaded": False}
+
+def _load_brand_logo(box=72):
+    """Load the channel logo from the repo if present. Tries common filename/
+    extension variants so a small naming mismatch doesn't break branding.
+    Returns an RGBA image fitted into a `box`x`box` square, or None."""
+    if _LOGO_CACHE["loaded"]:
+        src = _LOGO_CACHE["img"]
+        return _fit_contain(src, box, box) if src is not None else None
+    _LOGO_CACHE["loaded"] = True
+    for name in ("logo.png", "Logo.png", "logo.jpg", "Logo.jpg",
+                 "logo.jpeg", "Logo.jpeg", "assets/logo.png", "assets/logo.jpg"):
+        p = Path(name)
+        if p.exists():
+            src = _safe_open_rgba(p)
+            if src is not None:
+                _LOGO_CACHE["img"] = src
+                return _fit_contain(src, box, box)
+    _LOGO_CACHE["img"] = None
+    return None
+
+def _draw_wordmark(draw, xy, img=None):
+    """Brand lockup: logo (if available) on the left, then 'FPL VORTEX' text.
+    Falls back to text-only when no logo file is present, so it never breaks."""
     x, y = xy
+    logo = _load_brand_logo(box=64) if img is not None else None
+    if logo is not None:
+        # vertically centre the logo against the ~46px cap height of the text
+        ly = y - (logo.height - 46) // 2
+        img.paste(logo, (x, max(0, ly)), logo)
+        x += logo.width + 16
     f = get_premium_font(46, "Black")
     _draw_text_shadow(draw, (x, y), "FPL", f, (255, 255, 255), offset=2)
     fpl_w = draw.textlength("FPL ", font=f)
@@ -1493,175 +1527,6 @@ def _draw_right_visual_fallback(img, draw, W, H, story):
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 15), width=2)
     f_emblem = get_premium_font(160, "Black")
     draw.text((cx - 60, cy - 100), "V", font=f_emblem, fill=(84, 224, 124, 50))
-
-def create_transfer_image(story, sources, filename, collapsed=False):
-    W, H = 1380, 776
-    fpl = fetch_fpl_data()
-    player_el = find_player_in_fpl(story.get("player"), fpl)
-    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
-    to_key = story.get("to_key")
-    from_key = story.get("from_key")
-
-    NAVY = (11, 18, 32)
-    GOLD = (212, 175, 55)
-    accent = (120, 30, 34) if collapsed else (30, 55, 110)
-
-    img = Image.new("RGB", (W, H), NAVY)
-    sheen = Image.new("L", (1, H), 0)
-    for y in range(H): sheen.putpixel((0, y), int(30 * (1 - abs(y - H / 2) / (H / 2))))
-    img.paste(Image.new("RGB", (W, H), (28, 40, 70)), (0, 0), sheen.resize((W, H)))
-    _draw_diagonal_accents(img, accent, GOLD)
-    draw = ImageDraw.Draw(img, "RGBA")
-
-    TEXT_X = 70
-    _draw_wordmark(draw, (TEXT_X, 48))
-
-    ev = story.get("event", "transfer")
-    if collapsed:
-        label = "DEAL COLLAPSED"
-        badge_color = (120, 30, 34)
-    elif ev == "manager":
-        label = "MANAGER NEWS"
-        badge_color = (30, 80, 160)
-    elif ev in ("loan", "loan_option"):
-        label = "LOAN UPDATE"
-        badge_color = (180, 100, 0)
-    elif ev in ("renewal", "stay"):
-        label = "CONTRACT UPDATE"
-        badge_color = (30, 130, 80)
-    else:
-        label = "TRANSFER UPDATE"
-        badge_color = (227, 30, 36)
-    lf = get_premium_font(44, "Bold")
-    draw.rounded_rectangle([TEXT_X, 116, TEXT_X + draw.textlength(label, font=lf) + 40, 178],
-                           radius=10, fill=badge_color)
-    _draw_text_shadow(draw, (TEXT_X + 20, 124), label, lf, (255, 255, 255), offset=1)
-
-    name_up = player_name.upper()
-    TEXT_MAX_W = 780
-    nsize = 104
-    nf = get_premium_font(nsize, "Black")
-    while draw.textlength(name_up, font=nf) > TEXT_MAX_W and nsize > 56:
-        nsize -= 3
-        nf = get_premium_font(nsize, "Black")
-    name_y = 200
-    _draw_text_shadow(draw, (TEXT_X, name_y), name_up, nf, (255, 255, 255), offset=3)
-    nb = draw.textbbox((0, 0), name_up, font=nf)
-    name_bottom = name_y + (nb[3] - nb[1]) + 24
-
-    crest_font = get_premium_font(46, "Bold")
-    row_label_font = get_premium_font(38, "Bold")
-    CREST = 104
-    y = name_bottom
-
-    def _row(tag, club_key, club_text, color):
-        nonlocal y
-        crest = _load_crest(club_key, CREST)
-        x = TEXT_X
-        _draw_text_shadow(draw, (x, y + (CREST - 34) // 2), tag, row_label_font, (170, 180, 200))
-        x += 150
-        if crest is not None:
-            img.paste(crest, (x, y + (CREST - crest.height) // 2), crest)
-        else:
-            # Generic clean emblem outline for non-PL teams so spacing stays perfectly aligned
-            cy = y + (CREST - 70) // 2
-            draw.rounded_rectangle([x + 15, cy, x + 85, cy + 70], radius=12, outline=(255, 255, 255, 40), width=3)
-            draw.ellipse([x + 35, cy + 20, x + 65, cy + 50], fill=(84, 224, 124, 60))
-        x += CREST + 20
-        name = (club_text or (club_key or "").replace("_", " ")).upper()
-        _draw_text_shadow(draw, (x, y + (CREST - 44) // 2), name, crest_font, color)
-        y += CREST + 22
-
-    if from_key or story.get("from_club"): _row("FROM:", from_key, story.get("from_club"), (225, 225, 225))
-    if to_key or story.get("to_club"): _row("TO:", to_key, story.get("to_club"), (255, 255, 255))
-
-    detail = build_detail_line(story)
-    if detail:
-        _safe_emoji_text(img, (TEXT_X, y + 8), detail.upper()[:60],
-                         get_premium_font(28, "Bold"), (160, 255, 120))
-
-    # PORTRAIT / RIGHT-SIDE VISUAL — always renders something on-brand.
-    # 1. If the player resolves in FPL, the official headshot is keyed on the
-    #    player code, so it is correct by definition — show it. (Relaxed: no
-    #    longer requires the from/to club to match, which was suppressing many
-    #    valid photos and leaving cards empty.)
-    # 2. Else a big club crest (destination, then origin).
-    # 3. Else the glowing V emblem.
-    LEGENDS = {"harry kane": "78830"}
-    legend_pid = LEGENDS.get(player_name.lower())
-    drew_player = False
-    if player_el or legend_pid:
-        pid = legend_pid or (player_el.get("code") if player_el else None)
-        if pid:
-            pp = Path(f"players/{pid}.png")
-            if not pp.exists():
-                _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
-            portrait = _safe_open_rgba(pp)
-            if portrait is not None:
-                portrait = _fit_contain(portrait, 520, 600)
-                img.paste(portrait, (W - portrait.width - 60, H - portrait.height - 100), portrait)
-                drew_player = True
-    if not drew_player:
-        _draw_right_visual_fallback(img, draw, W, H, story)
-
-    draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
-    draw.rectangle([0, H - 12, W, H], fill=accent)
-    src = " · ".join(f"@{s}" for s in sources[:2])
-    bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
-    bsize = 34
-    bf = get_premium_font(bsize, "Bold")
-    while bsize > 24 and draw.textlength(bar, font=bf) > (W - 120):
-        bsize -= 1
-        bf = get_premium_font(bsize, "Bold")
-    bbox = draw.textbbox((0, 0), bar, font=bf)
-    by = (H - 90) + (78 - (bbox[3] - bbox[1])) // 2 - bbox[1]
-    draw.text((60, by), bar, font=bf, fill=(190, 200, 220))
-    img.save(filename)
-
-def create_injury_image(story, sources, filename):
-    W, H = 1380, 776
-    fpl = fetch_fpl_data()
-    player_el = find_player_in_fpl(story.get("player"), fpl)
-    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
-
-    img = Image.new("RGB", (W, H), (24, 10, 12))
-    draw = ImageDraw.Draw(img, "RGBA")
-    draw.rectangle([W // 2, 0, W, H], fill=(120, 18, 22))
-
-    TEXT_X = 70
-    _draw_wordmark(draw, (TEXT_X, 48))
-
-    lf = get_premium_font(34, "Bold")
-    label = "INJURY UPDATE"
-    draw.rounded_rectangle([TEXT_X, 120, TEXT_X + draw.textlength(label, font=lf) + 36, 168],
-                           radius=10, fill=(210, 30, 34))
-    _draw_text_shadow(draw, (TEXT_X + 18, 126), label, lf, (255, 255, 255), offset=1)
-
-    nf = get_premium_font(88, "Black")
-    _draw_text_shadow(draw, (TEXT_X, 210), player_name.upper(), nf, (255, 255, 255), offset=3)
-
-    rows = []
-    if story.get("diagnosis"): rows.append(("DIAGNOSIS", story["diagnosis"]))
-    stage = story.get("stage", 1)
-    avail = {4: "Available / fit again", 3: "Ruled out", 2: "Doubt", 1: "To be assessed"}.get(stage, "To be assessed")
-    rows.append(("AVAILABILITY", avail))
-    rows.append(("TIMELINE", story.get("expected_return") or "Awaiting update"))
-    if story.get("next_match"): rows.append(("NEXT MATCH", story["next_match"]))
-
-    y = 340
-    lab_f = get_premium_font(26, "Bold")
-    val_f = get_premium_font(34, "Bold")
-    for tag, val in rows[:4]:
-        _draw_text_shadow(draw, (TEXT_X, y), tag, lab_f, (255, 140, 140))
-        _draw_text_shadow(draw, (TEXT_X, y + 32), str(val), val_f, (255, 255, 255))
-        y += 96
-
-    draw.rectangle([0, H - 90, W, H - 12], fill=(20, 10, 12))
-    src = " · ".join(f"@{s}" for s in sources[:2])
-    bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
-    bf = get_premium_font(32, "Bold")
-    draw.text((60, H - 70), bar, font=bf, fill=(220, 190, 190))
-    img.save(filename)
 
 def _create_fallback_card(story, sources, filename):
     W, H = 1200, 675
@@ -1769,7 +1634,17 @@ def create_player_card(story, sources, filename, mode="confirmed"):
     ev = story.get("event", "transfer"); collapsed = bool(story.get("collapsed"))
 
     NAVY = (11, 18, 32); GOLD = (212, 175, 55)
-    accent = (120, 30, 34) if collapsed else (30, 55, 110)
+    # Club-colored accent (option c): use the destination (then origin) club's
+    # brand colour so each card feels team-specific. Collapsed deals stay red.
+    # Falls back to the default blue when no club colour is known.
+    club_accent = CLUB_COLORS.get(to_key) or CLUB_COLORS.get(from_key)
+    if collapsed:
+        accent = (120, 30, 34)
+    elif club_accent:
+        # darken slightly so white text stays readable over the accent stripes
+        accent = tuple(max(0, int(c * 0.72)) for c in club_accent)
+    else:
+        accent = (30, 55, 110)
     img = Image.new("RGB", (W, H), NAVY)
     sheen = Image.new("L", (1, H), 0)
     for yy in range(H):
@@ -1853,7 +1728,7 @@ def create_player_card(story, sources, filename, mode="confirmed"):
 
     # ---------- LEFT: wordmark, label, name, info ----------
     LX = 70
-    _draw_wordmark(draw, (LX, 54))
+    _draw_wordmark(draw, (LX, 54), img=img)
     top_text, top_col, bot_text, bot_col = _label_lines(story, mode)
     lf = get_premium_font(66, "Black"); ly = 152
     _draw_text_shadow(draw, (LX, ly), top_text, lf, top_col, offset=2)
@@ -2203,11 +2078,19 @@ async def scrape(data, read_client):
                 print(f"   skip (older_than_{MAX_TWEET_AGE_DAYS}d): {text[:70]!r}")
                 continue
             seen += 1
-            if tid in data["extracted"]: story = dict(data["extracted"][tid])
+            # Cache reuse: only trust a cached extraction if it was produced by
+            # the CURRENT logic. Old cached entries (e.g. pre-"other"-event code)
+            # could re-post stories the new gate would reject, so we stamp a
+            # version and re-extract anything older. Cheap insurance against
+            # stale-cache reposts after a logic upgrade.
+            cached = data["extracted"].get(tid)
+            if cached and cached.get("_logic_ver") == _LOGIC_VER:
+                story = dict(cached)
             else:
                 story = build_story(text, fpl)
                 story["media_url"] = t.get("media_url")
                 story["created_at"] = t.get("created_at")
+                story["_logic_ver"] = _LOGIC_VER
                 data["extracted"][tid] = dict(story)
             safe, why = passes_safety_gate(story, text, fpl, sources=[username])
             if not safe:
