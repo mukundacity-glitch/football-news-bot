@@ -1334,16 +1334,21 @@ def get_club_color(club_key):
     color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
     return f"rgb({color_tuple[0]}, {color_tuple[1]}, {color_tuple[2]})"
 
-def _render_html_sync(html_content, filename):
+def _render_html_sync(html_content, filename, error_box=None):
     """Helper function to run Playwright in a separate thread to prevent asyncio crashes."""
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
-        page.set_content(html_content)
-        page.wait_for_timeout(500)
-        page.screenshot(path=filename)
-        browser.close()
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
+            page.set_content(html_content)
+            page.wait_for_timeout(500)
+            page.screenshot(path=filename)
+            browser.close()
+    except Exception:
+        if error_box is not None:
+            import traceback
+            error_box.append(traceback.format_exc())
 
 def create_transfer_image(story, sources, filename, collapsed=False):
     """Generates a premium sports broadcast graphic using HTML/CSS and Playwright."""
@@ -1586,9 +1591,12 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     # FIX 2: Run Playwright in a background thread to prevent the async crash!
     try:
         import threading
-        t = threading.Thread(target=_render_html_sync, args=(html_content, filename))
+        error_box = []
+        t = threading.Thread(target=_render_html_sync, args=(html_content, filename, error_box))
         t.start()
         t.join()
+        if error_box:
+            print("  [THREAD TRACEBACK]\n" + error_box[0])
         
         if not Path(filename).exists() or Path(filename).stat().st_size < 1000:
             raise RuntimeError("Thread completed but image missing")
