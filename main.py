@@ -1481,21 +1481,21 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 box-shadow: 0 8px 20px rgba(0,0,0,0.4);
             }
 
-            .player-name {
+            .player-name {{
                 font-size: 115px; /* UP from 90px */
                 font-weight: 900;
                 line-height: 1.1;
                 text-transform: uppercase;
                 margin-bottom: 50px;
                 text-shadow: 0 8px 20px rgba(0,0,0,0.6);
-            }
+            }}
 
-            .details-grid {
+            .details-grid {{
                 display: grid;
                 grid-template-columns: max-content 1fr;
                 gap: 28px 50px;
                 font-size: 52px; /* UP from 40px */
-            }
+            }}
             
             .detail-label {{ color: #96a8c4; font-weight: 700; text-transform: uppercase; }}
             .detail-value {{ font-weight: 900; text-transform: uppercase; }}
