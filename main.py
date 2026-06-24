@@ -1888,153 +1888,116 @@ async def post_item(post_client, item, data):
               f"{item['player']} — {item['event']} (stage {item['stage']})")
         return True
     return False
-  # ── SCRAPER ──────────────────────────────────────────────────────────────
-MAX_TWEET_AGE_DAYS = 3
+  # ── STORY BUILDER (MUST BE ABOVE SCRAPE) ─────────────────────────────────
+def build_story(tweet_text, fpl_data):
+    # Initialize the base dictionary
+    s = {
+        "player": None,
+        "event": None,
+        "from_key": None,
+        "to_key": None,
+        "stage": 1,
+        "collapsed": False,
+        "body": tweet_text
+    }
 
-def _parse_tweet_date(raw):
-    if not raw:
-        return None
-    if isinstance(raw, datetime):
-        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
-    s = str(raw).strip()
-    s_norm = re.sub(r'\b(GMT|UTC)\b', '+0000', s)
-    for fmt in ("%a, %d %b %Y %H:%M:%S %z",
-                "%a %b %d %H:%M:%S %z %Y",
-                "%Y-%m-%dT%H:%M:%S%z",
-                "%Y-%m-%d %H:%M:%S%z"):
-        try:
-            dt = datetime.strptime(s_norm, fmt)
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            continue
-    try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return None
+    # Add your specific player/event regex extraction logic here if you have it
+    # ...
 
-def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS):
-    dt = _parse_tweet_date(created_at)
-    if dt is None:
-        return False
-    age = datetime.now(timezone.utc) - dt
-    return age.total_seconds() > max_days * 86400
+    if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
+        el = find_player_in_fpl(s["player"], fpl_data)
+        is_free_agent = bool(el and el.get("team", 0) == 0)
+        actual_club = fpl_team_key(el, fpl_data) if el else None
+        
+        if actual_club and not is_free_agent and not s.get("from_key"):
+            s["from_key"] = actual_club
+            s["from_club"] = actual_club.replace("_", " ")
 
-def _card_date_str(created_at):
-    dt = _parse_tweet_date(created_at) or datetime.now(timezone.utc)
-    return dt.strftime("%d %b %Y")
+    try: 
+        s["stage"] = max(1, min(4, int(s.get("stage", 1))))
+    except Exception: 
+        s["stage"] = 1
+        
+    s["collapsed"] = bool(s.get("collapsed"))
+    s["historical"] = detect_historical(tweet_text)
 
-def get_nitter_tweets(username):
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
-    for inst in NITTER_INSTANCES:
-        try:
-            r = requests.get(f"{inst}/{username}/rss", headers=headers, timeout=10)
-            if r.status_code != 200: continue
-            root = ET.fromstring(r.content)
-            out = []
-            for it in root.findall(".//item")[:8]:
-                link, desc = it.find("link"), it.find("description")
-                if link is None: continue
-                tid = link.text.strip().split("/")[-1].split("#")[0]
-                desc_text = desc.text if desc is not None and desc.text else ""
-                text = re.sub(r'<[^>]+>', '', desc_text).strip()
+    if looks_like_video_post(tweet_text):
+        s["from_video"] = True
+        s["has_written_claim"] = has_written_claim(tweet_text)
+        if s["stage"] > 2: 
+            s["stage"] = 2
+    else:
+        s["from_video"] = False
+        s["has_written_claim"] = True
 
-                pub = it.find("pubDate")
-                created_at = pub.text.strip() if pub is not None and pub.text else None
+    if len(s["body"].split()) < 4:
+        s["body"] = _summarise(s.get("player"), s.get("event"),
+                               s.get("from_key"), s.get("to_key"),
+                               s.get("stage"), s.get("collapsed"))
+    return s
 
-                media_url = None
-                img_match = re.search(r'<img[^>]+src="([^">]+)"', desc_text)
-                if img_match:
-                    media_url = img_match.group(1)
-                    if media_url.startswith("/"):
-                        media_url = f"{inst}{media_url}"
-
-                if tid and text: out.append({"id": tid, "text": text, "media_url": media_url, "created_at": created_at})
-            if out: return out
-        except Exception: continue
-    return []
-
-async def get_twikit_tweets(read_client, username, count=20, retries=2):
-    if read_client is None: return []
-    for attempt in range(retries):
-        try:
-            user = await read_client.get_user_by_screen_name(username)
-            tweets = await read_client.get_user_tweets(user.id, "Tweets", count=count)
-            out = []
-            for t in tweets:
-                txt = getattr(t, "full_text", None) or getattr(t, "text", "") or ""
-                tid = str(getattr(t, "id", "") or "")
-                created_at = getattr(t, "created_at", None) or getattr(t, "created_at_datetime", None)
-
-                media_url = None
-                if hasattr(t, "media") and t.media:
-                    for m in t.media:
-                        m_type = getattr(m, "type", None) or (m.get("type") if isinstance(m, dict) else None)
-                        if m_type == "photo":
-                            media_url = getattr(m, "media_url_https", None) or (m.get("media_url_https") if isinstance(m, dict) else None)
-                            if media_url: break
-
-                if tid and txt: out.append({"id": tid, "text": txt, "media_url": media_url, "created_at": created_at})
-            return out
-        except Exception as e:
-            if attempt + 1 < retries: await asyncio.sleep(3 * (attempt + 1))
-            else: print(f"  [READ] twikit failed for @{username}: {e}")
-    return []
-
-async def fetch_tweets(read_client, username):
-    tweets = await get_twikit_tweets(read_client, username)
-    if tweets: return tweets, "twikit"
-    nit = get_nitter_tweets(username)
-    return nit, ("nitter" if nit else "none")
-
+# ── SCRAPER ──────────────────────────────────────────────────────────────
 async def scrape(data, read_client):
     fpl = fetch_fpl_data()
     story_map = {}
     seen = skipped = 0
     accounts_total = len(JOURNALISTS)
     accounts_failed = 0
+    
     for username in JOURNALISTS:
-        try: tweets, src = await fetch_tweets(read_client, username)
+        try: 
+            tweets, src = await fetch_tweets(read_client, username)
         except Exception as e:
             print(f"  [READ] @{username} error: {e}")
             tweets, src = [], "error"
+            
         if not tweets and src in ("none", "error"):
             accounts_failed += 1
             print(f"  [WARN] @{username}: ALL sources failed — X tokens may be expired or Nitter is down")
         else:
             print(f"  [READ] @{username}: {len(tweets)} tweets via {src}")
+            
         for t in tweets:
             tid, text = t["id"], t["text"]
             if tid in data["posted_ids"]: continue
             if not any(k in text.lower() for k in FOOTBALL_KW): continue
+            
             if tweet_too_old(t.get("created_at")):
                 skipped += 1
                 print(f"   skip (older_than_{MAX_TWEET_AGE_DAYS}d): {text[:70]!r}")
                 continue
+                
             seen += 1
-            if tid in data["extracted"]: story = dict(data["extracted"][tid])
+            
+            if tid in data["extracted"]: 
+                story = dict(data["extracted"][tid])
             else:
                 story = build_story(text, fpl)
                 story["media_url"] = t.get("media_url")
                 story["created_at"] = t.get("created_at")
                 data["extracted"][tid] = dict(story)
+                
             safe, why = passes_safety_gate(story, text, fpl, sources=[username])
             if not safe:
                 skipped += 1
                 print(f"   skip ({why}): {text[:70]!r}")
                 continue
+                
             valid, vwhy = validate_story(story, fpl)
             if not valid:
                 skipped += 1
                 print(f"   invalid ({vwhy}): {text[:70]!r}")
                 continue
+                
             anchor = story.get("to_key") or story.get("from_key") or "unknown"
             key = reconcile_key(story["player"], anchor, story["event"],
                                 story_map, data.get("stories", {}), data.get("pending", {}))
+                                
             ok, reason = should_post(data, key, story["stage"], story["collapsed"])
             if not ok:
                 print(f"   skip ({reason}): {key}")
                 continue
+                
             if key in story_map:
                 ex = story_map[key]
                 if username not in ex["sources"]: ex["sources"].append(username)
@@ -2050,12 +2013,15 @@ async def scrape(data, read_client):
                 elif unk and unk in data.get("pending", {}):
                     prior = list(dict.fromkeys(prior + data["pending"][unk].get("sources", [])))
                     data["pending"].pop(unk, None)
+                    
                 story.update({
                     "id": tid, "key": key, "text": text,
                     "sources": list(dict.fromkeys(prior + [username])), "reason": reason,
                 })
                 story_map[key] = story
+                
         await asyncio.sleep(1)
+        
     fail_ratio = accounts_failed / accounts_total if accounts_total else 1.0
     if accounts_failed:
         print(f"  [READ-HEALTH] {accounts_failed}/{accounts_total} accounts returned nothing "
@@ -2067,13 +2033,16 @@ async def scrape(data, read_client):
     if (seen + skipped) == 0:
         print("  [WARN] Zero football tweets from ALL journalists. X auth tokens "
               "likely expired — update X_AUTH_TOKEN and X_CT0_TOKEN secrets.")
+              
     print(f"  [SCRAPE] {seen} football tweets seen, {skipped} skipped, {len(story_map)} candidate stories")
+    
     data["last_read_health"] = {
         "accounts_total": accounts_total,
         "accounts_failed": accounts_failed,
         "fail_ratio": round(fail_ratio, 3),
         "at": datetime.now(timezone.utc).isoformat(),
     }
+    
     ready = []
     for key, st in story_map.items():
         mode = classify_post(st, st["sources"])
@@ -2088,10 +2057,12 @@ async def scrape(data, read_client):
         st["rumour"] = (mode == "rumour")
         data["pending"].pop(key, None)
         ready.append(st)
+        
     if len(data["extracted"]) > 600:
         for k in list(data["extracted"].keys())[:-600]: del data["extracted"][k]
     if len(data["posted_ids"]) > 1500: data["posted_ids"] = data["posted_ids"][-1500:]
     save_data(data)
+    
     return sorted(ready, key=lambda x: -(1 if x["collapsed"] else x["stage"]))
 
 # ── DRAFT BUILDER (NO POSTING) ───────────────────────────────────────────
@@ -2102,14 +2073,17 @@ def build_draft(item, data, fpl):
         if item.get("id") and item["id"] not in data["posted_ids"]:
             data["posted_ids"].append(item["id"])
         return None
+        
     mode = item.get("mode", "rumour")
     rumour = (mode == "rumour")
     label = status_label(item, mode)
+    
     if label is None or label not in APPROVED_LABELS:
         print(f"  HELD (no approved label for event={item.get('event')!r}): {item.get('player')!r}")
         if item.get("id") and item["id"] not in data["posted_ids"]:
             data["posted_ids"].append(item["id"])
         return None
+        
     image_path = PENDING_DIR / f"{_slug(item)}.png"
     try:
         if item.get("event") == "injury":
@@ -2121,10 +2095,13 @@ def build_draft(item, data, fpl):
     except Exception as e:
         print(f"  [IMG] generation FAILED ({e}) — draft skipped: {item.get('player')!r}")
         return None
+        
     body = trim_for_twitter(build_tweet_body(item, item["sources"], mode), limit=278)
     save_draft(item, body, image_path)
+    
     item["draft_caption"] = body
     item["draft_image"] = str(image_path)
+    
     print(f"  DRAFT READY [{label}]: {item['player']} — {item['event']} "
           f"(stage {item['stage']}, {len(item['sources'])} src) -> {image_path.name}")
     return item
