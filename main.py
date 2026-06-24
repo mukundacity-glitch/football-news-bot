@@ -790,7 +790,10 @@ def detect_mixed_story(story, raw_text) -> str:
     # FIX: manager_and_player_mixed now only fires when a manager surname
     # appears in a DIFFERENT clause from the player name. This prevents
     # tweets like "Chelsea sign Palestra; Maresca pleased" from being blocked.
-    if ev in ("transfer", "loan", "loan_option", "stay", "renewal"):
+    has_clear_direction = bool(
+        (story.get("to_key") or story.get("to_club")) or
+        (story.get("from_key") or story.get("from_club")))
+    if ev in ("transfer", "loan", "loan_option", "stay", "renewal") and not has_clear_direction:
         subject_is_manager = any(m in player for m in MANAGER_SURNAMES)
         if not subject_is_manager:
             clauses = re.split(r'[.;]|\bmeanwhile\b|\balso\b|\bplus\b|\belsewhere\b|\bseparately\b', tl)
