@@ -2151,30 +2151,15 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
     print("[DRY-RUN] ==========================================")
     if total_img_fail == 0: print("[DRY-RUN] PASS: no blank/broken images.")
     else: print("[DRY-RUN] FAIL: some images did not render — investigate above.")
-
-async def main(post: bool = True, allow_rumours: bool = False):
+      async def main(post: bool = True, allow_rumours: bool = False):
     mode_str = "LIVE" if post else "DRAFT-ONLY"
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
           f"(classifier=regex, mode={mode_str})")
     init_club_data()
     fpl = fetch_fpl_data()
     data = load_data()
-# Build Twikit client only if tokens are present; otherwise rely on Nitter
-read_client = None
-try:
-    if X_AUTH_TOKEN and X_CT0_TOKEN:
-        read_client = Client("en-US")
-        read_client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
-    else:
-        print("[READ] Twikit disabled — X_AUTH_TOKEN / X_CT0_TOKEN not set; using Nitter only.")
-except Exception:
-    read_client = None
-    print("[READ] Twikit init failed — falling back to Nitter.")
 
-if not check_daily_limit(data):
-    print("[BOT] Daily limit reached — nothing will post today.")
-
-
+    # Build Twikit client only if tokens are present; otherwise rely on Nitter
     read_client = None
     if X_AUTH_TOKEN and X_CT0_TOKEN:
         try:
@@ -2184,7 +2169,10 @@ if not check_daily_limit(data):
             print(f"[READ] could not init twikit read client: {e}")
             read_client = None
     else:
-        print("[READ] no read cookies set — using Nitter fallback only.")
+        print("[READ] Twikit disabled — X_AUTH_TOKEN / X_CT0_TOKEN not set; using Nitter only.")
+
+    if not check_daily_limit(data):
+        print("[BOT] Daily limit reached — nothing will post today.")
 
     queue = await scrape(data, read_client)
     if not queue:
@@ -2278,6 +2266,7 @@ if not check_daily_limit(data):
 
     print(f"\n[BOT] {posted} post(s) published; {data['daily']['count']}/"
           f"{data['daily']['limit']} used today.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FPL VORTEX news bot.")
