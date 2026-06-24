@@ -1594,7 +1594,7 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             raise RuntimeError("Thread completed but image missing")
             
     except Exception as e:
-        print(f"  [IMG ERROR] Threaded Playwright failed to generate HTML card: {e}")
+        import traceback; traceback.print_exc()
         from PIL import Image
         Image.new('RGB', (1380, 776), color = (11, 18, 32)).save(filename)
 
