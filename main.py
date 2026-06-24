@@ -1307,6 +1307,32 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     to_club = story.get("to_club") or (story.get("to_key") or "").replace("_", " ")
     from_club = story.get("from_club") or (story.get("from_key") or "").replace("_", " ")
 
+    # Build player photo data URI for the HTML card
+    LEGENDS = {"harry kane": "78830"}
+    legend_pid = LEGENDS.get((player_name or "").lower())
+    photo_data_uri = None
+    pid = legend_pid or (player_el.get("code") if player_el else None)
+    if pid:
+        pp = Path(f"players/{pid}.png")
+        if not pp.exists():
+            _download_asset(
+                f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp
+            )
+        if pp.exists() and pp.stat().st_size >= 500:
+            import base64
+            photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
+    if not photo_data_uri:
+        tweet_img_url = story.get("media_url")
+        if tweet_img_url:
+            tp = Path(f"players/tweet_{hashlib.md5(tweet_img_url.encode()).hexdigest()[:12]}.png")
+            if not tp.exists():
+                _download_asset(tweet_img_url, tp)
+            if tp.exists() and tp.stat().st_size >= 500:
+                import base64
+                photo_data_uri = "data:image/png;base64," + base64.b64encode(tp.read_bytes()).decode("ascii")
+
+    # Determine Status and Colors
+
     LEGENDS = {"harry kane": "78830"}
     legend_pid = LEGENDS.get(player_name.lower())
     photo_data_uri = None
