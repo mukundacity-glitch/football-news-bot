@@ -288,6 +288,9 @@ CLUB_HASHTAGS = {}
 def init_club_data():
     global CLUB_NAME_SET, CLUB_HASHTAGS, PL_CLUB_NAMES
     try:
+        # Prevent API subscription errors from spamming execution logs
+        import warnings
+        warnings.filterwarnings("ignore", category=UserWarning)
         d = get_club_data()
     except Exception as e:
         print(f"[CLUBS] get_club_data failed: {e}")
@@ -873,7 +876,13 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
     if any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl) for w in STAFF_BLOCK_KW): return False, "staff_or_offpitch"
     if not story.get("player"): return False, "no_player"
     mixed = detect_mixed_story(story, raw_text)
-    if mixed: return False, f"mixed_story:{mixed}"
+    # Check if the source is Tier 1 or Tier 2 (Elite)
+    tiers = [source_tier(s) for s in (sources or [])]
+    is_elite = any(t in (1, 2) for t in tiers)
+    
+    # If it's an elite source, ignore player/manager mixing blocks so we don't miss breaking news
+    if mixed and not is_elite: 
+        return False, f"mixed_story:{mixed}"
     if story.get("from_video") and not story.get("has_written_claim"): return False, "video_no_written_claim"
     if player_already_at_club(story, fpl_data): return False, "already_at_destination"
 
@@ -1017,49 +1026,76 @@ def build_hashtags(story):
 #   - Different stories rotate across all three
 _TWEET_TEMPLATES = {
     "OFFICIAL": [
-        "✅ OFFICIAL | {player} completes move to {dest}",
-        "🔵 DONE DEAL | {player} joins {dest} — it's confirmed",
-        "🚨 HERE WE GO | {player} is now a {dest} player",
+        "✅ OFFICIAL | {player} completes move to {dest}!",
+        "🔵 DONE DEAL | {player} joins {dest} — it's fully confirmed!",
+        "🚨 HERE WE GO | {player} is officially a {dest} player!",
+        "💎 SIGNED & SEALED | {player} has finalized his move to {dest}!",
+        "🤝 IT'S ANNOUNCED | {player} unrevealed as a new signing for {dest}!",
+        "🏟️ NEW ERA | {player} takes on a new chapter at {dest}!",
     ],
     "TRANSFER": [
-        "🔴 TRANSFER | {player} linked with a move to {dest}",
-        "⚡ TRANSFER NEWS | {player} attracting interest from {dest}",
-        "📋 TRANSFER UPDATE | {player} on {dest}'s radar this window",
+        "🔴 TRANSFER | {player} linked with a move to {dest}.",
+        "⚡ TRANSFER NEWS | {player} attracting serious interest from {dest}.",
+        "📋 TRANSFER UPDATE | {player} is on {dest}'s radar this window.",
+        "🔥 MARKET TALK | {dest} are monitoring the situation of {player}.",
+        "🎯 TARGET SPOTTED | {dest} identifying {player} as a key option.",
+        "📈 MOVE POSSIBLE | Discussions surrounding {player} to {dest} gathering pace.",
     ],
     "RUMOUR": [
-        "👀 RUMOUR | {player} being linked with {dest} — unconfirmed",
-        "🔍 TRANSFER TALK | Reports suggest {player} could move to {dest}",
-        "💬 UNCONFIRMED | {player} mentioned in connection with {dest}",
+        "👀 RUMOUR | {player} being linked with {dest} — unconfirmed.",
+        "🔍 TRANSFER TALK | Speculation suggests {player} could move to {dest}.",
+        "💬 UNCONFIRMED | {player} mentioned in connection with {dest}.",
+        "📰 PRESS REPORTS | Gossip linking {player} with a potential switch to {dest}.",
+        "🔮 WHISPERS | Internal chatter suggests {dest} might look at {player}.",
+        "📡 ON THE RADAR | Rumours growing over {player} testing the waters with {dest}.",
     ],
     "INJURY": [
-        "🚑 INJURY NEWS | {player} facing a spell on the sidelines",
-        "❌ INJURY UPDATE | {player} being assessed — FPL managers beware",
-        "⚠️ FITNESS CONCERN | {player} injury update from {origin}",
+        "🚑 INJURY NEWS | {player} facing a spell on the sidelines.",
+        "❌ INJURY UPDATE | {player} being assessed — FPL managers take note!",
+        "⚠️ FITNESS CONCERN | {player} pickup an issue, confirms {origin}.",
+        "🏥 MEDICAL ROOM | {player} undergoing tests following a fresh setback.",
+        "💔 FPL BLOW | {player} sustained an injury and is set for a scans.",
+        "⏳ TIMELINE PENDING | {player} is a major doubt for upcoming fixtures.",
     ],
     "LOAN": [
-        "🔄 LOAN DEAL | {player} set for a temporary move to {dest}",
-        "📤 LOAN UPDATE | {player} heading to {dest} on loan",
-        "🤝 LOAN MOVE | {player} closing in on switch to {dest}",
+        "🔄 LOAN DEAL | {player} set for a temporary move to {dest}.",
+        "📤 LOAN UPDATE | {player} heading to {dest} on a short-term switch.",
+        "🤝 LOAN MOVE | {player} closing in on a temporary contract with {dest}.",
+        "🚀 TEMPORARY SWITCH | {player} departs on loan to join {dest}.",
+        "📦 SENT ON LOAN | {player} will spend the next stage of the season at {dest}.",
+        "📈 DEVELOPMENT Swapping shirts: {player} completes loan move to {dest}.",
     ],
     "SUSPENSION": [
-        "🟥 SUSPENSION | {player} set to miss upcoming fixtures",
-        "⛔ BANNED | {player} faces suspension — check your FPL team",
-        "🚫 SUSPENDED | {player} ruled out through suspension",
+        "🟥 SUSPENSION | {player} set to miss upcoming fixtures.",
+        "⛔ BANNED | {player} faces a suspension penalty — check your FPL lines!",
+        "🚫 SUSPENDED | {player} ruled out of the selection pool through a disciplinary ban.",
+        "🟨 CARD TROUBLE | Disciplinary action sidelines {player} for the upcoming matches.",
+        "❌ RULED OUT | {player} will serve a suspension block starting immediately.",
+        "⚖️ DISCIPLINARY | {player} faces a mandatory layout suspension.",
     ],
     "CONTRACT EXTENSION": [
-        "📝 NEW DEAL | {player} set to extend stay at {origin}",
-        "🖊️ CONTRACT | {player} closing in on a new deal at {origin}",
-        "✍️ STAYING PUT | {player} set to sign a new contract",
+        "📝 NEW DEAL | {player} set to extend his stay at {origin}!",
+        "🖊️ CONTRACT | {player} closing in on a brand new deal at {origin}!",
+        "✍️ STAYING PUT | {player} commits his future by signing a new contract!",
+        "🔒 LOCKED IN | {player} pens a renewal deal to stay with {origin}!",
+        "💎 EXTENSION | {player} rejects exit talks and extends with {origin}!",
+        "👑 FUTURE SECURED | {player} stays right where he is at {origin}!",
     ],
     "MANAGER NEWS": [
-        "🎩 MANAGER | {player} in the frame for the {dest} job",
-        "👔 MANAGERIAL | {player} linked with the {dest} hotseat",
-        "📣 MANAGER NEWS | {player} being considered at {dest}",
+        "🎩 MANAGER | {player} in the frame for the empty {dest} job.",
+        "👔 MANAGERIAL | {player} heavily linked with the {dest} hotseat.",
+        "📣 MANAGER NEWS | {player} being seriously considered at {dest}.",
+        "🗂️ DUGOUT SEARCH | {dest} open discussions over appointing {player}.",
+        "🧠 TACTICAL SHIFT | {player} leading the race to become the new boss at {dest}.",
+        "📋 APPOINTMENT PENDING | {player} enters advanced stages for the {dest} vacancy.",
     ],
     "HISTORICAL": [
-        "📅 HISTORICAL | {player} — {dest}",
-        "🕰️ ON THIS DAY | {player} — {dest}",
-        "📖 FLASHBACK | {player} — {dest}",
+        "📅 HISTORICAL | {player} — {dest}.",
+        "🕰️ ON THIS DAY | Looking back at {player} — {dest}.",
+        "📖 FLASHBACK | Iconic moments: {player} — {dest}.",
+        "⏪ REWIND | Throwback file on {player} during his time with {dest}.",
+        "🎞️ MEMORY LANE | Celebrating {player} and his milestones at {dest}.",
+        "🌟 RETRO ARCHIVE | Unlocking a classic moment involving {player} and {dest}.",
     ],
 }
 
