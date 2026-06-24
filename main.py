@@ -358,6 +358,16 @@ def load_data() -> dict:
     d.setdefault("posted_headlines", [])
     # Clean up any pipe-format "player|event" keys written by a previous buggy build
     d["posted_hashes"] = [h for h in d["posted_hashes"] if "|" not in h]
+
+    # --- TARGETED RESET (Wilson and Verkooijen Repost) ---
+    d["posted_headlines"] = [h for h in d["posted_headlines"] if "wilson" not in h.lower() and "verkooijen" not in h.lower()]
+    d["posted_hashes"] = [] 
+    d["posted_ids"] = [] 
+    for k in list(d.get("stories", {}).keys()):
+        if "wilson" in k or "verkooijen" in k:
+            del d["stories"][k]
+    # ------------------------------------------------------------
+
     return d
 
 def save_data(data: dict):
@@ -1763,10 +1773,13 @@ async def post_item(post_client, item, data):
 
     def _img_ok():
         return os.path.exists(image_path) and os.path.getsize(image_path) >= 1000
-    if not _img_ok():
+   if not _img_ok():
         print(f"  [IMG] post-time card missing — regenerating: {item.get('player')!r}")
         try:
-            create_image(item, item["sources"], image_path, rumour=(item.get("mode") == "rumour"))
+            if item.get("event") == "injury":
+                create_injury_image(item, item["sources"], image_path)
+            else:
+                create_transfer_image(item, item["sources"], image_path, collapsed=item.get("collapsed", False))
         except Exception as e:
             print(f"  [IMG] regeneration raised: {e}")
     if not _img_ok():
@@ -2022,7 +2035,10 @@ def build_draft(item, data, fpl):
         return None
     image_path = PENDING_DIR / f"{_slug(item)}.png"
     try:
-        create_image(item, item["sources"], str(image_path), rumour=rumour)
+        if item.get("event") == "injury":
+            create_injury_image(item, item["sources"], str(image_path))
+        else:
+            create_transfer_image(item, item["sources"], str(image_path), collapsed=item.get("collapsed", False))
         if not image_path.exists() or image_path.stat().st_size < 1000:
             raise RuntimeError("image missing or empty")
     except Exception as e:
