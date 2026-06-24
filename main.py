@@ -13,9 +13,6 @@ What this build does:
     run, per hour and per day. Every post is guaranteed an image card.
   - Tweet wording rotates across 3 templates per event type so posts never
     look identical.
-
-Pass --draft-only to only build cards into queue/pending/ (no posting), or
---dry-run to test the whole pipeline offline.
 """
 
 from clubs_cache import get_club_data
@@ -30,6 +27,7 @@ except ModuleNotFoundError:
     os.system("pip install playwright")
     os.system("playwright install chromium")
     from playwright.sync_api import sync_playwright
+
 import json
 import hashlib
 import difflib
@@ -120,15 +118,12 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # ── JOURNALISTS ──────────────────────────────────────────────────────────
 JOURNALISTS = [
-    # Elite tier — "here we go" / confirmed news
     "FabrizioRomano", "David_Ornstein", "_pauljoyce", "sistoney67",
     "SamiMokbel_BBC", "JacobsBen", "JamesPearceLFC", "SachaTavolieri",
     "Plettigoal", "MatteoMoretto", "AlfredoPedulla", "DiMarzio",
-    # Trusted media
     "SkySportsNews", "BBCSport", "TheAthleticFC", "guardian_sport",
     "lequipe", "marca", "diarioas", "kicker",
     "alex_crook", "AlexCrabb31", "Transferzone00",
-    # PL official accounts (injury/squad news)
     "premierleague", "OfficialFPL", "PremierInjuries",
     "Arsenal", "AVFCOfficial", "ManCity", "LFC", "ChelseaFC",
     "ManUtd", "SpursOfficial", "NUFC", "NFFC", "Everton",
@@ -240,7 +235,6 @@ CLUB_HASHTAG_MAP = {
     "Nottm_Forest": "#NFFC", "Southampton": "#SaintsFC", "Spurs": "#THFC",
     "West_Ham": "#WHUFC", "Wolves": "#Wolves",
 }
-PL_CLUB_NAMES = {a for a in CLUB_ALIASES}
 
 BUNDESLIGA_BIG_CLUBS = {"bayern", "bayern munich", "borussia dortmund", "dortmund",
                         "leipzig", "rb leipzig", "leverkusen", "bayer leverkusen"}
@@ -292,11 +286,11 @@ def is_big_name_player(name: str) -> bool:
 # ── CLUBS_CACHE WIRING ───────────────────────────────────────────────────
 CLUB_NAME_SET = set()
 CLUB_HASHTAGS = {}
+PL_CLUB_NAMES = set()
 
 def init_club_data():
     global CLUB_NAME_SET, CLUB_HASHTAGS, PL_CLUB_NAMES
     try:
-        # Prevent API subscription errors from spamming execution logs
         import warnings
         warnings.filterwarnings("ignore", category=UserWarning)
         d = get_club_data()
@@ -356,28 +350,15 @@ def load_data() -> dict:
     d.setdefault("extracted", {})
     d.setdefault("posted_hashes", [])
     d.setdefault("posted_headlines", [])
-    # Clean up any pipe-format "player|event" keys written by a previous buggy build
     d["posted_hashes"] = [h for h in d["posted_hashes"] if "|" not in h]
 
-    # --- TARGETED RESET (Dubravka + Wilson + Verkooijen one-time repost) ---
     _reset_names = {"dubravka", "wilson", "verkooijen"}
-    d["posted_headlines"] = [
-        h for h in d["posted_headlines"]
-        if not any(n in h.lower() for n in _reset_names)
-    ]
-    d["posted_hashes"] = [
-        h for h in d["posted_hashes"]
-        if not any(n in h.lower() for n in _reset_names)
-    ]
-    d["posted_ids"] = [
-        i for i in d["posted_ids"]
-        if not any(n in str(i).lower() for n in _reset_names)
-    ]
+    d["posted_headlines"] = [h for h in d["posted_headlines"] if not any(n in h.lower() for n in _reset_names)]
+    d["posted_hashes"] = [h for h in d["posted_hashes"] if not any(n in h.lower() for n in _reset_names)]
+    d["posted_ids"] = [i for i in d["posted_ids"] if not any(n in str(i).lower() for n in _reset_names)]
     for k in list(d.get("stories", {}).keys()):
         if any(n in k.lower() for n in _reset_names):
             del d["stories"][k]
-    # ------------------------------------------------------------
-
     return d
 
 def save_data(data: dict):
@@ -393,6 +374,52 @@ def check_daily_limit(data: dict) -> bool:
 
 def increment_daily(data: dict):
     data["daily"]["count"] += 1
+
+# ── FPL DATA ─────────────────────────────────────────────────────────────
+def fetch_fpl_data():
+    cache = Path("fpl_cache.json")
+    if cache.exists() and (datetime.now().timestamp() - cache.stat().st_mtime < 86400):
+        with open(cache) as f: 
+            return json.load(f)
+    try:
+        req = urllib.request.Request(
+            "https://fantasy.premierleague.com/api/bootstrap-static/",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+        with open(cache, "w") as f: 
+            json.dump(data, f)
+        _build_country_block(data)
+        return data
+    except Exception:
+        return None
+
+def find_player_in_fpl(player_name, data):
+    if not data or not player_name: return None
+    q = player_name.lower().strip()
+    tokens = [t for t in re.split(r'[\s\-]+', q) if t]
+    if not tokens: return None
+    for el in data.get("elements", []):
+        web = el["web_name"].lower()
+        full = (el["first_name"] + " " + el["second_name"]).lower()
+        if q == full or q == web: return el
+        if len(tokens) >= 2 and all(
+                re.search(r'(?<![a-z])' + re.escape(t) + r'(?![a-z])', full) for t in tokens):
+            return el
+        if len(tokens) == 1 and tokens[0] == web: return el
+    return None
+
+def is_big_player(player, fpl_data) -> bool:
+    el = find_player_in_fpl(player, fpl_data)
+    if not el: return False
+    return el.get("now_cost", 0) >= 65 or el.get("total_points", 0) >= 90
+
+def fpl_team_key(el, fpl_data):
+    if not el or not fpl_data: return None
+    for t in fpl_data.get("teams", []):
+        if t.get("id") == el.get("team"):
+            return resolve_club_key((t.get("name", "") + " " + t.get("short_name", "")).lower())
+    return None
 
 # ── STORY EXTRACTION (regex-only, no LLM) ────────────────────────────────
 def _clean_source_text(text: str) -> str:
@@ -427,7 +454,6 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     def has_word(words_list, text):
         return any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text) for w in words_list)
 
-    # An on-loan signal must win over injury wording.
     loan_signal = ("on loan" in tl) or bool(re.search(r"\bjoine?d?\b.*\bon loan\b", tl))
     if has_word(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl): event = "suspension"
     elif loan_signal: event = "loan"
@@ -441,7 +467,6 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     stage = 4 if has_word(["here we go", "official", "confirmed", "completed", "joins"], tl) else \
         2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
 
-    # Confidence: earned by signal strength, not a fixed value
     confidence_signals = 0
     if stage >= 4: confidence_signals += 3
     elif stage >= 2: confidence_signals += 1
@@ -562,8 +587,6 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     if is_collapsed and to_key and not from_anchor:
         to_key = None
 
-    summary = _summarise(name, event, from_key, to_key, stage, is_collapsed)
-
     return {
         "is_football": True, "event": event,
         "is_real_move": event in ("transfer", "loan", "loan_option"),
@@ -575,7 +598,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         "diagnosis": None, "expected_return": None, "next_match": None,
         "stage": stage, "collapsed": is_collapsed,
         "headline": name if name else "Transfer update",
-        "body": summary, "confidence": confidence,
+        "body": tweet_text, "confidence": confidence,
         "direction_confident": direction_confident,
         "from_fallback": True,
     }
@@ -621,7 +644,6 @@ def has_written_claim(tweet_text: str) -> bool:
     cleaned = _clean_source_text(tweet_text)
     return bool(_CLAIM_MARKERS.search(cleaned)) and len(cleaned.split()) >= 5
 
-# ── HISTORICAL (OLD-NEWS) DETECTOR ───────────────────────────────────────
 ALLOW_HISTORICAL_POSTS = False
 
 _HISTORICAL_MARKERS = re.compile(
@@ -656,7 +678,10 @@ def detect_historical(text: str) -> bool:
         return True
     return False
 
-# ── LOGIC BLOCK (Ensure this sits cleanly inside its parent function) ────
+# ── STORY BUILDER (COMBINED & CORRECTLY PLACED) ──────────────────────────
+def build_story(tweet_text, fpl_data):
+    s = extract_story_fallback(tweet_text, fpl_data)
+
     if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
         el = find_player_in_fpl(s["player"], fpl_data)
         is_free_agent = bool(el and el.get("team", 0) == 0)
@@ -683,57 +708,11 @@ def detect_historical(text: str) -> bool:
         s["from_video"] = False
         s["has_written_claim"] = True
 
-    if len(s["body"].split()) < 4:
+    if len(s.get("body", "").split()) < 4:
         s["body"] = _summarise(s.get("player"), s.get("event"),
                                s.get("from_key"), s.get("to_key"),
                                s.get("stage"), s.get("collapsed"))
     return s
-
-# ── FPL DATA ─────────────────────────────────────────────────────────────
-def fetch_fpl_data():
-    cache = Path("fpl_cache.json")
-    if cache.exists() and (datetime.now().timestamp() - cache.stat().st_mtime < 86400):
-        with open(cache) as f: 
-            return json.load(f)
-    try:
-        req = urllib.request.Request(
-            "https://fantasy.premierleague.com/api/bootstrap-static/",
-            headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read())
-        with open(cache, "w") as f: 
-            json.dump(data, f)
-        _build_country_block(data)
-        return data
-    except Exception:
-        return None
-
-def find_player_in_fpl(player_name, data):
-    if not data or not player_name: return None
-    q = player_name.lower().strip()
-    tokens = [t for t in re.split(r'[\s\-]+', q) if t]
-    if not tokens: return None
-    for el in data.get("elements", []):
-        web = el["web_name"].lower()
-        full = (el["first_name"] + " " + el["second_name"]).lower()
-        if q == full or q == web: return el
-        if len(tokens) >= 2 and all(
-                re.search(r'(?<![a-z])' + re.escape(t) + r'(?![a-z])', full) for t in tokens):
-            return el
-        if len(tokens) == 1 and tokens[0] == web: return el
-    return None
-
-def is_big_player(player, fpl_data) -> bool:
-    el = find_player_in_fpl(player, fpl_data)
-    if not el: return False
-    return el.get("now_cost", 0) >= 65 or el.get("total_points", 0) >= 90
-
-def fpl_team_key(el, fpl_data):
-    if not el or not fpl_data: return None
-    for t in fpl_data.get("teams", []):
-        if t.get("id") == el.get("team"):
-            return resolve_club_key((t.get("name", "") + " " + t.get("short_name", "")).lower())
-    return None
 
 # ── DEDUP / PROGRESSION ──────────────────────────────────────────────────
 _EMOJI_RE = re.compile(
@@ -845,9 +824,6 @@ def detect_mixed_story(story, raw_text) -> str:
     if ev != "manager" and player and (player in MANAGER_SURNAMES or any(m in player for m in MANAGER_SURNAMES)):
         return "player_is_manager"
 
-    # FIX: manager_and_player_mixed now only fires when a manager surname
-    # appears in a DIFFERENT clause from the player name. This prevents
-    # tweets like "Chelsea sign Palestra; Maresca pleased" from being blocked.
     has_clear_direction = bool(
         (story.get("to_key") or story.get("to_club")) or
         (story.get("from_key") or story.get("from_club")))
@@ -912,11 +888,9 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
     if any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl) for w in STAFF_BLOCK_KW): return False, "staff_or_offpitch"
     if not story.get("player"): return False, "no_player"
     mixed = detect_mixed_story(story, raw_text)
-    # Check if the source is Tier 1 or Tier 2 (Elite)
     tiers = [source_tier(s) for s in (sources or [])]
     is_elite = any(t in (1, 2) for t in tiers)
     
-    # If it's an elite source, ignore player/manager mixing blocks so we don't miss breaking news
     if mixed and not is_elite: 
         return False, f"mixed_story:{mixed}"
     if story.get("from_video") and not story.get("has_written_claim"): return False, "video_no_written_claim"
@@ -1056,10 +1030,7 @@ def build_hashtags(story):
         tags.append("#PremierLeague")
     return " ".join(tags[:4])
 
-# ── TWEET TEXT — varied templates ────────────────────────────────────────
-# 3 options per label. Rotated by story key hash so:
-#   - Same story always gets same template (no duplicates on retry)
-#   - Different stories rotate across all three
+# ── TWEET TEXT ───────────────────────────────────────────────────────────
 _TWEET_TEMPLATES = {
     "OFFICIAL": [
         "✅ OFFICIAL | {player} completes move to {dest}!",
@@ -1136,7 +1107,6 @@ _TWEET_TEMPLATES = {
 }
 
 def _pick_template(key: str, templates: list) -> str:
-    """Consistent template pick from story key — deterministic, not random."""
     idx = int(hashlib.md5((key or "default").encode()).hexdigest(), 16) % len(templates)
     return templates[idx]
 
@@ -1164,7 +1134,6 @@ def build_detail_line(story) -> str:
     if story.get("conditional"): bits.append(story["conditional"])
     return "  |  ".join(bits)
 
-# ── TWEET LENGTH HELPERS ─────────────────────────────────────────────────
 def twitter_len(text: str) -> int:
     url_re = re.compile(r'https?://\S+|www\.\S+')
     urls = url_re.findall(text)
@@ -1316,252 +1285,13 @@ def _draw_right_visual_fallback(img, draw, W, H, story):
     f_emblem = get_premium_font(160, "Black")
     draw.text((cx - 60, cy - 100), "V", font=f_emblem, fill=(84, 224, 124, 50))
 
-def create_transfer_image(story, sources, filename, collapsed=False):
-    W, H = 1380, 776
-    fpl = fetch_fpl_data()
-    player_el = find_player_in_fpl(story.get("player"), fpl)
-    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
-    
-    to_club = story.get("to_club") or (story.get("to_key") or "").replace("_", " ")
-    from_club = story.get("from_club") or (story.get("from_key") or "").replace("_", " ")
-
-    # Build player photo data URI for the HTML card
-    LEGENDS = {"harry kane": "78830"}
-    legend_pid = LEGENDS.get((player_name or "").lower())
-    photo_data_uri = None
-    pid = legend_pid or (player_el.get("code") if player_el else None)
-    if pid:
-        pp = Path(f"players/{pid}.png")
-        if not pp.exists():
-            _download_asset(
-                f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp
-            )
-        if pp.exists() and pp.stat().st_size >= 500:
-            import base64
-            photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
-    if not photo_data_uri:
-        tweet_img_url = story.get("media_url")
-        if tweet_img_url:
-            tp = Path(f"players/tweet_{hashlib.md5(tweet_img_url.encode()).hexdigest()[:12]}.png")
-            if not tp.exists():
-                _download_asset(tweet_img_url, tp)
-            if tp.exists() and tp.stat().st_size >= 500:
-                import base64
-                photo_data_uri = "data:image/png;base64," + base64.b64encode(tp.read_bytes()).decode("ascii")
-
-    # Determine Status and Colors
-
-    LEGENDS = {"harry kane": "78830"}
-    legend_pid = LEGENDS.get(player_name.lower())
-    photo_data_uri = None
-    pid = legend_pid or (player_el.get("code") if player_el else None)
-    if pid:
-        pp = Path(f"players/{pid}.png")
-        if not pp.exists():
-            _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
-        if pp.exists() and pp.stat().st_size >= 500:
-            import base64
-            photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
-    if not photo_data_uri:
-        tweet_img_url = story.get("media_url")
-        if tweet_img_url:
-            tp = Path(f"players/tweet_{hashlib.md5(tweet_img_url.encode()).hexdigest()[:12]}.png")
-            if not tp.exists():
-                _download_asset(tweet_img_url, tp)
-            if tp.exists() and tp.stat().st_size >= 500:
-                import base64
-                photo_data_uri = "data:image/png;base64," + base64.b64encode(tp.read_bytes()).decode("ascii")
-
-    NAVY = (11, 18, 32)
-    GOLD = (212, 175, 55)
-    accent = (120, 30, 34) if collapsed else (30, 55, 110)
-
-    img = Image.new("RGB", (W, H), NAVY)
-    sheen = Image.new("L", (1, H), 0)
-    for y in range(H): sheen.putpixel((0, y), int(30 * (1 - abs(y - H / 2) / (H / 2))))
-    img.paste(Image.new("RGB", (W, H), (28, 40, 70)), (0, 0), sheen.resize((W, H)))
-    _draw_diagonal_accents(img, accent, GOLD)
-    draw = ImageDraw.Draw(img, "RGBA")
-
-    TEXT_X = 70
-    _draw_wordmark(draw, (TEXT_X, 48))
-
-    ev = story.get("event", "transfer")
-    if collapsed:
-        label = "DEAL COLLAPSED"
-        badge_color = (120, 30, 34)
-    elif ev == "manager":
-        label = "MANAGER NEWS"
-        badge_color = (30, 80, 160)
-    elif ev in ("loan", "loan_option"):
-        label = "LOAN UPDATE"
-        badge_color = (180, 100, 0)
-    elif ev in ("renewal", "stay"):
-        label = "CONTRACT UPDATE"
-        badge_color = (30, 130, 80)
-    else:
-        label = "TRANSFER UPDATE"
-        badge_color = (227, 30, 36)
-    lf = get_premium_font(44, "Bold")
-    draw.rounded_rectangle([TEXT_X, 116, TEXT_X + draw.textlength(label, font=lf) + 40, 178],
-                           radius=10, fill=badge_color)
-    _draw_text_shadow(draw, (TEXT_X + 20, 124), label, lf, (255, 255, 255), offset=1)
-
-    name_up = player_name.upper()
-    TEXT_MAX_W = 780
-    nsize = 104
-    nf = get_premium_font(nsize, "Black")
-    while draw.textlength(name_up, font=nf) > TEXT_MAX_W and nsize > 56:
-        nsize -= 3
-        nf = get_premium_font(nsize, "Black")
-    name_y = 200
-    _draw_text_shadow(draw, (TEXT_X, name_y), name_up, nf, (255, 255, 255), offset=3)
-    nb = draw.textbbox((0, 0), name_up, font=nf)
-    name_bottom = name_y + (nb[3] - nb[1]) + 24
-
-    crest_font = get_premium_font(46, "Bold")
-    row_label_font = get_premium_font(38, "Bold")
-    CREST = 104
-    y = name_bottom
-
-    def _row(tag, club_key, club_text, color):
-        nonlocal y
-        crest = _load_crest(club_key, CREST)
-        x = TEXT_X
-        _draw_text_shadow(draw, (x, y + (CREST - 34) // 2), tag, row_label_font, (170, 180, 200))
-        x += 150
-        if crest is not None:
-            img.paste(crest, (x, y + (CREST - crest.height) // 2), crest)
-        else:
-            cy = y + (CREST - 70) // 2
-            draw.rounded_rectangle([x + 15, cy, x + 85, cy + 70], radius=12, outline=(255, 255, 255, 40), width=3)
-            draw.ellipse([x + 35, cy + 20, x + 65, cy + 50], fill=(84, 224, 124, 60))
-        x += CREST + 20
-        name = (club_text or (club_key or "").replace("_", " ")).upper()
-        _draw_text_shadow(draw, (x, y + (CREST - 44) // 2), name, crest_font, color)
-        y += CREST + 22
-
-    if from_key or story.get("from_club"): _row("FROM:", from_key, story.get("from_club"), (225, 225, 225))
-    if to_key or story.get("to_club"): _row("TO:", to_key, story.get("to_club"), (255, 255, 255))
-
-    detail = build_detail_line(story)
-    if detail:
-        _safe_emoji_text(img, (TEXT_X, y + 8), detail.upper()[:60],
-                         get_premium_font(28, "Bold"), (160, 255, 120))
-
-    LEGENDS = {"harry kane": "78830"}
-    legend_pid = LEGENDS.get(player_name.lower())
-    drew_player = False
-    if player_el or legend_pid:
-        pid = legend_pid or (player_el.get("code") if player_el else None)
-        if pid:
-            pp = Path(f"players/{pid}.png")
-            if not pp.exists():
-                _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
-            portrait = _safe_open_rgba(pp)
-            if portrait is not None:
-                portrait = _fit_contain(portrait, 520, 600)
-                img.paste(portrait, (W - portrait.width - 60, H - portrait.height - 100), portrait)
-                drew_player = True
-    if not drew_player:
-        _draw_right_visual_fallback(img, draw, W, H, story)
-
-    draw.rectangle([0, H - 90, W, H - 12], fill=(20, 24, 33))
-    draw.rectangle([0, H - 12, W, H], fill=accent)
-    src = " · ".join(f"@{s}" for s in sources[:2])
-    bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
-    bsize = 34
-    bf = get_premium_font(bsize, "Bold")
-    while bsize > 24 and draw.textlength(bar, font=bf) > (W - 120):
-        bsize -= 1
-        bf = get_premium_font(bsize, "Bold")
-    bbox = draw.textbbox((0, 0), bar, font=bf)
-    by = (H - 90) + (78 - (bbox[3] - bbox[1])) // 2 - bbox[1]
-    draw.text((60, by), bar, font=bf, fill=(190, 200, 220))
-    img.save(filename)
-
-def create_injury_image(story, sources, filename):
-    W, H = 1380, 776
-    fpl = fetch_fpl_data()
-    player_el = find_player_in_fpl(story.get("player"), fpl)
-    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
-
-    img = Image.new("RGB", (W, H), (24, 10, 12))
-    draw = ImageDraw.Draw(img, "RGBA")
-    draw.rectangle([W // 2, 0, W, H], fill=(120, 18, 22))
-
-    TEXT_X = 70
-    _draw_wordmark(draw, (TEXT_X, 48))
-
-    lf = get_premium_font(34, "Bold")
-    label = "INJURY UPDATE"
-    draw.rounded_rectangle([TEXT_X, 120, TEXT_X + draw.textlength(label, font=lf) + 36, 168],
-                           radius=10, fill=(210, 30, 34))
-    _draw_text_shadow(draw, (TEXT_X + 18, 126), label, lf, (255, 255, 255), offset=1)
-
-    nf = get_premium_font(88, "Black")
-    _draw_text_shadow(draw, (TEXT_X, 210), player_name.upper(), nf, (255, 255, 255), offset=3)
-
-    rows = []
-    if story.get("diagnosis"): rows.append(("DIAGNOSIS", story["diagnosis"]))
-    stage = story.get("stage", 1)
-    avail = {4: "Available / fit again", 3: "Ruled out", 2: "Doubt", 1: "To be assessed"}.get(stage, "To be assessed")
-    rows.append(("AVAILABILITY", avail))
-    rows.append(("TIMELINE", story.get("expected_return") or "Awaiting update"))
-    if story.get("next_match"): rows.append(("NEXT MATCH", story["next_match"]))
-
-    y = 340
-    lab_f = get_premium_font(26, "Bold")
-    val_f = get_premium_font(34, "Bold")
-    for tag, val in rows[:4]:
-        _draw_text_shadow(draw, (TEXT_X, y), tag, lab_f, (255, 140, 140))
-        _draw_text_shadow(draw, (TEXT_X, y + 32), str(val), val_f, (255, 255, 255))
-        y += 96
-
-    draw.rectangle([0, H - 90, W, H - 12], fill=(20, 10, 12))
-    src = " · ".join(f"@{s}" for s in sources[:2])
-    bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
-    bf = get_premium_font(32, "Bold")
-    draw.text((60, H - 70), bar, font=bf, fill=(220, 190, 190))
-    img.save(filename)
-
-def _create_fallback_card(story, sources, filename):
-    W, H = 1200, 675
-    img = Image.new("RGB", (W, H), (11, 18, 32))
-    draw = ImageDraw.Draw(img, "RGBA")
-    draw.rectangle([0, 0, W, 12], fill=(212, 175, 55))
-    draw.rectangle([0, H - 12, W, H], fill=(212, 175, 55))
-    _draw_wordmark(draw, (60, 48))
-    lf = get_premium_font(40, "Bold")
-    label = "BREAKING NEWS"
-    draw.rounded_rectangle([60, 130, 60 + draw.textlength(label, font=lf) + 44, 192],
-                           radius=12, fill=(210, 30, 34))
-    _draw_text_shadow(draw, (60 + 22, 138), label, lf, (255, 255, 255), offset=2)
-    head = (story.get("headline") or story.get("player") or "Football update").upper()
-    hf = get_premium_font(64, "Black")
-    words, line, y = head.split(), "", 250
-    for w in words:
-        test = (line + " " + w).strip()
-        if draw.textlength(test, font=hf) > W - 120 and line:
-            _draw_text_shadow(draw, (60, y), line, hf, (255, 255, 255), offset=3)
-            y += 78
-            line = w
-        else: line = test
-    if line: _draw_text_shadow(draw, (60, y), line, hf, (255, 255, 255), offset=3)
-    src = " · ".join(f"@{s}" for s in (sources or [])[:2]) or CHANNEL_HANDLE
-    draw.rectangle([0, H - 78, W, H - 12], fill=(20, 24, 33))
-    bf = get_premium_font(30, "Bold")
-    draw.text((60, H - 64), f"Source: {src}  |  {CHANNEL_HANDLE}", font=bf, fill=(190, 200, 220))
-    img.save(filename)
-
 def get_club_color(club_key):
     """Retrieve the exact RGB string for the destination club."""
     color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
     return f"rgb({color_tuple[0]}, {color_tuple[1]}, {color_tuple[2]})"
 
-def create_image(story, sources, filename, rumour=False):
+def create_transfer_image(story, sources, filename, collapsed=False):
     """Generates a premium sports broadcast graphic using HTML/CSS and Playwright."""
-    
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
     player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
@@ -1570,8 +1300,8 @@ def create_image(story, sources, filename, rumour=False):
     from_club = story.get("from_club") or (story.get("from_key") or "").replace("_", " ")
     
     # Determine Status and Colors
-    mode = "rumour" if rumour else "confirmed"
-    if story.get("collapsed"):
+    mode = story.get("mode", "confirmed")
+    if collapsed or story.get("collapsed"):
         status = "DEAL COLLAPSED"
         badge_color = "#e31e24" # Red
     elif mode == "rumour":
@@ -1583,6 +1313,16 @@ def create_image(story, sources, filename, rumour=False):
         
     club_color = get_club_color(story.get("to_key") or story.get("from_key"))
     source_text = " · ".join(f"@{s}" for s in sources[:2])
+
+    photo_data_uri = None
+    pid = player_el.get("code") if player_el else None
+    if pid:
+        pp = Path(f"players/{pid}.png")
+        if not pp.exists():
+            _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
+        if pp.exists() and pp.stat().st_size >= 500:
+            import base64
+            photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
 
     # The HTML/CSS Template
     html_content = f"""
@@ -1774,21 +1514,92 @@ def create_image(story, sources, filename, rumour=False):
     </html>
     """
 
-    # Use Playwright to render the HTML and snap a screenshot
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
             page.set_content(html_content)
-            # Wait a split second for web fonts to load
             page.wait_for_timeout(500)
             page.screenshot(path=filename)
             browser.close()
     except Exception as e:
         print(f"  [IMG ERROR] Playwright failed to generate HTML card: {e}")
-        # Fallback to a blank image just to keep the bot moving if Chromium crashes
         from PIL import Image
         Image.new('RGB', (1380, 776), color = (11, 18, 32)).save(filename)
+
+def create_injury_image(story, sources, filename):
+    W, H = 1380, 776
+    fpl = fetch_fpl_data()
+    player_el = find_player_in_fpl(story.get("player"), fpl)
+    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
+
+    img = Image.new("RGB", (W, H), (24, 10, 12))
+    draw = ImageDraw.Draw(img, "RGBA")
+    draw.rectangle([W // 2, 0, W, H], fill=(120, 18, 22))
+
+    TEXT_X = 70
+    _draw_wordmark(draw, (TEXT_X, 48))
+
+    lf = get_premium_font(34, "Bold")
+    label = "INJURY UPDATE"
+    draw.rounded_rectangle([TEXT_X, 120, TEXT_X + draw.textlength(label, font=lf) + 36, 168],
+                           radius=10, fill=(210, 30, 34))
+    _draw_text_shadow(draw, (TEXT_X + 18, 126), label, lf, (255, 255, 255), offset=1)
+
+    nf = get_premium_font(88, "Black")
+    _draw_text_shadow(draw, (TEXT_X, 210), player_name.upper(), nf, (255, 255, 255), offset=3)
+
+    rows = []
+    if story.get("diagnosis"): rows.append(("DIAGNOSIS", story["diagnosis"]))
+    stage = story.get("stage", 1)
+    avail = {4: "Available / fit again", 3: "Ruled out", 2: "Doubt", 1: "To be assessed"}.get(stage, "To be assessed")
+    rows.append(("AVAILABILITY", avail))
+    rows.append(("TIMELINE", story.get("expected_return") or "Awaiting update"))
+    if story.get("next_match"): rows.append(("NEXT MATCH", story["next_match"]))
+
+    y = 340
+    lab_f = get_premium_font(26, "Bold")
+    val_f = get_premium_font(34, "Bold")
+    for tag, val in rows[:4]:
+        _draw_text_shadow(draw, (TEXT_X, y), tag, lab_f, (255, 140, 140))
+        _draw_text_shadow(draw, (TEXT_X, y + 32), str(val), val_f, (255, 255, 255))
+        y += 96
+
+    draw.rectangle([0, H - 90, W, H - 12], fill=(20, 10, 12))
+    src = " · ".join(f"@{s}" for s in sources[:2])
+    bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
+    bf = get_premium_font(32, "Bold")
+    draw.text((60, H - 70), bar, font=bf, fill=(220, 190, 190))
+    img.save(filename)
+
+def _create_fallback_card(story, sources, filename):
+    W, H = 1200, 675
+    img = Image.new("RGB", (W, H), (11, 18, 32))
+    draw = ImageDraw.Draw(img, "RGBA")
+    draw.rectangle([0, 0, W, 12], fill=(212, 175, 55))
+    draw.rectangle([0, H - 12, W, H], fill=(212, 175, 55))
+    _draw_wordmark(draw, (60, 48))
+    lf = get_premium_font(40, "Bold")
+    label = "BREAKING NEWS"
+    draw.rounded_rectangle([60, 130, 60 + draw.textlength(label, font=lf) + 44, 192],
+                           radius=12, fill=(210, 30, 34))
+    _draw_text_shadow(draw, (60 + 22, 138), label, lf, (255, 255, 255), offset=2)
+    head = (story.get("headline") or story.get("player") or "Football update").upper()
+    hf = get_premium_font(64, "Black")
+    words, line, y = head.split(), "", 250
+    for w in words:
+        test = (line + " " + w).strip()
+        if draw.textlength(test, font=hf) > W - 120 and line:
+            _draw_text_shadow(draw, (60, y), line, hf, (255, 255, 255), offset=3)
+            y += 78
+            line = w
+        else: line = test
+    if line: _draw_text_shadow(draw, (60, y), line, hf, (255, 255, 255), offset=3)
+    src = " · ".join(f"@{s}" for s in (sources or [])[:2]) or CHANNEL_HANDLE
+    draw.rectangle([0, H - 78, W, H - 12], fill=(20, 24, 33))
+    bf = get_premium_font(30, "Bold")
+    draw.text((60, H - 64), f"Source: {src}  |  {CHANNEL_HANDLE}", font=bf, fill=(190, 200, 220))
+    img.save(filename)
 
 # ── QUEUE FILES ──────────────────────────────────────────────────────────
 def _slug(item):
@@ -1888,55 +1699,102 @@ async def post_item(post_client, item, data):
               f"{item['player']} — {item['event']} (stage {item['stage']})")
         return True
     return False
-  # ── STORY BUILDER (MUST BE ABOVE SCRAPE) ─────────────────────────────────
-def build_story(tweet_text, fpl_data):
-    # Initialize the base dictionary
-    s = {
-        "player": None,
-        "event": None,
-        "from_key": None,
-        "to_key": None,
-        "stage": 1,
-        "collapsed": False,
-        "body": tweet_text
-    }
 
-    # Add your specific player/event regex extraction logic here if you have it
-    # ...
+# ── SCRAPER CORE ─────────────────────────────────────────────────────────
+MAX_TWEET_AGE_DAYS = 3
 
-    if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
-        el = find_player_in_fpl(s["player"], fpl_data)
-        is_free_agent = bool(el and el.get("team", 0) == 0)
-        actual_club = fpl_team_key(el, fpl_data) if el else None
-        
-        if actual_club and not is_free_agent and not s.get("from_key"):
-            s["from_key"] = actual_club
-            s["from_club"] = actual_club.replace("_", " ")
+def _parse_tweet_date(raw):
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    s = str(raw).strip()
+    s_norm = re.sub(r'\b(GMT|UTC)\b', '+0000', s)
+    for fmt in ("%a, %d %b %Y %H:%M:%S %z",
+                "%a %b %d %H:%M:%S %z %Y",
+                "%Y-%m-%dT%H:%M:%S%z",
+                "%Y-%m-%d %H:%M:%S%z"):
+        try:
+            dt = datetime.strptime(s_norm, fmt)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
 
-    try: 
-        s["stage"] = max(1, min(4, int(s.get("stage", 1))))
-    except Exception: 
-        s["stage"] = 1
-        
-    s["collapsed"] = bool(s.get("collapsed"))
-    s["historical"] = detect_historical(tweet_text)
+def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS):
+    dt = _parse_tweet_date(created_at)
+    if dt is None:
+        return False
+    age = datetime.now(timezone.utc) - dt
+    return age.total_seconds() > max_days * 86400
 
-    if looks_like_video_post(tweet_text):
-        s["from_video"] = True
-        s["has_written_claim"] = has_written_claim(tweet_text)
-        if s["stage"] > 2: 
-            s["stage"] = 2
-    else:
-        s["from_video"] = False
-        s["has_written_claim"] = True
+def get_nitter_tweets(username):
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
+    for inst in NITTER_INSTANCES:
+        try:
+            r = requests.get(f"{inst}/{username}/rss", headers=headers, timeout=10)
+            if r.status_code != 200: continue
+            root = ET.fromstring(r.content)
+            out = []
+            for it in root.findall(".//item")[:8]:
+                link, desc = it.find("link"), it.find("description")
+                if link is None: continue
+                tid = link.text.strip().split("/")[-1].split("#")[0]
+                desc_text = desc.text if desc is not None and desc.text else ""
+                text = re.sub(r'<[^>]+>', '', desc_text).strip()
 
-    if len(s["body"].split()) < 4:
-        s["body"] = _summarise(s.get("player"), s.get("event"),
-                               s.get("from_key"), s.get("to_key"),
-                               s.get("stage"), s.get("collapsed"))
-    return s
+                pub = it.find("pubDate")
+                created_at = pub.text.strip() if pub is not None and pub.text else None
 
-# ── SCRAPER ──────────────────────────────────────────────────────────────
+                media_url = None
+                img_match = re.search(r'<img[^>]+src="([^">]+)"', desc_text)
+                if img_match:
+                    media_url = img_match.group(1)
+                    if media_url.startswith("/"):
+                        media_url = f"{inst}{media_url}"
+
+                if tid and text: out.append({"id": tid, "text": text, "media_url": media_url, "created_at": created_at})
+            if out: return out
+        except Exception: continue
+    return []
+
+async def get_twikit_tweets(read_client, username, count=20, retries=2):
+    if read_client is None: return []
+    for attempt in range(retries):
+        try:
+            user = await read_client.get_user_by_screen_name(username)
+            tweets = await read_client.get_user_tweets(user.id, "Tweets", count=count)
+            out = []
+            for t in tweets:
+                txt = getattr(t, "full_text", None) or getattr(t, "text", "") or ""
+                tid = str(getattr(t, "id", "") or "")
+                created_at = getattr(t, "created_at", None) or getattr(t, "created_at_datetime", None)
+
+                media_url = None
+                if hasattr(t, "media") and t.media:
+                    for m in t.media:
+                        m_type = getattr(m, "type", None) or (m.get("type") if isinstance(m, dict) else None)
+                        if m_type == "photo":
+                            media_url = getattr(m, "media_url_https", None) or (m.get("media_url_https") if isinstance(m, dict) else None)
+                            if media_url: break
+
+                if tid and txt: out.append({"id": tid, "text": txt, "media_url": media_url, "created_at": created_at})
+            return out
+        except Exception as e:
+            if attempt + 1 < retries: await asyncio.sleep(3 * (attempt + 1))
+            else: print(f"  [READ] twikit failed for @{username}: {e}")
+    return []
+
+async def fetch_tweets(read_client, username):
+    tweets = await get_twikit_tweets(read_client, username)
+    if tweets: return tweets, "twikit"
+    nit = get_nitter_tweets(username)
+    return nit, ("nitter" if nit else "none")
+
 async def scrape(data, read_client):
     fpl = fetch_fpl_data()
     story_map = {}
@@ -2065,7 +1923,6 @@ async def scrape(data, read_client):
     
     return sorted(ready, key=lambda x: -(1 if x["collapsed"] else x["stage"]))
 
-# ── DRAFT BUILDER (NO POSTING) ───────────────────────────────────────────
 def build_draft(item, data, fpl):
     valid, why = validate_story(item, fpl)
     if not valid:
@@ -2105,8 +1962,6 @@ def build_draft(item, data, fpl):
     print(f"  DRAFT READY [{label}]: {item['player']} — {item['event']} "
           f"(stage {item['stage']}, {len(item['sources'])} src) -> {image_path.name}")
     return item
-
-
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
 AUTOPOST_MODES = {"confirmed", "rumour"}
@@ -2178,7 +2033,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
                 story["event"]), "sources": [username], "mode": "rumour"})
             img_path = dryrun_dir / f"{re.sub(r'[^a-z0-9_]', '', story['key'])}.png"
             try:
-                create_image(story, story["sources"], str(img_path), rumour=(story["mode"] == "rumour"))
+                create_transfer_image(story, story["sources"], str(img_path), collapsed=(story.get("collapsed", False)))
                 if img_path.exists() and img_path.stat().st_size >= 1000: total_img_ok += 1
                 else:
                     total_img_fail += 1
