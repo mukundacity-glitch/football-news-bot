@@ -43,6 +43,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageChops
 from pilmoji import Pilmoji
 
 FONT = ImageFont.load_default()
+font = FONT  # backwards-compat alias for any legacy calls that reference `font`
 
 # ── TWIKIT PATCH (inline) ────────────────────────────────────────────────
 try:
@@ -182,21 +183,29 @@ STAFF_BLOCK_KW = [
 ]
 
 CLUB_ALIASES = {
-    "arsenal": "Arsenal", "aston villa": "Aston_Villa", "villa": "Aston_Villa",
-    "bournemouth": "Bournemouth", "brentford": "Brentford", "brighton": "Brighton",
+    "arsenal": "Arsenal",
+    "aston villa": "Aston_Villa", "villa": "Aston_Villa", "avfc": "Aston_Villa",
+    "bournemouth": "Bournemouth", "afcb": "Bournemouth",
+    "brentford": "Brentford",
+    "brighton": "Brighton", "bhafc": "Brighton",
     "burnley": "Burnley",
-    "chelsea": "Chelsea", "crystal palace": "Crystal_Palace", "palace": "Crystal_Palace",
-    "everton": "Everton", "fulham": "Fulham", "ipswich": "Ipswich", "ipswich town": "Ipswich",
-    "leeds": "Leeds", "leeds united": "Leeds",
-    "leicester": "Leicester", "leicester city": "Leicester", "liverpool": "Liverpool",
-    "manchester city": "Man_City", "man city": "Man_City", "manchester united": "Man_Utd",
-    "man united": "Man_Utd", "man utd": "Man_Utd", "newcastle": "Newcastle",
-    "newcastle united": "Newcastle", "nottingham forest": "Nottm_Forest",
-    "nott'm forest": "Nottm_Forest", "forest": "Nottm_Forest", "southampton": "Southampton",
-    "sunderland": "Sunderland",
-    "tottenham": "Spurs", "spurs": "Spurs", "tottenham hotspur": "Spurs",
-    "west ham": "West_Ham", "west ham united": "West_Ham", "wolves": "Wolves",
-    "wolverhampton": "Wolves",
+    "chelsea": "Chelsea", "cfc": "Chelsea",
+    "crystal palace": "Crystal_Palace", "palace": "Crystal_Palace", "cpfc": "Crystal_Palace",
+    "everton": "Everton", "efc": "Everton",
+    "fulham": "Fulham", "ffc": "Fulham",
+    "ipswich": "Ipswich", "ipswich town": "Ipswich", "itfc": "Ipswich",
+    "leeds": "Leeds", "leeds united": "Leeds", "lufc": "Leeds",
+    "leicester": "Leicester", "leicester city": "Leicester", "lcfc": "Leicester",
+    "liverpool": "Liverpool", "lfc": "Liverpool",
+    "manchester city": "Man_City", "man city": "Man_City", "mcfc": "Man_City", "city": "Man_City",
+    "manchester united": "Man_Utd", "man united": "Man_Utd", "man utd": "Man_Utd", "mufc": "Man_Utd",
+    "newcastle": "Newcastle", "newcastle united": "Newcastle", "nufc": "Newcastle",
+    "nottingham forest": "Nottm_Forest", "nott'm forest": "Nottm_Forest", "forest": "Nottm_Forest", "nffc": "Nottm_Forest",
+    "southampton": "Southampton", "saintsfc": "Southampton",
+    "sunderland": "Sunderland",  # optional coverage
+    "tottenham": "Spurs", "spurs": "Spurs", "tottenham hotspur": "Spurs", "thfc": "Spurs",
+    "west ham": "West_Ham", "west ham united": "West_Ham", "whufc": "West_Ham",
+    "wolves": "Wolves", "wolverhampton": "Wolves"
 }
 _SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
 CLUB_WORD_FRAGMENTS: set = set()
@@ -437,7 +446,7 @@ def _clean_source_text(text: str) -> str:
     t = re.sub(r'\bRT\s+@\w+:?', ' ', t)
     t = re.sub(r'https?://\S+|www\.\S+', ' ', t)
     t = re.sub(r'(?<!\w)@\w+', ' ', t)
-    t = re.sub(r'#\w+', ' ', t)
+    t = re.sub(r'#(?!(cfc|lfc|nufc|thfc|bhafc|whufc|efc|ffc|avfc|lcfc|itfc|nffc|saintsfc|mcfc|mufc|cpfc)\b)\w+', ' ', t)
     t = re.sub(r'["""]', '', t)
     t = re.sub(r'\s+', ' ', t).strip()
     return t
@@ -1254,16 +1263,16 @@ def _fit_contain(im, w, h):
 
 def _draw_text_shadow(draw, xy, text, font, fill, shadow=(0, 0, 0), offset=2):
     x, y = xy
-    draw.text((x + offset, y + offset), text, font=FONT, fill=shadow)
-    draw.text((x, y), text, font=FONT, fill=fill)
+    draw.text((x + offset, y + offset), text, font=font or FONT, fill=shadow)
+    draw.text((x, y), text, font=font or FONT, fill=fill)
 
 def _safe_emoji_text(img, xy, text, font, fill):
     try:
         with Pilmoji(img) as pj:
-            pj.text(xy, text, font=FONT, fill=fill)
+            pj.text(xy, text, font=font or FONT, fill=fill)
     except Exception:
         plain = _EMOJI_RE.sub("", text).strip()
-        ImageDraw.Draw(img).text(xy, plain, font=FONT, fill=fill)
+        ImageDraw.Draw(img).text(xy, plain, font=font or FONT, fill=fill)
 
 def _load_crest(club_key, box=120):
     if not club_key: return None
@@ -1797,7 +1806,7 @@ def get_nitter_tweets(username):
     headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
     for inst in NITTER_INSTANCES:
         try:
-            r = requests.get(f"{inst}/{username}/rss", headers=headers, timeout=10)
+            rr = requests.get(f"{inst}/{username}/rss", headers=headers, timeout=10)
             if r.status_code != 200: continue
             root = ET.fromstring(r.content)
             out = []
