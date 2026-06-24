@@ -21,12 +21,12 @@ import re
 
 # Automatically install Playwright and Chromium if missing on the GitHub runner
 try:
-    from playwright.sync_api import sync_playwright
+    from playwright.async_api import async_playwright
 except ModuleNotFoundError:
     print("  [BOOT] Playwright not found. Installing dependencies automatically...")
     os.system("pip install playwright")
     os.system("playwright install chromium")
-    from playwright.sync_api import sync_playwright
+    from playwright.async_api import async_playwright
 
 import json
 import hashlib
@@ -1290,7 +1290,7 @@ def get_club_color(club_key):
     color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
     return f"rgb({color_tuple[0]}, {color_tuple[1]}, {color_tuple[2]})"
 
-def create_transfer_image(story, sources, filename, collapsed=False):
+async def create_transfer_image(story, sources, filename, collapsed=False):
     """Generates a premium sports broadcast graphic using HTML/CSS and Playwright."""
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
@@ -1345,7 +1345,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 position: relative;
             }}
             
-            /* Cinematic Background Accents */
             .accent-slash {{
                 position: absolute;
                 width: 200%;
@@ -1357,7 +1356,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             }}
             .accent-slash:nth-child(2) {{ transform: rotate(-35deg) translateY(200px); opacity: 0.05; }}
 
-            /* Layout Grid */
             .container {{
                 width: 100%;
                 height: 100%;
@@ -1382,7 +1380,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 justify-content: flex-end;
             }}
 
-            /* Typography & Badges */
             .wordmark {{
                 font-size: 40px;
                 font-weight: 900;
@@ -1426,7 +1423,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             .detail-value.from {{ color: #e31e24; font-weight: 900; text-transform: uppercase; }}
             .detail-value.to {{ color: #54e07c; font-weight: 900; text-transform: uppercase; }}
 
-            /* Glassmorphism Photo Panel */
             .photo-panel {{
                 width: 380px;
                 height: 500px;
@@ -1440,15 +1436,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 box-shadow: 0 20px 50px rgba(0,0,0,0.5);
                 position: relative;
                 overflow: hidden;
-            }}
-            .crest-badge {{
-                position: absolute;
-                top: 16px;
-                right: 16px;
-                width: 64px;
-                height: 64px;
-                z-index: 2;
-                filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5));
             }}
 
             .photo-panel::before {{
@@ -1514,14 +1501,15 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     </html>
     """
 
+    # Use Async Playwright to render the HTML inside the asyncio loop
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
-            page.set_content(html_content)
-            page.wait_for_timeout(500)
-            page.screenshot(path=filename)
-            browser.close()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
+            await page.set_content(html_content)
+            await page.wait_for_timeout(500)
+            await page.screenshot(path=filename)
+            await browser.close()
     except Exception as e:
         print(f"  [IMG ERROR] Playwright failed to generate HTML card: {e}")
         from PIL import Image
@@ -1668,7 +1656,7 @@ async def post_item(post_client, item, data):
             if item.get("event") == "injury":
                 create_injury_image(item, item["sources"], image_path)
             else:
-                create_transfer_image(item, item["sources"], image_path, collapsed=item.get("collapsed", False))
+                await create_transfer_image(item, item["sources"], image_path, collapsed=item.get("collapsed", False))
         except Exception as e:
             print(f"  [IMG] regeneration raised: {e}")
     if not _img_ok():
@@ -1923,7 +1911,7 @@ async def scrape(data, read_client):
     
     return sorted(ready, key=lambda x: -(1 if x["collapsed"] else x["stage"]))
 
-def build_draft(item, data, fpl):
+async def build_draft(item, data, fpl):
     valid, why = validate_story(item, fpl)
     if not valid:
         print(f"  VALIDATION FAILED ({why}) — not drafting: {item.get('player')!r}")
@@ -1946,7 +1934,7 @@ def build_draft(item, data, fpl):
         if item.get("event") == "injury":
             create_injury_image(item, item["sources"], str(image_path))
         else:
-            create_transfer_image(item, item["sources"], str(image_path), collapsed=item.get("collapsed", False))
+            await create_transfer_image(item, item["sources"], str(image_path), collapsed=item.get("collapsed", False))
         if not image_path.exists() or image_path.stat().st_size < 1000:
             raise RuntimeError("image missing or empty")
     except Exception as e:
@@ -2033,7 +2021,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
                 story["event"]), "sources": [username], "mode": "rumour"})
             img_path = dryrun_dir / f"{re.sub(r'[^a-z0-9_]', '', story['key'])}.png"
             try:
-                create_transfer_image(story, story["sources"], str(img_path), collapsed=(story.get("collapsed", False)))
+                await create_transfer_image(story, story["sources"], str(img_path), collapsed=(story.get("collapsed", False)))
                 if img_path.exists() and img_path.stat().st_size >= 1000: total_img_ok += 1
                 else:
                     total_img_fail += 1
@@ -2104,7 +2092,7 @@ async def main(post: bool = True, allow_rumours: bool = False):
 
     drafts = []
     for item in queue:
-        built = build_draft(item, data, fpl)
+        built = await build_draft(item, data, fpl)
         if built is not None:
             drafts.append(built)
     save_data(data)
