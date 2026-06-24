@@ -42,7 +42,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageChops
 from pilmoji import Pilmoji
 
-font = ImageFont.load_default()
+FONT = ImageFont.load_default()
 
 # ── TWIKIT PATCH (inline) ────────────────────────────────────────────────
 try:
@@ -1254,16 +1254,16 @@ def _fit_contain(im, w, h):
 
 def _draw_text_shadow(draw, xy, text, font, fill, shadow=(0, 0, 0), offset=2):
     x, y = xy
-    draw.text((x + offset, y + offset), text, font=font, fill=shadow)
-    draw.text((x, y), text, font=font, fill=fill)
+    draw.text((x + offset, y + offset), text, font=FONT, fill=shadow)
+    draw.text((x, y), text, font=FONT, fill=fill)
 
 def _safe_emoji_text(img, xy, text, font, fill):
     try:
         with Pilmoji(img) as pj:
-            pj.text(xy, text, font=font, fill=fill)
+            pj.text(xy, text, font=FONT, fill=fill)
     except Exception:
         plain = _EMOJI_RE.sub("", text).strip()
-        ImageDraw.Draw(img).text(xy, plain, font=font, fill=fill)
+        ImageDraw.Draw(img).text(xy, plain, font=FONT, fill=fill)
 
 def _load_crest(club_key, box=120):
     if not club_key: return None
@@ -1741,12 +1741,12 @@ async def post_item(post_client, item, data):
     media_id = await post_client.upload_media(image_path, media_type="image/png")
     posted_live = False
     try:
-        await post_client.create_tweet(text=caption, media_ids=[media_id])
-        posted_live = True
+    await post_client.create_tweet(text=caption, media_ids=[media_id])
+    posted_live = True
 except KeyError as ke:
     key = str(ke).strip("'\"")
     if key in _TWIKIT_SUCCESS_PARSE_KEYS:
-        print(f"  [WARN] twikit KeyError({ke}) after create_tweet — tweet is live; recording as posted to prevent duplicate.")
+        print(f"  [WARN] twikit KeyError({ke}) after create_tweet — tweet is live")
         posted_live = True
     else:
         raise
