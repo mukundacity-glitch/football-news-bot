@@ -654,6 +654,7 @@ if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan
         if actual_club and not is_free_agent and not s.get("from_key"):
             s["from_key"] = actual_club
             s["from_club"] = actual_club.replace("_", " ")
+
     try: s["stage"] = max(1, min(4, int(s.get("stage", 1))))
     except Exception: s["stage"] = 1
     s["collapsed"] = bool(s.get("collapsed"))
