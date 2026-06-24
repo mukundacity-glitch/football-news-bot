@@ -448,8 +448,10 @@ def _clean_source_text(text: str) -> str:
     t = text or ""
     t = re.sub(r'\bRT\s+@\w+:?', ' ', t)
     t = re.sub(r'https?://\S+|www\.\S+', ' ', t)
-    t = re.sub(r'(?<!\w)@\w+', ' ', t)
-    t = re.sub(r'#(?!(cfc|lfc|nufc|thfc|bhafc|whufc|efc|ffc|avfc|lcfc|itfc|nffc|saintsfc|mcfc|mufc|cpfc)\b)\w+', ' ', t)
+    
+    # ARCHITECT FIX: Strip only the @ and # characters, preserving the actual club names
+    t = re.sub(r'[@#]', '', t)
+    
     t = re.sub(r'["""]', '', t)
     t = re.sub(r'\s+', ' ', t).strip()
     return t
@@ -1737,7 +1739,8 @@ async def post_item(post_client, item, data):
             if item.get("event") == "injury":
                 create_injury_image(item, item["sources"], image_path)
             else:
-                await create_transfer_image(item, item["sources"], image_path, collapsed=item.get("collapsed", False))
+                # ARCHITECT FIX: Removed invalid 'await'
+                create_transfer_image(item, item["sources"], image_path, collapsed=item.get("collapsed", False))
         except Exception as e:
             print(f"  [IMG] regeneration raised: {e}")
     if not _img_ok():
@@ -2030,7 +2033,9 @@ async def build_draft(item, data, fpl):
         if item.get("event") == "injury":
             create_injury_image(item, item["sources"], str(image_path))
         else:
-            await create_transfer_image(item, item["sources"], str(image_path), collapsed=item.get("collapsed", False))
+            # ARCHITECT FIX: Removed invalid 'await'
+            create_transfer_image(item, item["sources"], str(image_path), collapsed=item.get("collapsed", False))
+        
         if not image_path.exists() or image_path.stat().st_size < 1000:
             raise RuntimeError("image missing or empty")
     except Exception as e:
