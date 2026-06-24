@@ -19,9 +19,17 @@ Pass --draft-only to only build cards into queue/pending/ (no posting), or
 """
 
 from clubs_cache import get_club_data
-from playwright.sync_api import sync_playwright
 import os
 import re
+
+# Automatically install Playwright and Chromium if missing on the GitHub runner
+try:
+    from playwright.sync_api import sync_playwright
+except ModuleNotFoundError:
+    print("  [BOOT] Playwright not found. Installing dependencies automatically...")
+    os.system("pip install playwright")
+    os.system("playwright install chromium")
+    from playwright.sync_api import sync_playwright
 import json
 import hashlib
 import difflib
@@ -1469,7 +1477,6 @@ def _create_fallback_card(story, sources, filename):
     bf = get_premium_font(30, "Bold")
     draw.text((60, H - 64), f"Source: {src}  |  {CHANNEL_HANDLE}", font=bf, fill=(190, 200, 220))
     img.save(filename)
-from playwright.sync_api import sync_playwright
 
 def get_club_color(club_key):
     """Retrieve the exact RGB string for the destination club."""
