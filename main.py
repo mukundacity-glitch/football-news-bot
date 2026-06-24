@@ -570,10 +570,14 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             from_key = clubs[0]
             direction_confident = True
         else:
-            to_key = from_key = None
+            to_key = clubs[0]  # Keep the club instead of throwing it away!
             direction_confident = False
+    elif len(clubs) >= 2 and not from_anchor and not to_anchor:
+        # If multiple clubs are mentioned but no clear 'to' or 'from', keep both!
+        to_key = clubs[0]
+        from_key = clubs[1]
+        direction_confident = False
     else:
-        to_key = clubs[0] if (len(clubs) == 1) else None
         direction_confident = False
 
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
@@ -816,7 +820,7 @@ def should_post(data, key, new_stage, collapsed):
 STRONG_OFFICIAL = ["here we go", "official", "confirmed", "completed", "done deal",
                    "sealed", "unveiled", "joins", "joined", "signs", "signed", "medical"]
 
-def detect_mixed_story(story, raw_text) -> str:
+def detect_mixed_story(story, raw_text, fpl_data=None) -> str:
     text = (raw_text or "")
     tl = text.lower()
     player = (story.get("player") or "").lower()
@@ -857,9 +861,13 @@ def detect_mixed_story(story, raw_text) -> str:
         if any(m in low for m in MANAGER_SURNAMES): continue
         if looks_like_club(low): continue
         name_candidates.add(low)
-    distinct = set()
+    deduped = set()
     for n in sorted(name_candidates, key=len, reverse=True):
-        if not any(n != o and n in o for o in distinct): distinct.add(n)
+        if not any(n != o and n in o for o in deduped): deduped.add(n)
+    if fpl_data is not None:
+        distinct = {n for n in deduped if find_player_in_fpl(n, fpl_data) is not None}
+    else:
+        distinct = deduped
     if len(distinct) >= 2:
         coordinated = bool(re.search(r'\b[A-Z][a-zà-ÿ]+ [A-Z][a-zà-ÿ]+\s+(?:and|&)\s+[A-Z][a-zà-ÿ]+ [A-Z][a-zà-ÿ]+', text))
         if coordinated or len(distinct) >= 3: return "multiple_players_suspected"
@@ -887,7 +895,7 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
     if story.get("confidence", 0) < 0.40: return False, "low_confidence"
     if any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl) for w in STAFF_BLOCK_KW): return False, "staff_or_offpitch"
     if not story.get("player"): return False, "no_player"
-    mixed = detect_mixed_story(story, raw_text)
+    mixed = detect_mixed_story(story, raw_text, fpl_data)
     tiers = [source_tier(s) for s in (sources or [])]
     is_elite = any(t in (1, 2) for t in tiers)
     
@@ -926,7 +934,10 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
             if nm and nm.lower() in PL_CLUB_NAMES:
                 pl_club = True
                 break
-    if pl_player or pl_club: return True, "ok"
+    
+    # Broaden relevance: if ANY known Premier League club variant is in the raw text, keep it!
+    any_pl_club = any(re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl) for alias in CLUB_ALIASES)
+    if pl_player or pl_club or any_pl_club: return True, "ok"
     big_player = is_big_player(story["player"], fpl_data) or is_big_name_player(story["player"])
     big_club = is_big_club_name(story.get("to_club")) or is_big_club_name(story.get("from_club"))
     if big_player or big_club: return True, "ok_big_name"
@@ -983,7 +994,13 @@ def validate_story(story, fpl_data=None):
         fc = (story.get("from_club") or "").strip().lower()
         tc = (story.get("to_club") or "").strip().lower()
         if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
-        if not (tk or story.get("to_club") or fk or story.get("from_club")): return False, "no_clubs"
+        
+        # New "Catch-All": Check if ANY club alias exists anywhere in the tweet body/text
+        tweet_body = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
+        has_any_club = any(re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tweet_body) for alias in CLUB_ALIASES)
+        
+        if not (tk or story.get("to_club") or fk or story.get("from_club") or has_any_club): 
+            return False, "no_clubs"
         leak = (story.get("body", "") + " " + story.get("headline", "")).lower()
         if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak): return False, "event_data_mismatch"
     if ev == "manager" and not (story.get("to_key") or story.get("to_club")): return False, "manager_no_club"
@@ -1290,7 +1307,18 @@ def get_club_color(club_key):
     color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
     return f"rgb({color_tuple[0]}, {color_tuple[1]}, {color_tuple[2]})"
 
-async def create_transfer_image(story, sources, filename, collapsed=False):
+def _render_html_sync(html_content, filename):
+    """Helper function to run Playwright in a separate thread to prevent asyncio crashes."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
+        page.set_content(html_content)
+        page.wait_for_timeout(500)
+        page.screenshot(path=filename)
+        browser.close()
+
+def create_transfer_image(story, sources, filename, collapsed=False):
     """Generates a premium sports broadcast graphic using HTML/CSS and Playwright."""
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
@@ -1314,6 +1342,7 @@ async def create_transfer_image(story, sources, filename, collapsed=False):
     club_color = get_club_color(story.get("to_key") or story.get("from_key"))
     source_text = " · ".join(f"@{s}" for s in sources[:2])
 
+    # Fetch Player Photo
     photo_data_uri = None
     pid = player_el.get("code") if player_el else None
     if pid:
@@ -1323,6 +1352,18 @@ async def create_transfer_image(story, sources, filename, collapsed=False):
         if pp.exists() and pp.stat().st_size >= 500:
             import base64
             photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
+
+    # FIX 3: Fetch the Club Crest Logo as Base64 to inject into the HTML card
+    crest_key = story.get("to_key") or story.get("from_key")
+    crest_data_uri = ""
+    if crest_key:
+        safe_crest = crest_key.replace(" ", "_").replace("'", "")
+        cp = Path(f"logos/{safe_crest}.png")
+        if not cp.exists() and FPL_LOGO_IDS.get(safe_crest):
+            _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS[safe_crest]}.png", cp)
+        if cp.exists() and cp.stat().st_size >= 500:
+            import base64
+            crest_data_uri = "data:image/png;base64," + base64.b64encode(cp.read_bytes()).decode("ascii")
 
     # The HTML/CSS Template
     html_content = f"""
@@ -1380,43 +1421,43 @@ async def create_transfer_image(story, sources, filename, collapsed=False):
                 justify-content: flex-end;
             }}
 
-            .wordmark {{
-                font-size: 40px;
+            .wordmark {
+                font-size: 55px; /* UP from 40px */
                 font-weight: 900;
-                margin-bottom: 30px;
+                margin-bottom: 35px;
                 text-shadow: 0 4px 10px rgba(0,0,0,0.5);
-            }}
-            .wordmark span {{ color: #54e07c; }}
+            }
+            .wordmark span { color: #54e07c; }
 
-            .status-badge {{
+            .status-badge {
                 display: inline-block;
                 background: {badge_color};
                 color: #fff;
-                padding: 10px 20px;
-                font-size: 28px;
+                padding: 18px 36px;
+                font-size: 50px; /* UP from 38px */
                 font-weight: 900;
-                border-radius: 8px;
-                letter-spacing: 2px;
-                margin-bottom: 20px;
+                border-radius: 12px;
+                letter-spacing: 3px;
+                margin-bottom: 30px;
                 text-transform: uppercase;
                 box-shadow: 0 8px 20px rgba(0,0,0,0.4);
-            }}
+            }
 
-            .player-name {{
-                font-size: 90px;
+            .player-name {
+                font-size: 115px; /* UP from 90px */
                 font-weight: 900;
                 line-height: 1.1;
                 text-transform: uppercase;
-                margin-bottom: 40px;
+                margin-bottom: 50px;
                 text-shadow: 0 8px 20px rgba(0,0,0,0.6);
-            }}
+            }
 
-            .details-grid {{
+            .details-grid {
                 display: grid;
                 grid-template-columns: max-content 1fr;
-                gap: 15px 30px;
-                font-size: 30px;
-            }}
+                gap: 28px 50px;
+                font-size: 52px; /* UP from 40px */
+            }
             
             .detail-label {{ color: #96a8c4; font-weight: 700; text-transform: uppercase; }}
             .detail-value {{ font-weight: 900; text-transform: uppercase; }}
@@ -1438,6 +1479,17 @@ async def create_transfer_image(story, sources, filename, collapsed=False):
                 overflow: hidden;
             }}
 
+            /* FIX 3: Add CSS for the Club Logo inside the Photo Panel */
+            .crest-badge {{
+                position: absolute;
+                top: 16px;
+                right: 16px;
+                width: 80px;
+                height: 80px;
+                z-index: 2;
+                filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5));
+            }}
+
             .photo-panel::before {{
                 content: '';
                 position: absolute;
@@ -1447,19 +1499,20 @@ async def create_transfer_image(story, sources, filename, collapsed=False):
                 z-index: 0;
             }}
 
+            /* FIX 4: Increased footer font size */
             .footer {{
                 position: absolute;
                 bottom: 0;
                 left: 0;
                 width: 100%;
-                height: 60px;
+                height: 70px;
                 background: #141821;
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
                 padding: 0 60px;
                 box-sizing: border-box;
-                font-size: 22px;
+                font-size: 26px;
                 font-weight: 700;
                 color: #bec8dc;
                 border-top: 4px solid {club_color};
@@ -1488,6 +1541,8 @@ async def create_transfer_image(story, sources, filename, collapsed=False):
 
             <div class="right-column">
                 <div class="photo-panel">
+                    <!-- FIX 3: Inject the Logo here -->
+                    {f'<img class="crest-badge" src="{crest_data_uri}" />' if crest_data_uri else ''}
                     {f'<img src="{photo_data_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />' if photo_data_uri else '<h1 style="z-index: 1; font-size: 150px; color: rgba(255,255,255,0.1); margin: 0;">V</h1>'}
                 </div>
             </div>
@@ -1501,17 +1556,18 @@ async def create_transfer_image(story, sources, filename, collapsed=False):
     </html>
     """
 
-    # Use Async Playwright to render the HTML inside the asyncio loop
+    # FIX 2: Run Playwright in a background thread to prevent the async crash!
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
-            await page.set_content(html_content)
-            await page.wait_for_timeout(500)
-            await page.screenshot(path=filename)
-            await browser.close()
+        import threading
+        t = threading.Thread(target=_render_html_sync, args=(html_content, filename))
+        t.start()
+        t.join()
+        
+        if not Path(filename).exists() or Path(filename).stat().st_size < 1000:
+            raise RuntimeError("Thread completed but image missing")
+            
     except Exception as e:
-        print(f"  [IMG ERROR] Playwright failed to generate HTML card: {e}")
+        print(f"  [IMG ERROR] Threaded Playwright failed to generate HTML card: {e}")
         from PIL import Image
         Image.new('RGB', (1380, 776), color = (11, 18, 32)).save(filename)
 
