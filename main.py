@@ -137,6 +137,9 @@ NITTER_INSTANCES = [
     "https://nitter.net",
     "https://nitter.privacydev.net",
     "https://nitter.poast.org",
+    "https://nitter.moomoo.me",
+    "https://n.opnxng.com",
+    "https://n.s0.gg",
 ]
 
 # ── SOURCE TIERS ─────────────────────────────────────────────────────────
@@ -1805,17 +1808,26 @@ def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS):
 def get_nitter_tweets(username):
     headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
     for inst in NITTER_INSTANCES:
-        try:
-            rr = requests.get(f"{inst}/{username}/rss", headers=headers, timeout=10)
-            if r.status_code != 200: continue
-            root = ET.fromstring(r.content)
-            out = []
-            for it in root.findall(".//item")[:8]:
-                link, desc = it.find("link"), it.find("description")
-                if link is None: continue
-                tid = link.text.strip().split("/")[-1].split("#")[0]
-                desc_text = desc.text if desc is not None and desc.text else ""
-                text = re.sub(r'<[^>]+>', '', desc_text).strip()
+    try:
+        r = requests.get(f"{inst}/{username}/rss", headers=headers, timeout=10)
+        if r.status_code != 200: 
+            continue
+        root = ET.fromstring(r.content)
+        out = []
+        for it in root.findall(".//item")[:8]:
+            link, desc, pubdate = it.find("link"), it.find("description"), it.find("pubDate")
+            if link is None: 
+                continue
+            tid = link.text.strip().split("/")[-1].split("#")[0]
+            desc_text = desc.text if desc is not None and desc.text else ""
+            text = re.sub(r'\<[^\>]+\>', '', desc_text).strip()
+            created_at = pubdate.text.strip() if pubdate is not None and pubdate.text else None
+            out.append({"id": tid, "text": text, "created_at": created_at})
+        if out:
+            return out
+    except Exception:
+        continue
+return []
 
                 pub = it.find("pubDate")
                 created_at = pub.text.strip() if pub is not None and pub.text else None
@@ -1955,9 +1967,7 @@ async def scrape(data, read_client):
         print(f"  [READ-HEALTH] {accounts_failed}/{accounts_total} accounts returned nothing "
               f"({fail_ratio:.0%}). Low volume may be a READ problem, not a quiet news day.")
     if fail_ratio >= 0.5:
-        print("  [READ-HEALTH] WARNING: more than half of sources failed. "
-              "Check X_AUTH_TOKEN / X_CT0_TOKEN and Nitter availability before "
-              "assuming there is no news.")
+        print("[READ-HEALTH] WARNING: more than half of sources failed. If Twikit is enabled, refresh X_AUTH_TOKEN / X_CT0_TOKEN. Also verify NITTER_INSTANCES are reachable.")
     if (seen + skipped) == 0:
         print("  [WARN] Zero football tweets from ALL journalists. X auth tokens "
               "likely expired — update X_AUTH_TOKEN and X_CT0_TOKEN secrets.")
@@ -2145,9 +2155,21 @@ async def main(post: bool = True, allow_rumours: bool = False):
     init_club_data()
     fpl = fetch_fpl_data()
     data = load_data()
-    if not check_daily_limit(data):
-        print("[BOT] Daily limit reached — nothing will post today.")
-        return
+# Build Twikit client only if tokens are present; otherwise rely on Nitter
+read_client = None
+try:
+    if X_AUTH_TOKEN and X_CT0_TOKEN:
+        read_client = Client("en-US")
+        read_client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
+    else:
+        print("[READ] Twikit disabled — X_AUTH_TOKEN / X_CT0_TOKEN not set; using Nitter only.")
+except Exception:
+    read_client = None
+    print("[READ] Twikit init failed — falling back to Nitter.")
+
+if not check_daily_limit(data):
+    print("[BOT] Daily limit reached — nothing will post today.")
+
 
     read_client = None
     if X_AUTH_TOKEN and X_CT0_TOKEN:
