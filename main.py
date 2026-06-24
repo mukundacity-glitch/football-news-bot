@@ -1741,8 +1741,8 @@ async def post_item(post_client, item, data):
     media_id = await post_client.upload_media(image_path, media_type="image/png")
     posted_live = False
     try:
-    await post_client.create_tweet(text=caption, media_ids=[media_id])
-    posted_live = True
+        await post_client.create_tweet(text=caption, media_ids=[media_id])
+        posted_live = True
 
 except KeyError as ke:
     key = str(ke).strip("'\"")
