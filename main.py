@@ -2047,7 +2047,9 @@ async def build_draft(item, data, fpl):
         if not image_path.exists() or image_path.stat().st_size < 1000:
             raise RuntimeError("image missing or empty")
     except Exception as e:
+        import traceback
         print(f"  [IMG] generation FAILED ({e}) — draft skipped: {item.get('player')!r}")
+        traceback.print_exc()
         return None
         
     body = trim_for_twitter(build_tweet_body(item, item["sources"], mode), limit=278)
