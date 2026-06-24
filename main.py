@@ -344,6 +344,8 @@ def load_data() -> dict:
     d.setdefault("extracted", {})
     d.setdefault("posted_hashes", [])
     d.setdefault("posted_headlines", [])
+    # Clean up any pipe-format "player|event" keys written by a previous buggy build
+    d["posted_hashes"] = [h for h in d["posted_hashes"] if "|" not in h]
     return d
 
 def save_data(data: dict):
@@ -713,26 +715,12 @@ def is_duplicate_content(story: dict, data: dict, threshold: float = 0.90):
         for prev in data.get("posted_headlines", []):
             if difflib.SequenceMatcher(None, head, prev).ratio() >= threshold:
                 return True, f"fuzzy_headline>={threshold:.2f}"
-    # Also block same player + same event type posted recently
-    player_low = _norm_text(story.get("player") or "")
-    ev_fam = _event_family(story.get("event"))
-    if player_low:
-        key_check = f"{player_low}|{ev_fam}"
-        if key_check in data.get("posted_hashes", []):
-            return True, "same_player_event"
     return False, ""
 
 def record_content_dedup(story: dict, data: dict):
     h = content_hash(story)
     if h not in data.setdefault("posted_hashes", []):
         data["posted_hashes"].append(h)
-    # Also record player+event key for same_player_event check
-    player_low = _norm_text(story.get("player") or "")
-    ev_fam = _event_family(story.get("event"))
-    if player_low:
-        key_check = f"{player_low}|{ev_fam}"
-        if key_check not in data["posted_hashes"]:
-            data["posted_hashes"].append(key_check)
     head = _norm_text(story.get("headline") or story.get("player"))
     if head and head not in data.setdefault("posted_headlines", []):
         data["posted_headlines"].append(head)
@@ -1532,7 +1520,24 @@ def create_player_card(story, sources, filename, mode="confirmed"):
         paste_mask = ImageChops.multiply(filled.getchannel("A"), round_mask)
         img.paste(filled, (pbx0, pby0), paste_mask)
     else:
-        _draw_player_silhouette(img, draw, fcx, pby0, PB_W, pb_h)
+        # No player photo — try big club crest filling the photo box.
+        # Priority: destination club, then origin club. Silhouette is absolute last resort.
+        big_crest_key = to_key or from_key
+        big_crest = _load_crest(big_crest_key, box=min(PB_W, pb_h) - 40) if big_crest_key else None
+        if big_crest is not None:
+            # Soft rounded backdrop same as photo panel
+            draw.rounded_rectangle([pbx0, pby0, pbx1, pby1], radius=20, fill=(17, 26, 44, 220))
+            # Subtle concentric glow rings behind crest
+            cx_c = fcx; cy_c = pby0 + pb_h // 2
+            for r in range(min(PB_W, pb_h) // 2, 20, -40):
+                draw.ellipse([cx_c - r, cy_c - r, cx_c + r, cy_c + r],
+                             outline=(255, 255, 255, 18), width=2)
+            # Paste crest centred in the box
+            img.paste(big_crest,
+                      (cx_c - big_crest.width // 2, cy_c - big_crest.height // 2),
+                      big_crest)
+        else:
+            _draw_player_silhouette(img, draw, fcx, pby0, PB_W, pb_h)
 
     LX = 70
     _draw_wordmark(draw, (LX, 54))
