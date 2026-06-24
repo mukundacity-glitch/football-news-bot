@@ -179,17 +179,19 @@ STAFF_BLOCK_KW = [
     "transfer chief", "negotiator",
 ]
 
-# ── CLUB MAPS ────────────────────────────────────────────────────────────
 CLUB_ALIASES = {
     "arsenal": "Arsenal", "aston villa": "Aston_Villa", "villa": "Aston_Villa",
     "bournemouth": "Bournemouth", "brentford": "Brentford", "brighton": "Brighton",
+    "burnley": "Burnley",
     "chelsea": "Chelsea", "crystal palace": "Crystal_Palace", "palace": "Crystal_Palace",
     "everton": "Everton", "fulham": "Fulham", "ipswich": "Ipswich", "ipswich town": "Ipswich",
+    "leeds": "Leeds", "leeds united": "Leeds",
     "leicester": "Leicester", "leicester city": "Leicester", "liverpool": "Liverpool",
     "manchester city": "Man_City", "man city": "Man_City", "manchester united": "Man_Utd",
     "man united": "Man_Utd", "man utd": "Man_Utd", "newcastle": "Newcastle",
     "newcastle united": "Newcastle", "nottingham forest": "Nottm_Forest",
     "nott'm forest": "Nottm_Forest", "forest": "Nottm_Forest", "southampton": "Southampton",
+    "sunderland": "Sunderland",
     "tottenham": "Spurs", "spurs": "Spurs", "tottenham hotspur": "Spurs",
     "west ham": "West_Ham", "west ham united": "West_Ham", "wolves": "Wolves",
     "wolverhampton": "Wolves",
@@ -212,10 +214,10 @@ POSITION_WORDS = {
 }
 FPL_LOGO_IDS = {
     "Arsenal": "3", "Aston_Villa": "7", "Bournemouth": "91", "Brentford": "94",
-    "Brighton": "36", "Chelsea": "8", "Crystal_Palace": "31", "Everton": "11",
-    "Fulham": "54", "Ipswich": "40", "Leicester": "13", "Liverpool": "14",
+    "Brighton": "36", "Burnley": "90", "Chelsea": "8", "Crystal_Palace": "31", "Everton": "11",
+    "Fulham": "54", "Ipswich": "40", "Leeds": "2", "Leicester": "13", "Liverpool": "14",
     "Man_City": "43", "Man_Utd": "1", "Newcastle": "4", "Nottm_Forest": "17",
-    "Southampton": "20", "Spurs": "6", "West_Ham": "21", "Wolves": "39",
+    "Southampton": "20", "Spurs": "6", "Sunderland": "56", "West_Ham": "21", "Wolves": "39",
 }
 CLUB_COLORS = {
     "Arsenal": (239, 1, 7), "Aston_Villa": (103, 14, 54), "Bournemouth": (181, 14, 18),
