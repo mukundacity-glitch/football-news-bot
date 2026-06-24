@@ -1738,31 +1738,27 @@ async def post_item(post_client, item, data):
         print(f"  POST BLOCKED (no image could be produced): {item.get('player')!r}")
         return False
 
-    media_id = await post_client.upload_media(image_path, media_type="image/png")
+        media_id = await post_client.upload_media(image_path, media_type="image/png")
     posted_live = False
+
     try:
         await post_client.create_tweet(text=caption, media_ids=[media_id])
         posted_live = True
 
-except KeyError as ke:
-    key = str(ke).strip("'\"")
-    if key in _TWIKIT_SUCCESS_PARSE_KEYS:
-        print(f"  [WARN] twikit KeyError({ke}) after create_tweet — tweet is live")
-        posted_live = True
-    else:
-        raise
     except KeyError as ke:
         key = str(ke).strip("'\"")
         if key in _TWIKIT_SUCCESS_PARSE_KEYS:
-            print(f"  [WARN] twikit KeyError({ke}) after create_tweet — "
-                  f"tweet is live; recording as posted to prevent duplicate.")
+            print(f"  [WARN] twikit KeyError({ke}) after create_tweet — tweet is live; recording as posted to prevent duplicate.")
             posted_live = True
-        else: raise
+        else:
+            raise
+
     if posted_live:
         record_posted(item, data)
-        print(f"  \u2705 POSTED [{status_label(item, item.get('mode'))}]: "
+        print(f"  ✅ POSTED [{status_label(item, item.get('mode'))}]: "
               f"{item['player']} — {item['event']} (stage {item['stage']})")
         return True
+
     return False
 
 # ── SCRAPER CORE ─────────────────────────────────────────────────────────
