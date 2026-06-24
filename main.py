@@ -2175,7 +2175,6 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
 
 # 1. Unindent main to the absolute left edge (module level)
 async def main(post: bool = True, allow_rumours: bool = False):
-    # 2. Indent the function body by 4 spaces
     mode_str = "LIVE" if post else "DRAFT-ONLY"
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
           f"(classifier=regex, mode={mode_str})")
