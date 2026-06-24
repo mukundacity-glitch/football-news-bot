@@ -560,6 +560,67 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         "from_fallback": True,
     }
 
+    from_key = to_key = None
+    direction_confident = False
+    if from_anchor and to_anchor and from_anchor != to_anchor:
+        from_key, to_key = from_anchor, to_anchor
+        direction_confident = True
+    elif from_anchor and len(clubs) == 2:
+        from_key = from_anchor
+        other = [c for c in clubs if c != from_anchor]
+        to_key = other[0] if other else None
+        direction_confident = bool(to_key)
+    elif to_anchor and len(clubs) == 2:
+        to_key = to_anchor
+        other = [c for c in clubs if c != to_anchor]
+        from_key = other[0] if other else None
+        direction_confident = bool(from_key)
+    elif to_anchor and len(clubs) <= 1:
+        to_key = to_anchor
+        direction_confident = True
+    elif from_anchor and len(clubs) <= 1:
+        from_key = from_anchor
+        direction_confident = True
+    elif len(clubs) == 1:
+        if event in ("stay", "renewal"):
+            from_key = clubs[0]
+            direction_confident = True
+        else:
+            to_key = from_key = None
+            direction_confident = False
+    else:
+        to_key = clubs[0] if (len(clubs) == 1) else None
+        direction_confident = False
+
+    is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
+
+    if event in ("stay", "renewal"):
+        if to_key and not from_key:
+            from_key, to_key = to_key, None
+        to_key = None
+        is_collapsed = False
+
+    if is_collapsed and to_key and not from_anchor:
+        to_key = None
+
+    summary = _summarise(name, event, from_key, to_key, stage, is_collapsed)
+
+    return {
+        "is_football": True, "event": event,
+        "is_real_move": event in ("transfer", "loan", "loan_option"),
+        "player": name,
+        "from_club": (from_key.replace("_", " ") if from_key else None),
+        "to_club": (to_key.replace("_", " ") if to_key else None),
+        "from_key": from_key, "to_key": to_key,
+        "fee": None, "contract": None, "conditional": None, "fpl_impact": None,
+        "diagnosis": None, "expected_return": None, "next_match": None,
+        "stage": stage, "collapsed": is_collapsed,
+        "headline": name if name else "Transfer update",
+        "body": summary, "confidence": confidence,
+        "direction_confident": direction_confident,
+        "from_fallback": True,
+    }
+
 def _summarise(name, event, from_key, to_key, stage, collapsed):
     who = name or "The player"
     fc = from_key.replace("_", " ") if from_key else None
