@@ -1888,8 +1888,7 @@ async def post_item(post_client, item, data):
               f"{item['player']} — {item['event']} (stage {item['stage']})")
         return True
     return False
-
-# ── SCRAPER ──────────────────────────────────────────────────────────────
+  # ── SCRAPER ──────────────────────────────────────────────────────────────
 MAX_TWEET_AGE_DAYS = 3
 
 def _parse_tweet_date(raw):
@@ -2129,6 +2128,8 @@ def build_draft(item, data, fpl):
     print(f"  DRAFT READY [{label}]: {item['player']} — {item['event']} "
           f"(stage {item['stage']}, {len(item['sources'])} src) -> {image_path.name}")
     return item
+
+
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
 AUTOPOST_MODES = {"confirmed", "rumour"}
