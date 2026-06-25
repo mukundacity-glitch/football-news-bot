@@ -1736,12 +1736,35 @@ def _slug(item):
     return re.sub(r'[^a-z0-9_]', '', item["key"]) + f"_s{item['stage']}"
 
 def save_draft(item, body, image_path):
-    draft = dict(item)
-    draft["draft_caption"] = body
-    draft["draft_image"] = str(image_path) if image_path else None
-    draft["drafted_at"] = datetime.now(timezone.utc).isoformat()
-    with open(PENDING_DIR / f"{_slug(item)}.json", "w") as f:
-        json.dump(draft, f, indent=2, default=str)
+    """Save draft with date-based subfolder for easy manual posting"""
+    from datetime import datetime
+    import os
+    import shutil
+    
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    folder = Path(DRAFTS_FOLDER) / today
+    folder.mkdir(parents=True, exist_ok=True)
+    
+    base_name = _slug(item)
+    
+    # Copy image to dated folder
+    final_image = folder / f"{base_name}.png"
+    if Path(image_path).exists():
+        shutil.copy2(image_path, final_image)
+        print(f"✅ Image saved: {final_image}")
+    else:
+        print(f"  [WARN] Image missing for {base_name}")
+    
+    # Save ready-to-copy text file
+    txt_path = folder / f"{base_name}.txt"
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(body)
+        f.write(f"\n\n---\nSources: {', '.join(item.get('sources', []))}")
+        f.write(f"\nGenerated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+        f.write(f"\nSlug: {base_name}")
+    
+    print(f"✅ DRAFT READY → {folder}/{base_name}.png + {base_name}.txt")
+    return str(final_image)
 
 def move_to_posted(item):
     src = PENDING_DIR / f"{_slug(item)}.json"
@@ -2115,13 +2138,19 @@ async def build_draft(item, data, fpl):
     return item
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
-AUTOPOST_MODES = {"confirmed", "rumour"}     # Keep this
+AUTOPOST_MODES = {"confirmed", "rumour"}
 
-MAX_POSTS_PER_RUN = 1                        # Keep as 1 (very important)
+# ================== MANUAL DRAFT MODE ==================
+# Auto-posting is completely disabled for safety
+BOT_PAUSED = True
+ENABLE_AUTOPOST = False
+MAX_POSTS_PER_RUN = 0
+MAX_POSTS_PER_HOUR = 0
 
-MAX_POSTS_PER_HOUR = 1                       # Change this to 1 (safer)
-
-POST_JITTER_RANGE_S = (30, 90)               # Increase jitter a bit
+# Draft saving settings
+SAVE_DRAFTS_TO_DISK = True
+DRAFTS_FOLDER = "fpl_drafts"        # All drafts will be saved here
+# ======================================================
 
 EVENT_PRIORITY = {
     "injury": 0, "suspension": 1, "transfer": 2,
@@ -2228,9 +2257,13 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
 
 # 1. Unindent main to the absolute left edge (module level)
 async def main(post: bool = True, allow_rumours: bool = False):
-    mode_str = "LIVE" if post else "DRAFT-ONLY"
+    # ================== MANUAL DRAFT MODE ==================
+    # Force draft-only mode (no auto posting)
+    post = False
+    mode_str = "DRAFT-ONLY (Manual Save Mode)"
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
           f"(classifier=regex, mode={mode_str})")
+    # ======================================================
     
     init_club_data()
     fpl = fetch_fpl_data()
