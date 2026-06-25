@@ -1363,7 +1363,6 @@ def _render_html_sync(html_content, filename, error_box=None):
             import traceback
             error_box.append(traceback.format_exc())
 
-
 def create_transfer_image(story, sources, filename, collapsed=False):
     """Generates a premium sports broadcast graphic using HTML/CSS and Playwright."""
     fpl = fetch_fpl_data()
@@ -1387,6 +1386,11 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     club_color = get_club_color(story.get("to_key") or story.get("from_key"))
     source_text = " · ".join(f"@{s}" for s in sources[:2])
 
+    # Bot logo
+    logo_data_uri = ""
+    logo_path = Path("Logo.png")
+    if logo_path.exists() and logo_path.stat().st_size >= 500:
+        logo_data_uri = "data:image/png;base64," + base64.b64encode(logo_path.read_bytes()).decode("ascii")
 
     # Tier 1: FPL player photo
     photo_data_uri = None
@@ -1398,7 +1402,7 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         if pp.exists() and pp.stat().st_size >= 500:
             photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
 
-    # Tier 2: tweet's own image if FPL has nothing
+    # Tier 2: tweet image
     if not photo_data_uri and story.get("media_url"):
         murl = story["media_url"]
         mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ".png")
@@ -1407,28 +1411,50 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         if mp.exists() and mp.stat().st_size >= 500:
             photo_data_uri = "data:image/png;base64," + base64.b64encode(mp.read_bytes()).decode("ascii")
 
-    # Bot logo (Logo.png from repo root)
-    logo_data_uri = ""
-    logo_path = Path("Logo.png")
-    if logo_path.exists() and logo_path.stat().st_size >= 500:
-        logo_data_uri = "data:image/png;base64," + base64.b64encode(logo_path.read_bytes()).decode("ascii")
-
-    crest_key = story.get("to_key") or story.get("from_key")
-    crest_data_uri = ""
-    if crest_key:
-        safe_crest = crest_key.replace(" ", "_").replace("'", "")
-        cp = Path(f"logos/{safe_crest}.png")
-        if not cp.exists() and FPL_LOGO_IDS.get(safe_crest):
-            _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS[safe_crest]}.png", cp)
+    # Helper: get crest data URI for a club key
+    def _crest_uri(club_key):
+        if not club_key: return ""
+        safe = club_key.replace(" ", "_").replace("'", "")
+        cp = Path(f"logos/{safe}.png")
+        if not cp.exists() and FPL_LOGO_IDS.get(safe):
+            _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS[safe]}.png", cp)
         if cp.exists() and cp.stat().st_size >= 500:
-          
-            crest_data_uri = "data:image/png;base64," + base64.b64encode(cp.read_bytes()).decode("ascii")
+            return "data:image/png;base64," + base64.b64encode(cp.read_bytes()).decode("ascii")
+        return ""
 
-    crest_img_html = f'<img class="crest-badge" src="{crest_data_uri}" />' if crest_data_uri else ''
+    # Main crest (for photo panel)
+    crest_key = story.get("to_key") or story.get("from_key")
+    main_crest_uri = _crest_uri(crest_key)
+
+    # From/To crests (for details grid)
+    from_crest_uri = _crest_uri(story.get("from_key"))
+    to_crest_uri = _crest_uri(story.get("to_key"))
+
+    # Photo panel content
+    crest_img_html = f'<img class="crest-badge" src="{main_crest_uri}" />' if main_crest_uri else ''
     if photo_data_uri:
         photo_img_html = f'<img src="{photo_data_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />'
     else:
-        photo_img_html = '<h1 style="z-index: 1; font-size: 150px; color: rgba(255,255,255,0.1); margin: 0;">V</h1>'
+        # Fallback: show large club crest centered instead of "V"
+        if main_crest_uri:
+            photo_img_html = f'<img src="{main_crest_uri}" style="width:70%;height:70%;object-fit:contain;position:relative;z-index:1;opacity:0.85;" />'
+        else:
+            photo_img_html = f'<div style="z-index:1;font-size:150px;color:rgba(255,255,255,0.15);font-weight:900;">V</div>'
+
+    # Club name + crest inline HTML helper
+    def _club_with_crest(name, crest_uri):
+        if not name: return "TBD"
+        if crest_uri:
+            return f'{name} <img src="{crest_uri}" style="width:52px;height:52px;object-fit:contain;vertical-align:middle;margin-left:10px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5));" />'
+        return name
+
+    from_html = _club_with_crest(from_club or "TBD", from_crest_uri)
+    to_html = _club_with_crest(to_club or "TBD", to_crest_uri)
+    fee_value = story.get('fee') or "Undisclosed"
+    if fee_value and fee_value != "Undisclosed" and not fee_value.startswith("$"):
+        fee_value = "$" + fee_value
+
+    logo_html = f'<img src="{logo_data_uri}" style="width:64px;height:64px;object-fit:contain;margin-right:16px;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.6));" />' if logo_data_uri else ''
 
     html_content = f"""
     <!DOCTYPE html>
@@ -1466,7 +1492,7 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 height: 100%;
                 display: flex;
                 flex-direction: row;
-                padding: 60px;
+                padding: 40px 60px 80px 60px;
                 box-sizing: border-box;
                 z-index: 1;
             }}
@@ -1475,62 +1501,70 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 flex: 1;
                 display: flex;
                 flex-direction: column;
-                justify-content: center;
+                justify-content: flex-start;
+                padding-top: 30px;
             }}
 
             .right-column {{
-                width: 450px;
+                width: 420px;
                 display: flex;
                 align-items: center;
                 justify-content: flex-end;
             }}
 
             .wordmark {{
-                font-size: 55px;
+                font-size: 52px;
                 font-weight: 900;
-                margin-bottom: 35px;
+                margin-bottom: 24px;
                 text-shadow: 0 4px 10px rgba(0,0,0,0.5);
+                display: flex;
+                align-items: center;
             }}
-            .wordmark span {{ color: #54e07c; }}
+            .wordmark span {{ color: #54e07c; margin-left: 10px; }}
 
             .status-badge {{
                 display: inline-block;
                 background: {badge_color};
                 color: #fff;
-                padding: 18px 36px;
-                font-size: 50px;
+                padding: 14px 30px;
+                font-size: 42px;
                 font-weight: 900;
                 border-radius: 12px;
                 letter-spacing: 3px;
-                margin-bottom: 30px;
+                margin-bottom: 20px;
                 text-transform: uppercase;
                 box-shadow: 0 8px 20px rgba(0,0,0,0.4);
             }}
 
             .player-name {{
-                font-size: 115px;
+                font-size: 88px;
                 font-weight: 900;
-                line-height: 1.1;
+                line-height: 1.0;
                 text-transform: uppercase;
-                margin-bottom: 50px;
+                margin-bottom: 28px;
                 text-shadow: 0 8px 20px rgba(0,0,0,0.6);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                max-width: 820px;
             }}
 
             .details-grid {{
                 display: grid;
-                grid-template-columns: max-content 1fr;
-                gap: 28px 50px;
-                font-size: 52px;
+                grid-template-columns: 130px 1fr;
+                gap: 18px 30px;
+                font-size: 44px;
             }}
 
-            .detail-label {{ color: #96a8c4; font-weight: 700; text-transform: uppercase; }}
-            .detail-value {{ font-weight: 900; text-transform: uppercase; }}
-            .detail-value.from {{ color: #e31e24; font-weight: 900; text-transform: uppercase; }}
-            .detail-value.to {{ color: #54e07c; font-weight: 900; text-transform: uppercase; }}
+            .detail-label {{ font-weight: 700; text-transform: uppercase; }}
+            .detail-label.from {{ color: #f5c518; }}
+            .detail-label.to {{ color: #00d4ff; }}
+            .detail-label.fee {{ color: #e31e24; }}
+            .detail-value {{ font-weight: 900; text-transform: uppercase; color: white; display: flex; align-items: center; }}
 
             .photo-panel {{
-                width: 380px;
-                height: 500px;
+                width: 370px;
+                height: 560px;
                 background: rgba(255, 255, 255, 0.03);
                 backdrop-filter: blur(20px);
                 border: 2px solid rgba(255, 255, 255, 0.1);
@@ -1547,8 +1581,8 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 position: absolute;
                 top: 16px;
                 right: 16px;
-                width: 80px;
-                height: 80px;
+                width: 75px;
+                height: 75px;
                 z-index: 2;
                 filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5));
             }}
@@ -1567,48 +1601,39 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 bottom: 0;
                 left: 0;
                 width: 100%;
-                height: 70px;
+                height: 65px;
                 background: #141821;
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
                 padding: 0 60px;
                 box-sizing: border-box;
-                font-size: 26px;
+                font-size: 24px;
                 font-weight: 700;
                 color: #bec8dc;
                 border-top: 4px solid {club_color};
-            }}
-        .bot-logo {{
-                position: absolute;
-                top: 30px;
-                right: 30px;
-                width: 90px;
-                height: 90px;
-                object-fit: contain;
-                z-index: 10;
-                filter: drop-shadow(0 4px 8px rgba(0,0,0,0.6));
             }}
         </style>
     </head>
     <body>
         <div class="accent-slash"></div>
         <div class="accent-slash"></div>
-        {f'<img class="bot-logo" src="{logo_data_uri}" />' if logo_data_uri else ''}
 
         <div class="container">
             <div class="left-column">
-                <div class="wordmark">FPL <span>VORTEX</span></div>
+                <div class="wordmark">
+                    {logo_html}FPL<span>VORTEX</span>
+                </div>
                 <div><div class="status-badge">{status}</div></div>
                 <div class="player-name">{player_name}</div>
 
                 <div class="details-grid">
-                    <div class="detail-label">From</div>
-                    <div class="detail-value from">{from_club or "TBD"}</div>
-                    <div class="detail-label">To</div>
-                    <div class="detail-value to">{to_club or "TBD"}</div>
-                    <div class="detail-label">Fee</div>
-                    <div class="detail-value" style="color: #54e07c;">{story.get('fee') or "Undisclosed"}</div>
+                    <div class="detail-label from">FROM</div>
+                    <div class="detail-value">{from_html}</div>
+                    <div class="detail-label to">TO</div>
+                    <div class="detail-value">{to_html}</div>
+                    <div class="detail-label fee">FEE</div>
+                    <div class="detail-value" style="color:#54e07c;">{fee_value}</div>
                 </div>
             </div>
 
@@ -1636,14 +1661,13 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         t.join()
         if error_box:
             print("  [THREAD TRACEBACK]\n" + error_box[0])
-
         if not Path(filename).exists() or Path(filename).stat().st_size < 1000:
             raise RuntimeError("Thread completed but image missing")
-
     except Exception as e:
         import traceback; traceback.print_exc()
         from PIL import Image
         Image.new('RGB', (1380, 776), color=(11, 18, 32)).save(filename)
+
 def create_injury_image(story, sources, filename):
     W, H = 1380, 776
     fpl = fetch_fpl_data()
