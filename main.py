@@ -364,6 +364,10 @@ def load_data() -> dict:
     d.setdefault("posted_ids", [])
     d.setdefault("pending", {})
     d.setdefault("extracted", {})
+    if d.get("_logic_ver") != _LOGIC_VER:
+        print(f"[STATE] logic version changed -> clearing {len(d.get('extracted', {}))} cached extractions.")
+        d["extracted"] = {}
+        d["_logic_ver"] = _LOGIC_VER
     d.setdefault("posted_hashes", [])
     d.setdefault("posted_headlines", [])
     d["posted_hashes"] = [h for h in d["posted_hashes"] if "|" not in h]
