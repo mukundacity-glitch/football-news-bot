@@ -1765,6 +1765,11 @@ def save_draft(item, body, image_path):
         f.write(f"\nSlug: {base_name}")
     
     print(f"✅ DRAFT READY → {folder}/{base_name}.png + {base_name}.txt")
+    if GDRIVE_FOLDER_ID:
+        from src.drive_utils import upload_to_drive
+        import asyncio
+        asyncio.get_event_loop().create_task(upload_to_drive(final_image, GDRIVE_FOLDER_ID))
+        asyncio.get_event_loop().create_task(upload_to_drive(txt_path, GDRIVE_FOLDER_ID))
     return str(final_image)
 
 def move_to_posted(item):
