@@ -2086,8 +2086,8 @@ async def build_draft(item, data, fpl):
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
 AUTOPOST_MODES = {"confirmed", "rumour"}
-MAX_POSTS_PER_RUN = 3
-MAX_POSTS_PER_HOUR = 5
+MAX_POSTS_PER_RUN = 1
+MAX_POSTS_PER_HOUR = 2
 POST_JITTER_RANGE_S = (0, 15)
 
 EVENT_PRIORITY = {
