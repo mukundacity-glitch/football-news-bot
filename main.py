@@ -19,14 +19,7 @@ from clubs_cache import get_club_data
 import os
 import re
 
-# Automatically install Playwright and Chromium if missing on the GitHub runner
-try:
-    from playwright.async_api import async_playwright
-except ModuleNotFoundError:
-    print("  [BOOT] Playwright not found. Installing dependencies automatically...")
-    os.system("pip install playwright")
-    os.system("playwright install chromium")
-    from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright
 
 import json
 import hashlib
