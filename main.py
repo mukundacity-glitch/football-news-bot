@@ -468,12 +468,22 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
 
     def _is_bad_name(low: str) -> bool:
         if event != "manager" and (low in MANAGER_SURNAMES or any(m in low for m in MANAGER_SURNAMES)): return True
+        
+        # --- NEW: Explicitly block major European clubs from being read as humans ---
+        EURO_CLUB_BLOCKLIST = {"inter", "milan", "juventus", "roma", "napoli", 
+                               "real madrid", "barcelona", "atletico", "bayern", 
+                               "dortmund", "psg", "ajax", "porto", "benfica", "celtic", "rangers"}
+        if any(c in low for c in EURO_CLUB_BLOCKLIST): return True
+
         words = low.split()
         if any(w in FILLER for w in words): return True
         if any(w in CLUB_WORD_FRAGMENTS for w in words): return True
         if any(w in COUNTRY_NAMES for w in words): return True
         if any(w in NATIONALITY_ADJECTIVES for w in words): return True
         if any(w in ROLE_WORDS for w in words): return True
+        if looks_like_club(low): return True
+        
+        return False
         if looks_like_club(low): return True
         return False
 
@@ -555,9 +565,19 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     if is_collapsed and to_key and not from_anchor:
         to_key = None
 
+    # ─── DYNAMIC FEE EXTRACTOR ───
+    # Looks for £, €, or $ followed by numbers and optionally m, k, million, etc.
+    fee_match = re.search(r'([£€$]\d+(?:\.\d+)?\s*(?:m|k|million|billion))', cleaned, re.IGNORECASE)
+    extracted_fee = fee_match.group(1).upper() if fee_match else None
+
     return {
         "is_football": True, "event": event,
         "is_real_move": event in ("transfer", "loan", "loan_option"),
+        "player": name,
+        "from_club": (from_key.replace("_", " ") if from_key else None),
+        "to_club": (to_key.replace("_", " ") if to_key else None),
+        "from_key": from_key, "to_key": to_key,
+        "fee": extracted_fee, "contract": None, "conditional": None, "fpl_impact": None,
         "player": name,
         "from_club": (from_key.replace("_", " ") if from_key else None),
         "to_club": (to_key.replace("_", " ") if to_key else None),
@@ -1590,6 +1610,18 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             <div>Source: {source_text} | @FPLVortex</div>
             <div style="color: #d4af37;">{story.get('event', 'TRANSFER').upper()}</div>
         </div>
+        
+        <script>
+            document.addEventListener("DOMContentLoaded", function() {
+                const nameEl = document.querySelector('.player-name');
+                let fontSize = 88;
+                // Dynamically shrink the font until it fits inside the 820px bounding box
+                while(nameEl.scrollWidth > nameEl.clientWidth && fontSize > 30) {
+                    fontSize--;
+                    nameEl.style.fontSize = fontSize + 'px';
+                }
+            });
+        </script>
     </body>
     </html>
     """
@@ -1618,6 +1650,44 @@ def create_injury_image(story, sources, filename):
     img = Image.new("RGB", (W, H), (24, 10, 12))
     draw = ImageDraw.Draw(img, "RGBA")
     draw.rectangle([W // 2, 0, W, H], fill=(120, 18, 22))
+  # ─── ASSET FALLBACK CHAIN (FIX FOR BLANK PANELS) ───
+    right_center = (W - (W // 4), H // 2)
+    pid = player_el.get("code") if player_el else None
+    img_pasted = False
+
+    # Tier 1: Try rendering the official FPL Player Photo
+    if pid:
+        pp = Path(f"players/{pid}.png")
+        if not pp.exists():
+            try:
+                _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
+            except Exception:
+                pass
+        if pp.exists() and pp.stat().st_size >= 500:
+            p_img = _safe_open_rgba(pp)
+            if p_img is not None:
+                p_img = _fit_contain(p_img, 400, 500)
+                # Paste player photo with an offset so they sit neatly on the bottom edge
+                img.paste(p_img, (right_center[0] - p_img.width // 2, right_center[1] - p_img.height // 2 + 30), p_img)
+                img_pasted = True
+
+    # Tier 2: If no player photo, dynamically load the Club Crest instead
+    if not img_pasted:
+        club_key = story.get("to_key") or story.get("from_key")
+        if club_key:
+            crest = _load_crest(club_key, box=350)
+            if crest is not None:
+                img.paste(crest, (right_center[0] - crest.width // 2, right_center[1] - crest.height // 2), crest)
+                img_pasted = True
+
+    # Tier 3: Hard fallback to the branded FPL VORTEX logo placeholder
+    if not img_pasted:
+        logo_path = Path("Logo.png")
+        if logo_path.exists():
+            l_img = _safe_open_rgba(logo_path)
+            if l_img is not None:
+                l_img = _fit_contain(l_img, 300, 300)
+                img.paste(l_img, (right_center[0] - l_img.width // 2, right_center[1] - l_img.height // 2), l_img)
 
     TEXT_X = 70
     _draw_wordmark(draw, (TEXT_X, 48))
