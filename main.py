@@ -113,6 +113,10 @@ for d in (PENDING_DIR, POSTED_DIR, Path("logos"), Path("players")):
 CHANNEL_NAME = "FPL VORTEX"
 CHANNEL_HANDLE = "@FPLVortex"
 
+# Bump this string whenever extraction/validation logic changes.
+# It auto-clears the 'extracted' cache so old tweets re-run through new code.
+_LOGIC_VER = "2026-06-25-rawtext"
+
 # ── JOURNALISTS ──────────────────────────────────────────────────────────
 JOURNALISTS = [
     "FabrizioRomano", "David_Ornstein", "_pauljoyce", "sistoney67",
