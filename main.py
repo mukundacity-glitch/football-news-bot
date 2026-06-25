@@ -251,14 +251,6 @@ CLUB_HASHTAG_MAP = {
     "West_Ham": "#WHUFC", "Wolves": "#Wolves",
 }
 
-BUNDESLIGA_BIG_CLUBS = {"bayern", "bayern munich", "borussia dortmund", "dortmund",
-                        "leipzig", "rb leipzig", "leverkusen", "bayer leverkusen"}
-LA_LIGA_BIG_CLUBS = {"real madrid", "barcelona", "atletico madrid", "atletico",
-                     "sevilla", "villarreal", "real sociedad", "athletic bilbao"}
-ELITE_EURO_CLUBS = (BUNDESLIGA_BIG_CLUBS | LA_LIGA_BIG_CLUBS |
-                    {"psg", "paris saint-germain", "juventus", "inter", "ac milan",
-                     "milan", "napoli", "roma", "benfica", "porto", "ajax"})
-
 def resolve_club_key(name: str):
     if not name: return None
     n = name.lower()
@@ -268,16 +260,6 @@ def resolve_club_key(name: str):
     return None
 
 BIG_CLUBS_NON_PL = ELITE_EURO_CLUBS
-
-def is_big_club_name(name: str) -> bool:
-    if not name: return False
-    n = name.lower().strip()
-    return any(n == c or c in n for c in BIG_CLUBS_NON_PL)
-
-def is_bundesliga_or_laliga_club(name: str) -> bool:
-    if not name: return False
-    n = name.lower().strip()
-    return any(n == c or c in n for c in (BUNDESLIGA_BIG_CLUBS | LA_LIGA_BIG_CLUBS))
 
 BIG_NAMES_NON_FPL = {
     "mbappe", "mbappé", "vinicius", "vinícius", "bellingham", "rodrygo",
@@ -526,19 +508,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             if not _is_bad_name(m.lower()):
                 name = m
                 break
-    if not name and fpl_data:
-        for m in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', cleaned):
-            if _is_bad_name(m.lower()): continue
-            if find_player_in_fpl(m, fpl_data):
-                name = m
-                break
-    if not name:
-        for m in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', cleaned):
-            if _is_bad_name(m.lower()): continue
-            if is_big_name_player(m):
-                name = m
-                break
-
+  
     if name and not _is_safe_fallback_name(name):
         name = None
 
@@ -913,6 +883,7 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
     if story.get("confidence", 0) < 0.40: return False, "low_confidence"
     if any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl) for w in STAFF_BLOCK_KW): return False, "staff_or_offpitch"
     if not story.get("player"): return False, "no_player"
+    
     mixed = detect_mixed_story(story, raw_text, fpl_data)
     tiers = [source_tier(s) for s in (sources or [])]
     is_elite = any(t in (1, 2) for t in tiers)
@@ -922,11 +893,13 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
     if story.get("from_video") and not story.get("has_written_claim"): return False, "video_no_written_claim"
     if player_already_at_club(story, fpl_data): return False, "already_at_destination"
 
+    # --- 1. MANAGER GATE: STRICTLY EPL CLUBS ---
     if story["event"] == "manager":
         to_key = story.get("to_key")
         to_club = story.get("to_club")
         pl_club = bool(to_key) or (to_club and to_club.lower() in PL_CLUB_NAMES)
-        if not (pl_club or is_bundesliga_or_laliga_club(to_club)): return False, "manager_no_club"
+        if not pl_club: return False, "manager_no_pl_club"
+        
         appoint_cue = re.search(
             r"\b(appoint|appointed|new (head coach|manager|boss)|"
             r"set to (become|take over|be appointed)|sacked|"
@@ -935,32 +908,18 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
         if not appoint_cue: return False, "manager_no_appointment_cue"
         return True, "ok_manager"
 
-    if story["event"] == "injury":
-        tiers = [source_tier(s) for s in sources]
+    pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
+
+    # --- 2. INJURY/SUSPENSION GATE: STRICTLY FPL PLAYERS ---
+    if story["event"] in ("injury", "suspension"):
         injury_source_ok = any(t in (1, 2) for t in tiers) or \
             any((s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS for s in sources)
         if not injury_source_ok: return False, "injury_source_not_approved"
-        pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
-        bl_club_in_text = any(c in tl for c in (BUNDESLIGA_BIG_CLUBS | LA_LIGA_BIG_CLUBS))
-        if pl_player or bl_club_in_text: return True, "ok_injury"
-        return False, "injury_not_pl_bundesliga_laliga"
+        
+        if pl_player: return True, f"ok_{story['event']}"
+        return False, f"{story['event']}_not_pl_player"
 
-    pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
-
-    # PRIORITY 1 — FPL Player Verification Gate.
-    # Non-elite single sources must produce a player that resolves in the FPL
-    # database (or a known big non-FPL name). Tier 1/2 sources are trusted to
-    # surface real players the FPL API may not list yet. This kills sponsor
-    # names, ad copy, stadium tours and link labels (e.g. "Knox Hydrate",
-    # "Walk On", "Gift Article", "Goodison Park Tours") that satisfy basic
-    # capitalisation but are not players.
-    fpl_verified = pl_player or is_big_name_player(story["player"])
-    if not is_elite and not fpl_verified:
-        return False, "player_not_verified"
-
-    # PRIORITY 3 — relevance requires a STRUCTURAL club relationship, not mere
-    # co-occurrence of a club name anywhere in the text. A real transfer needs
-    # a resolved from/to club (or a club-name field), tied to a verified player.
+    # --- 3. TRANSFER/LOAN GATE: MUST INVOLVE EPL CLUB OR FPL PLAYER ---
     pl_club = bool(story.get("to_key") or story.get("from_key"))
     if not pl_club:
         for nm in (story.get("to_club"), story.get("from_club")):
@@ -968,21 +927,23 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
                 pl_club = True
                 break
 
+    if not (pl_player or pl_club):
+        return False, "not_pl_relevant"
+
+    # Elite sources are trusted to report on players entering the EPL before they hit the API
+    if not is_elite and not pl_player:
+        return False, "player_not_verified_fpl"
+
     if pl_player and (pl_club or story.get("to_club") or story.get("from_club")):
-        return True, "ok"
+        return True, "ok_pl_transfer"
+        
     if pl_player:
-        # Verified FPL player, club direction unresolved this tweet — still
-        # relevant FPL content (e.g. "Salah staying" with no second club).
-        return True, "ok_verified_player"
-    big_player = is_big_player(story["player"], fpl_data) or is_big_name_player(story["player"])
-    big_club = is_big_club_name(story.get("to_club")) or is_big_club_name(story.get("from_club"))
-    if big_player or big_club: return True, "ok_big_name"
-    tiers = [source_tier(s) for s in (sources or [])]
+        return True, "ok_verified_pl_player_staying"
+
     elite_source = any(t == 2 for t in tiers)
-    any_club = bool(story.get("to_club") or story.get("from_club") or
-                    story.get("to_key") or story.get("from_key"))
-    if elite_source and any_club: return True, "ok_elite_source"
-    return False, "not_fpl_relevant"
+    if elite_source and pl_club: return True, "ok_elite_source_incoming_pl_transfer"
+    
+    return False, "not_pl_relevant_catchall"
 
 def classify_post(story, sources):
     if story.get("collapsed"): return "rumour"
