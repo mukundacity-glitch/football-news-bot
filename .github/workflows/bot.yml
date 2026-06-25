@@ -2,7 +2,6 @@ name: FPL Vortex Bot
 
 on:
   schedule:
-    # Every 30 minutes. GitHub cron is UTC and best-effort (can be delayed).
     - cron: "0 */24 * * *"
   workflow_dispatch: {}
 
@@ -16,7 +15,19 @@ concurrency:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+
+    env:
+      BOT_PAUSED: ${{ vars.BOT_PAUSED }}
+
     steps:
+      - name: Pause Check (Kill Switch)
+        run: |
+          echo "BOT_PAUSED=$BOT_PAUSED"
+          if [ "$BOT_PAUSED" = "true" ]; then
+            echo "BOT IS PAUSED - EXITING JOB"
+            exit 0
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -65,4 +76,3 @@ jobs:
           else
             git commit -m "update bot state [skip ci]"
             git push
-          fi
