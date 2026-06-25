@@ -2,8 +2,8 @@ name: FPL Vortex Bot
 
 on:
   schedule:
-    - cron: "0 8 * * *"    # First run at 08:00 UTC
-    - cron: "0 18 * * *"   # Second run at 18:00 UTC
+    - cron: "0 11 * * *"    # 7:00 AM EST - morning scrape
+    - cron: "0 17 * * *"    # 1:00 PM EST - afternoon scrape
   workflow_dispatch: {}
 
 permissions:
