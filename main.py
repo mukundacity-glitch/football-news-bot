@@ -1751,7 +1751,7 @@ def save_draft(item, body, image_path):
         f.write(f"\nSlug: {base_name}")
     
     print(f"✅ DRAFT READY → {folder}/{base_name}.png + {base_name}.txt")
-    return str(final_image), str(txt_path)
+    return str(final_image)
 
 def move_to_posted(item):
     src = PENDING_DIR / f"{_slug(item)}.json"
@@ -2115,11 +2115,7 @@ async def build_draft(item, data, fpl):
         return None
         
     body = trim_for_twitter(build_tweet_body(item, item["sources"], mode), limit=278)
-    image_saved, txt_saved = save_draft(item, body, image_path)
-    if GDRIVE_FOLDER_ID:
-        from src.drive_utils import upload_to_drive
-        await upload_to_drive(Path(image_saved), GDRIVE_FOLDER_ID)
-        await upload_to_drive(Path(txt_saved), GDRIVE_FOLDER_ID)
+    save_draft(item, body, image_path)
     
     item["draft_caption"] = body
     item["draft_image"] = str(image_path)
