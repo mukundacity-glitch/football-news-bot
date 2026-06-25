@@ -732,10 +732,13 @@ def build_story(tweet_text, fpl_data):
         s["from_video"] = False
         s["has_written_claim"] = True
 
+    s["raw_text"] = tweet_text
     if len(s.get("body", "").split()) < 4:
         s["body"] = _summarise(s.get("player"), s.get("event"),
                                s.get("from_key"), s.get("to_key"),
                                s.get("stage"), s.get("collapsed"))
+    else:
+        s["body"] = _clean_source_text(s["body"])
     return s
 
 # ── DEDUP / PROGRESSION ──────────────────────────────────────────────────
@@ -1016,7 +1019,8 @@ def validate_story(story, fpl_data=None):
         if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
         
         # New "Catch-All": Check if ANY club alias exists anywhere in the tweet body/text
-        tweet_body = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
+        tweet_body = (story.get("body", "") + " " + (story.get("headline", "") or "")
+                      + " " + (story.get("raw_text", "") or "")).lower()
         has_any_club = any(
             re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tweet_body)
             for alias in CLUB_ALIASES
