@@ -107,7 +107,8 @@ GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 POSTED_FILE = Path("posted_news.json")
 PENDING_DIR = Path("queue/pending")
 POSTED_DIR = Path("queue/posted")
-for d in (PENDING_DIR, POSTED_DIR, Path("logos"), Path("players")):
+DRAFTS_DIR = Path("fpl_drafts")
+for d in (PENDING_DIR, POSTED_DIR, Path("logos"), Path("players"), DRAFTS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # ── CHANNEL BRANDING ─────────────────────────────────────────────────────
