@@ -1435,9 +1435,10 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     if photo_data_uri:
         photo_img_html = f'<img src="{photo_data_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />'
     else:
-        # Fallback: show large club crest centered instead of "V"
         if main_crest_uri:
             photo_img_html = f'<img src="{main_crest_uri}" style="width:70%;height:70%;object-fit:contain;position:relative;z-index:1;opacity:0.85;" />'
+        elif logo_data_uri:
+            photo_img_html = f'<img src="{logo_data_uri}" style="width:75%;height:75%;object-fit:contain;position:relative;z-index:1;opacity:1.0;filter:drop-shadow(0 0 30px rgba(84,224,124,0.8));" />'
         else:
             photo_img_html = f'<div style="z-index:1;font-size:150px;color:rgba(255,255,255,0.15);font-weight:900;">V</div>'
 
@@ -1747,33 +1748,67 @@ def _slug(item):
     return re.sub(r'[^a-z0-9_]', '', item["key"]) + f"_s{item['stage']}"
 
 def save_draft(item, body, image_path):
-    """Save draft with date-based subfolder for easy manual posting"""
-    from datetime import datetime
-    import os
+    """Save draft with date and club-based subfolder organisation."""
     import shutil
-    
+
+    # ── Determine which folder this story belongs to ──
+    to_key = item.get("to_key") or ""
+    from_key = item.get("from_key") or ""
+    anchor_key = to_key or from_key
+
+    # Event type subfolder
+    ev = item.get("event", "transfer")
+    if ev in ("loan", "loan_option"):
+        event_folder = "Loans"
+    elif ev == "injury":
+        event_folder = "Injuries"
+    elif ev == "manager":
+        event_folder = "Managers"
+    elif ev in ("renewal", "stay"):
+        event_folder = "Contracts"
+    else:
+        event_folder = "Transfers"
+
+    # Club/league folder
+    pl_keys = set(CLUB_ALIASES.values())
+    bundesliga_keys = {"Bayern", "Dortmund", "Leipzig", "Leverkusen"}
+    laliga_keys = {"Real_Madrid", "Barcelona", "Atletico", "Sevilla",
+                   "Villarreal", "Real_Sociedad", "Athletic_Bilbao"}
+    seriea_keys = {"Juventus", "Inter", "AC_Milan", "Napoli", "Roma"}
+
+    if anchor_key in pl_keys:
+        club_folder = anchor_key.replace("_", " ")
+    elif any(k.lower() in anchor_key.lower() for k in bundesliga_keys):
+        club_folder = "Bundesliga"
+    elif any(k.lower() in anchor_key.lower() for k in laliga_keys):
+        club_folder = "LaLiga"
+    elif any(k.lower() in anchor_key.lower() for k in seriea_keys):
+        club_folder = "SeriaA"
+    else:
+        club_folder = "Miscellaneous"
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    folder = Path(DRAFTS_FOLDER) / today
+    folder = Path(DRAFTS_FOLDER) / today / club_folder / event_folder
     folder.mkdir(parents=True, exist_ok=True)
-    
+
     base_name = _slug(item)
-    
-    # Copy image to dated folder
+
+    # Copy image
     final_image = folder / f"{base_name}.png"
     if Path(image_path).exists():
         shutil.copy2(image_path, final_image)
         print(f"✅ Image saved: {final_image}")
     else:
         print(f"  [WARN] Image missing for {base_name}")
-    
-    # Save ready-to-copy text file
+
+    # Save caption text file
     txt_path = folder / f"{base_name}.txt"
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(body)
         f.write(f"\n\n---\nSources: {', '.join(item.get('sources', []))}")
         f.write(f"\nGenerated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
         f.write(f"\nSlug: {base_name}")
-    
+
     print(f"✅ DRAFT READY → {folder}/{base_name}.png + {base_name}.txt")
     return str(final_image)
 
