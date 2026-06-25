@@ -259,27 +259,6 @@ def resolve_club_key(name: str):
             return CLUB_ALIASES[alias]
     return None
 
-BIG_CLUBS_NON_PL = ELITE_EURO_CLUBS
-
-BIG_NAMES_NON_FPL = {
-    "mbappe", "mbappé", "vinicius", "vinícius", "bellingham", "rodrygo",
-    "haaland", "lewandowski", "messi", "neymar", "ronaldo", "modric", "kroos",
-    "benzema", "pedri", "gavi", "yamal", "kane", "musiala", "wirtz", "kvaratskhelia",
-}
-MANAGER_SURNAMES = {
-    "de zerbi", "zerbi", "guardiola", "arteta", "klopp", "slot", "postecoglou",
-    "ten hag", "amorim", "emery", "howe", "maresca", "iraola", "frank",
-    "nuno", "moyes", "dyche", "hurzeler", "glasner", "ancelotti", "xabi alonso",
-    "alonso", "flick", "simeone", "mourinho", "conte", "tuchel", "nagelsmann",
-    "neil", "o'neil", "mcinnes", "wilder", "edwards", "robinson", "silva",
-    "kompany", "lopetegui", "obi",
-}
-
-def is_big_name_player(name: str) -> bool:
-    if not name: return False
-    n = name.lower().strip()
-    return any(part in BIG_NAMES_NON_FPL for part in re.split(r'[\s\-]+', n))
-
 # ── CLUBS_CACHE WIRING ───────────────────────────────────────────────────
 CLUB_NAME_SET = set()
 CLUB_HASHTAGS = {}
