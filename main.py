@@ -507,7 +507,9 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
               "window", "deadline", "fee", "bid", "offer", "loan", "agree", "agreed",
               "talks", "interest", "signed", "signing", "joins", "joined", "move",
               "permanent", "option", "clause", "release", "extension", "premier",
-              "league", "champions", "europa", "conference", "sport", "press"}
+              "league", "champions", "europa", "conference", "sport", "press",
+              "watch", "video", "highlights", "live", "stream", "footage",
+              "scenes", "behind", "relive", "throwback"}
     ROLE_WORDS = set()
     for phrase in STAFF_BLOCK_KW:
         for word in phrase.split():
@@ -1341,7 +1343,7 @@ def _render_html_sync(html_content, filename, error_box=None):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
-            page.set_content(html_content)
+            page.set_content(html_content, wait_until="domcontentloaded")
             page.wait_for_timeout(500)
             page.screenshot(path=filename)
             browser.close()
@@ -1375,14 +1377,32 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     source_text = " · ".join(f"@{s}" for s in sources[:2])
 
     photo_data_uri = None
+    import base64
+
+    # Tier 1: FPL player photo
+    photo_data_uri = None
     pid = player_el.get("code") if player_el else None
     if pid:
         pp = Path(f"players/{pid}.png")
         if not pp.exists():
             _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
         if pp.exists() and pp.stat().st_size >= 500:
-            import base64
             photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
+
+    # Tier 2: tweet's own image if FPL has nothing
+    if not photo_data_uri and story.get("media_url"):
+        murl = story["media_url"]
+        mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ".png")
+        if not mp.exists():
+            _download_asset(murl, mp)
+        if mp.exists() and mp.stat().st_size >= 500:
+            photo_data_uri = "data:image/png;base64," + base64.b64encode(mp.read_bytes()).decode("ascii")
+
+    # Bot logo (Logo.png from repo root)
+    logo_data_uri = ""
+    logo_path = Path("Logo.png")
+    if logo_path.exists() and logo_path.stat().st_size >= 500:
+        logo_data_uri = "data:image/png;base64," + base64.b64encode(logo_path.read_bytes()).decode("ascii")
 
     crest_key = story.get("to_key") or story.get("from_key")
     crest_data_uri = ""
@@ -1550,11 +1570,22 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                 color: #bec8dc;
                 border-top: 4px solid {club_color};
             }}
+        .bot-logo {{
+                position: absolute;
+                top: 30px;
+                right: 30px;
+                width: 90px;
+                height: 90px;
+                object-fit: contain;
+                z-index: 10;
+                filter: drop-shadow(0 4px 8px rgba(0,0,0,0.6));
+            }}
         </style>
     </head>
     <body>
         <div class="accent-slash"></div>
         <div class="accent-slash"></div>
+        {f'<img class="bot-logo" src="{logo_data_uri}" />' if logo_data_uri else ''}
 
         <div class="container">
             <div class="left-column">
