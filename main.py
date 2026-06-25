@@ -15,7 +15,7 @@ What this build does:
     look identical.
 """
 
-from clubs_cache import get_club_data
+
 import os
 import re
 
@@ -305,25 +305,11 @@ PL_CLUB_NAMES = set()
 
 def init_club_data():
     global CLUB_NAME_SET, CLUB_HASHTAGS, PL_CLUB_NAMES
-
-    try:
-        import warnings
-        warnings.filterwarnings("ignore", category=UserWarning)
-
-        d = get_club_data() or {}
-
-    except Exception as e:
-        print(f"[CLUBS] get_club_data failed: {e}")
-        d = {}
-
-    CLUB_HASHTAGS = d.get("club_hashtags", {}) or {}
-    PL_CLUB_NAMES = set(d.get("pl_clubs", []) or []) | set(CLUB_ALIASES.keys())
-
-    CLUB_NAME_SET = set(CLUB_HASHTAGS.keys()) | set((d.get("short_names", {}) or {}).keys())
-    CLUB_NAME_SET |= set(CLUB_ALIASES.keys())
-
+    CLUB_HASHTAGS = CLUB_HASHTAG_MAP.copy()
+    PL_CLUB_NAMES = set(CLUB_ALIASES.keys())
+    CLUB_NAME_SET = set(CLUB_HASHTAGS.keys()) | set(CLUB_ALIASES.keys())
     _build_club_word_fragments()
-
+    print(f"[CLUBS] Loaded {len(PL_CLUB_NAMES)} clubs from CLUB_ALIASES.")
 def _build_club_word_fragments():
     SKIP = {"fc", "the", "de", "af", "sc", "if", "bk", "ac", "as", "vv",
             "rb", "al", "el", "cf", "sk", "fk", "and", "du", "us"}
