@@ -3,7 +3,7 @@ name: FPL Vortex Bot
 on:
   schedule:
     # Every 30 minutes. GitHub cron is UTC and best-effort (can be delayed).
-    - cron: "0 */2 * * *"
+    - cron: "0 */24 * * *"
   workflow_dispatch: {}
 
 permissions:
