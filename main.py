@@ -959,16 +959,34 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None):
         return False, "injury_not_pl_bundesliga_laliga"
 
     pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
+
+    # PRIORITY 1 — FPL Player Verification Gate.
+    # Non-elite single sources must produce a player that resolves in the FPL
+    # database (or a known big non-FPL name). Tier 1/2 sources are trusted to
+    # surface real players the FPL API may not list yet. This kills sponsor
+    # names, ad copy, stadium tours and link labels (e.g. "Knox Hydrate",
+    # "Walk On", "Gift Article", "Goodison Park Tours") that satisfy basic
+    # capitalisation but are not players.
+    fpl_verified = pl_player or is_big_name_player(story["player"])
+    if not is_elite and not fpl_verified:
+        return False, "player_not_verified"
+
+    # PRIORITY 3 — relevance requires a STRUCTURAL club relationship, not mere
+    # co-occurrence of a club name anywhere in the text. A real transfer needs
+    # a resolved from/to club (or a club-name field), tied to a verified player.
     pl_club = bool(story.get("to_key") or story.get("from_key"))
     if not pl_club:
         for nm in (story.get("to_club"), story.get("from_club")):
             if nm and nm.lower() in PL_CLUB_NAMES:
                 pl_club = True
                 break
-    
-    # Broaden relevance: if ANY known Premier League club variant is in the raw text, keep it!
-    any_pl_club = any(re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl) for alias in CLUB_ALIASES)
-    if pl_player or pl_club or any_pl_club: return True, "ok"
+
+    if pl_player and (pl_club or story.get("to_club") or story.get("from_club")):
+        return True, "ok"
+    if pl_player:
+        # Verified FPL player, club direction unresolved this tweet — still
+        # relevant FPL content (e.g. "Salah staying" with no second club).
+        return True, "ok_verified_player"
     big_player = is_big_player(story["player"], fpl_data) or is_big_name_player(story["player"])
     big_club = is_big_club_name(story.get("to_club")) or is_big_club_name(story.get("from_club"))
     if big_player or big_club: return True, "ok_big_name"
@@ -2290,12 +2308,18 @@ async def main(post: bool = True, allow_rumours: bool = False):
 
     remaining_today = data["daily"]["limit"] - data["daily"]["count"]
     remaining_hour = MAX_POSTS_PER_HOUR - posted_last_hour
-    batch = postable[:max(0, min(MAX_POSTS_PER_RUN, remaining_today, remaining_hour))]
-    print(f"[BOT] Posting {len(batch)} item(s) (run cap {MAX_POSTS_PER_RUN}, "
-          f"{remaining_today} left today, {remaining_hour} left this hour).")
+    # PRIORITY 2 — success cap, not attempt cap. We walk the FULL ranked list
+    # and stop only after target successful posts or when candidates run out.
+    # A duplicate (post_item -> False) is skipped, not run-ending.
+    target = max(0, min(MAX_POSTS_PER_RUN, remaining_today, remaining_hour))
+    print(f"[BOT] Up to {target} post(s) this run from {len(postable)} ranked "
+          f"candidate(s) (run cap {MAX_POSTS_PER_RUN}, {remaining_today} left "
+          f"today, {remaining_hour} left this hour).")
 
     posted = 0
-    for i, item in enumerate(batch):
+    for i, item in enumerate(postable):
+        if posted >= target:
+            break
         if not check_daily_limit(data):
             print("[BOT] Hit daily limit mid-batch — stopping.")
             break
@@ -2307,6 +2331,11 @@ async def main(post: bool = True, allow_rumours: bool = False):
         try:
             if await post_item(post_client, item, data):
                 posted += 1
+            else:
+                # Blocked as duplicate/invalid — advance to next candidate
+                # instead of ending the run at zero.
+                print(f"  [SKIP] {item.get('key')} not posted — trying next ranked candidate.")
+                continue
         except Exception as e:
             if item.get("id") and item["id"] in data["posted_ids"]:
                 print(f"  [ERROR] {item['key']}: {e} — already recorded, NOT retrying")
