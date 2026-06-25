@@ -2115,10 +2115,13 @@ async def build_draft(item, data, fpl):
     return item
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
-AUTOPOST_MODES = {"confirmed", "rumour"}
-MAX_POSTS_PER_RUN = 1
-MAX_POSTS_PER_HOUR = 2
-POST_JITTER_RANGE_S = (0, 15)
+AUTOPOST_MODES = {"confirmed", "rumour"}     # Keep this
+
+MAX_POSTS_PER_RUN = 1                        # Keep as 1 (very important)
+
+MAX_POSTS_PER_HOUR = 1                       # Change this to 1 (safer)
+
+POST_JITTER_RANGE_S = (30, 90)               # Increase jitter a bit
 
 EVENT_PRIORITY = {
     "injury": 0, "suspension": 1, "transfer": 2,
