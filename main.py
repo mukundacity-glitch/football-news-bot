@@ -101,6 +101,7 @@ X_CT0_TOKEN = (os.getenv("X_CT0_TOKEN") or "").strip()
 X_POST_AUTH_TOKEN = (os.getenv("X_POST_AUTH_TOKEN") or "").strip()
 X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or "").strip()
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
+GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 
 # ── PATHS ────────────────────────────────────────────────────────────────
 POSTED_FILE = Path("posted_news.json")
