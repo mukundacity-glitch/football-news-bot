@@ -30,6 +30,7 @@ except ModuleNotFoundError:
 
 import json
 import hashlib
+import base64
 import difflib
 import random
 import argparse
@@ -1410,7 +1411,7 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         if not cp.exists() and FPL_LOGO_IDS.get(safe_crest):
             _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS[safe_crest]}.png", cp)
         if cp.exists() and cp.stat().st_size >= 500:
-            import base64
+          
             crest_data_uri = "data:image/png;base64," + base64.b64encode(cp.read_bytes()).decode("ascii")
 
     crest_img_html = f'<img class="crest-badge" src="{crest_data_uri}" />' if crest_data_uri else ''
