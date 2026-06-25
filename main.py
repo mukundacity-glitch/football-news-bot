@@ -507,52 +507,38 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             k = CLUB_ALIASES[alias]
             if k not in clubs: clubs.append(k)
 
-    def _alias_after(keyword):
-        for alias in _SORTED_ALIASES:
-            if re.search(r'\b' + keyword + r'\s+(?:the\s+)?' + re.escape(alias) + r'\b', tl):
-                return CLUB_ALIASES[alias]
-        return None
+    # ─── STRICT DIRECTION LOGIC (FPL GROUND TRUTH) ───
+    
+    # 1. Check if the player actually exists in the official FPL database
+    fpl_player_el = find_player_in_fpl(name, fpl_data) if name and fpl_data else None
+    actual_current_club_key = fpl_team_key(fpl_player_el, fpl_data) if fpl_player_el else None
 
-    from_anchor = _alias_after("from") or _alias_after("leaves") or _alias_after("leaving")
-    to_anchor = (_alias_after("to") or _alias_after("joins") or _alias_after("join")
-                 or _alias_after("sign for") or _alias_after("signs for") or _alias_after("moves to")
-                 or _alias_after("set to join") or _alias_after("close to joining"))
-
-    from_key = to_key = None
+    from_key = None
+    to_key = None
     direction_confident = False
-    if from_anchor and to_anchor and from_anchor != to_anchor:
-        from_key, to_key = from_anchor, to_anchor
-        direction_confident = True
-    elif from_anchor and len(clubs) == 2:
-        from_key = from_anchor
-        other = [c for c in clubs if c != from_anchor]
-        to_key = other[0] if other else None
-        direction_confident = bool(to_key)
-    elif to_anchor and len(clubs) == 2:
-        to_key = to_anchor
-        other = [c for c in clubs if c != to_anchor]
-        from_key = other[0] if other else None
-        direction_confident = bool(from_key)
-    elif to_anchor and len(clubs) <= 1:
-        to_key = to_anchor
-        direction_confident = True
-    elif from_anchor and len(clubs) <= 1:
-        from_key = from_anchor
-        direction_confident = True
-    elif len(clubs) == 1:
-        if event in ("stay", "renewal"):
-            from_key = clubs[0]
+    from_anchor = None # Prevents variable errors on collapsed deal checks
+
+    if actual_current_club_key:
+        # RULE 1: If player is in FPL, their current club is an undeniable fact.
+        from_key = actual_current_club_key
+        
+        # Any *other* club mentioned in the tweet is the destination.
+        other_clubs = [c for c in clubs if c != actual_current_club_key]
+        if other_clubs:
+            to_key = other_clubs[0]
             direction_confident = True
         else:
-            to_key = clubs[0]  # Keep the club instead of throwing it away!
-            direction_confident = False
-    elif len(clubs) >= 2 and not from_anchor and not to_anchor:
-        # If multiple clubs are mentioned but no clear 'to' or 'from', keep both!
-        to_key = clubs[0]
-        from_key = clubs[1]
-        direction_confident = False
+            to_key = None
+            direction_confident = event in ("stay", "renewal", "injury", "suspension")
+
     else:
-        direction_confident = False
+        # RULE 2: Player is NOT in FPL (Incoming transfer from abroad/lower leagues)
+        if clubs:
+            # Default to the first club mentioned if we can't safely deduce direction
+            to_key = clubs[0] 
+            if len(clubs) > 1:
+                from_key = clubs[1]
+            direction_confident = False
 
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
 
@@ -1650,12 +1636,13 @@ def create_injury_image(story, sources, filename):
     img = Image.new("RGB", (W, H), (24, 10, 12))
     draw = ImageDraw.Draw(img, "RGBA")
     draw.rectangle([W // 2, 0, W, H], fill=(120, 18, 22))
-  # ─── ASSET FALLBACK CHAIN (FIX FOR BLANK PANELS) ───
+  # ─── ASSET FALLBACK CHAIN ───
+    import hashlib
     right_center = (W - (W // 4), H // 2)
     pid = player_el.get("code") if player_el else None
     img_pasted = False
 
-    # Tier 1: Try rendering the official FPL Player Photo
+    # Tier 1: Try official FPL Player Photo
     if pid:
         pp = Path(f"players/{pid}.png")
         if not pp.exists():
@@ -1667,9 +1654,33 @@ def create_injury_image(story, sources, filename):
             p_img = _safe_open_rgba(pp)
             if p_img is not None:
                 p_img = _fit_contain(p_img, 400, 500)
-                # Paste player photo with an offset so they sit neatly on the bottom edge
                 img.paste(p_img, (right_center[0] - p_img.width // 2, right_center[1] - p_img.height // 2 + 30), p_img)
                 img_pasted = True
+
+    # Tier 2: Try Tweet Image (media_url) from the journalist
+    if not img_pasted and story.get("media_url"):
+        murl = story["media_url"]
+        mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ".png")
+        if not mp.exists():
+            try:
+                _download_asset(murl, mp)
+            except Exception:
+                pass
+        if mp.exists() and mp.stat().st_size >= 500:
+            t_img = _safe_open_rgba(mp)
+            if t_img is not None:
+                t_img = _fit_contain(t_img, 400, 500)
+                img.paste(t_img, (right_center[0] - t_img.width // 2, right_center[1] - t_img.height // 2 + 30), t_img)
+                img_pasted = True
+
+    # Tier 3: Hard fallback to FPL VORTEX logo
+    if not img_pasted:
+        logo_path = Path("Logo.png")
+        if logo_path.exists():
+            l_img = _safe_open_rgba(logo_path)
+            if l_img is not None:
+                l_img = _fit_contain(l_img, 300, 300)
+                img.paste(l_img, (right_center[0] - l_img.width // 2, right_center[1] - l_img.height // 2), l_img)
 
     # Tier 2: If no player photo, dynamically load the Club Crest instead
     if not img_pasted:
