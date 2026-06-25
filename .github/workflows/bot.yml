@@ -2,7 +2,8 @@ name: FPL Vortex Bot
 
 on:
   schedule:
-    - cron: "0 12 * * *"     # Once per day at 12:00 UTC
+    - cron: "0 8 * * *"    # First run at 08:00 UTC
+    - cron: "0 18 * * *"   # Second run at 18:00 UTC
   workflow_dispatch: {}
 
 permissions:
@@ -10,7 +11,7 @@ permissions:
 
 concurrency:
   group: fpl-vortex-bot
-  cancel-in-progress: false   # Keep this as false
+  cancel-in-progress: false
 jobs:
   run-bot:
     runs-on: ubuntu-latest
