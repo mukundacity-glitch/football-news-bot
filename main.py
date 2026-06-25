@@ -1599,16 +1599,17 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         </div>
         
         <script>
-            document.addEventListener("DOMContentLoaded", function() {
-                const nameEl = document.querySelector('.player-name');
-                let fontSize = 88;
-                // Dynamically shrink the font until it fits inside the 820px bounding box
-                while(nameEl.scrollWidth > nameEl.clientWidth && fontSize > 30) {
-                    fontSize--;
-                    nameEl.style.fontSize = fontSize + 'px';
-                }
-            });
-        </script>
+    document.addEventListener("DOMContentLoaded", function() {{
+        const nameEl = document.querySelector('.player-name');
+        let fontSize = 88;
+
+        // Dynamically shrink the font until it fits inside the 820px bounding box
+        while(nameEl.scrollWidth > nameEl.clientWidth && fontSize > 30) {{
+            fontSize--;
+            nameEl.style.fontSize = fontSize + 'px';
+        }}
+    }});
+</script>
     </body>
     </html>
     """
