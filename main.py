@@ -1376,8 +1376,6 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     club_color = get_club_color(story.get("to_key") or story.get("from_key"))
     source_text = " · ".join(f"@{s}" for s in sources[:2])
 
-    photo_data_uri = None
-    import base64
 
     # Tier 1: FPL player photo
     photo_data_uri = None
