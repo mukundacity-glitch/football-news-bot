@@ -252,13 +252,17 @@ CLUB_HASHTAG_MAP = {
     "West_Ham": "#WHUFC", "Wolves": "#Wolves",
 }
 
-def resolve_club_key(name: str):
-    if not name: return None
-    n = name.lower()
-    for alias in _SORTED_ALIASES:
-        if re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', n):
-            return CLUB_ALIASES[alias]
-    return None
+MANAGER_SURNAMES = {
+    "de zerbi", "zerbi", "guardiola", "arteta", "klopp", "slot", "postecoglou",
+    "ten hag", "amorim", "emery", "howe", "maresca", "iraola", "frank",
+    "nuno", "moyes", "dyche", "hurzeler", "glasner", "ancelotti", "xabi alonso",
+    "alonso", "flick", "simeone", "mourinho", "conte", "tuchel", "nagelsmann",
+    "neil", "o'neil", "mcinnes", "wilder", "edwards", "robinson", "silva",
+    "kompany", "lopetegui", "obi",
+}
+
+def is_big_name_player(name: str) -> bool:
+    return False
 
 # ── CLUBS_CACHE WIRING ───────────────────────────────────────────────────
 CLUB_NAME_SET = set()
