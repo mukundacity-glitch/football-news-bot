@@ -722,57 +722,36 @@ def trim_for_twitter(body: str, limit: int = 278) -> str:
 
 from src.renderer import create_transfer_image, create_injury_image, _create_fallback_card
 
-# ── QUEUE FILES ──────────────────────────────────────────────────────────
-def _slug(item):
+# ── QUEUE ARCHIVE MANAGEMENT ─────────────────────────────────────────────
+
+def _slug(item: dict) -> str:
     return re.sub(r'[^a-z0-9_]', '', item["key"]) + f"_s{item['stage']}"
 
-def save_draft(item, body, image_path):
-    """Save draft with date and club-based subfolder organisation."""
+def save_draft(item: dict, body: str, image_path: str) -> str:
+    # Safely creates and organizes drafts folder path hierarchies
     import shutil
-
-    # ── Determine which folder this story belongs to ──
     to_key = item.get("to_key") or ""
     from_key = item.get("from_key") or ""
     anchor_key = to_key or from_key
-
-    # Event type subfolder
     ev = item.get("event", "transfer")
-    if ev in ("loan", "loan_option"):
-        event_folder = "Loans"
-    elif ev == "injury":
-        event_folder = "Injuries"
-    elif ev == "manager":
-        event_folder = "Managers"
-    elif ev in ("renewal", "stay"):
-        event_folder = "Contracts"
-    else:
-        event_folder = "Transfers"
+    
+    if ev in ("loan", "loan_option"): event_folder = "Loans"
+    elif ev == "injury": event_folder = "Injuries"
+    elif ev == "manager": event_folder = "Managers"
+    elif ev in ("renewal", "stay"): event_folder = "Contracts"
+    else: event_folder = "Transfers"
 
-    # Club/league folder
-    pl_keys = set(CLUB_ALIASES.values())
-    bundesliga_keys = {"Bayern", "Dortmund", "Leipzig", "Leverkusen"}
-    laliga_keys = {"Real_Madrid", "Barcelona", "Atletico", "Sevilla",
-                   "Villarreal", "Real_Sociedad", "Athletic_Bilbao"}
-    seriea_keys = {"Juventus", "Inter", "AC_Milan", "Napoli", "Roma"}
-
-    if anchor_key in pl_keys:
-        club_folder = anchor_key.replace("_", " ")
-    elif any(k.lower() in anchor_key.lower() for k in bundesliga_keys):
-        club_folder = "Bundesliga"
-    elif any(k.lower() in anchor_key.lower() for k in laliga_keys):
-        club_folder = "LaLiga"
-    elif any(k.lower() in anchor_key.lower() for k in seriea_keys):
-        club_folder = "SeriaA"
-    else:
-        club_folder = "Miscellaneous"
+    if anchor_key in set(CLUB_ALIASES.values()): club_folder = anchor_key.replace("_", " ")
+    elif any(k.lower() in anchor_key.lower() for k in {"Bayern", "Dortmund", "Leipzig", "Leverkusen"}): club_folder = "Bundesliga"
+    elif any(k.lower() in anchor_key.lower() for k in {"Real_Madrid", "Barcelona", "Atletico"}): club_folder = "LaLiga"
+    elif any(k.lower() in anchor_key.lower() for k in {"Juventus", "Inter", "AC_Milan"}): club_folder = "SeriaA"
+    else: club_folder = "Miscellaneous"
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    folder = Path(DRAFTS_FOLDER) / today / club_folder / event_folder
+    folder = Path("fpl_drafts") / today / club_folder / event_folder
     folder.mkdir(parents=True, exist_ok=True)
-
     base_name = _slug(item)
 
-    # Copy image
     final_image = folder / f"{base_name}.png"
     if Path(image_path).exists():
         shutil.copy2(image_path, final_image)
@@ -780,7 +759,6 @@ def save_draft(item, body, image_path):
     else:
         print(f"  [WARN] Image missing for {base_name}")
 
-    # Save caption text file
     txt_path = folder / f"{base_name}.txt"
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(body)
@@ -788,18 +766,18 @@ def save_draft(item, body, image_path):
         f.write(f"\nGenerated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
         f.write(f"\nSlug: {base_name}")
 
-    print(f"✅ DRAFT READY → {folder}/{base_name}.png + {base_name}.txt")
+    print(f"✅ DRAFT READY ➔ {folder}/{base_name}.png")
     return str(final_image)
 
-def move_to_posted(item):
+def move_to_posted(item: dict):
     src = PENDING_DIR / f"{_slug(item)}.json"
     dst = POSTED_DIR / f"{_slug(item)}.json"
     try:
         if src.exists(): src.rename(dst)
-        else:
-            with open(dst, "w") as f: json.dump(item, f, indent=2, default=str)
+        else: json.dump(item, open(dst, "w", encoding="utf-8"), indent=2, default=str)
     except Exception as e:
-        print(f"  [QUEUE] could not archive draft: {e}")
+        print(f"  [QUEUE] Could not archive tracking payload json file: {e}")
+
 
 def record_posted(item, data):
     if item.get("id") and item["id"] not in data["posted_ids"]:
