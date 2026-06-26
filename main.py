@@ -33,21 +33,15 @@ font = FONT  # backwards-compat alias for any legacy calls that reference `font`
 
 # ── TWIKIT PATCH (inline) ────────────────────────────────────────────────
 try:
-    _tx_mod = __import__(
-        "twikit.x_client_transaction.transaction", fromlist=["ClientTransaction"]
-    )
+    _tx_mod = __import__("twikit.x_client_transaction.transaction", fromlist=["ClientTransaction"])
 except Exception as e:
     _tx_mod = None
     print(f"[PATCH] twikit transaction module not found, skipping patch: {e}")
 
 if _tx_mod is not None:
-    _tx_mod.ON_DEMAND_FILE_REGEX = re.compile(
-        r""",(\d+):["']ondemand\.s["']""", flags=(re.VERBOSE | re.MULTILINE)
-    )
+    _tx_mod.ON_DEMAND_FILE_REGEX = re.compile(r',(\d+):["\']ondemand\.s["\']', flags=(re.VERBOSE | re.MULTILINE))
     _tx_mod.ON_DEMAND_HASH_PATTERN = r',{}:"([0-9a-f]+)"'
-    _tx_mod.INDICES_REGEX = re.compile(
-        r"""(\(\w{1,2}\[(\d{1,2})\],\s*16\))+""", flags=(re.VERBOSE | re.MULTILINE)
-    )
+    _tx_mod.INDICES_REGEX = re.compile(r'(\(\w{1,2}\[(\d{1,2})\],\s*16\))+', flags=(re.VERBOSE | re.MULTILINE))
 
     async def _patched_get_indices(self, home_page_response, session, headers):
         key_byte_indices = []
@@ -57,22 +51,13 @@ if _tx_mod is not None:
         on_demand_file = _tx_mod.ON_DEMAND_FILE_REGEX.search(response_str)
         if on_demand_file:
             on_demand_file_index = on_demand_file.group(1)
-            hash_regex = re.compile(
-                _tx_mod.ON_DEMAND_HASH_PATTERN.format(on_demand_file_index)
-            )
+            hash_regex = re.compile(_tx_mod.ON_DEMAND_HASH_PATTERN.format(on_demand_file_index))
             hash_match = hash_regex.search(response_str)
             if hash_match:
                 filename = hash_match.group(1)
-                on_demand_file_url = (
-                    "https://abs.twimg.com/responsive-web/client-web/"
-                    f"ondemand.s.{filename}a.js"
-                )
-                on_demand_file_response = await session.request(
-                    method="GET", url=on_demand_file_url, headers=headers
-                )
-                key_byte_indices_match = _tx_mod.INDICES_REGEX.finditer(
-                    str(on_demand_file_response.text)
-                )
+                on_demand_file_url = f"https://abs.twimg.com/responsive-web/client-web/ondemand.s.{filename}a.js"
+                on_demand_file_response = await session.request(method="GET", url=on_demand_file_url, headers=headers)
+                key_byte_indices_match = _tx_mod.INDICES_REGEX.finditer(str(on_demand_file_response.text))
                 for item in key_byte_indices_match:
                     key_byte_indices.append(item.group(2))
 
