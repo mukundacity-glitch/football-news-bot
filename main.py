@@ -25,6 +25,9 @@ from pilmoji import Pilmoji
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key, is_big_player
 from src.renderer import create_transfer_image, create_injury_image, _create_fallback_card
 
+# Connected to Regex Parser & Safety Engine
+from src.parser import extract_story_fallback, detect_historical, passes_safety_gate, _clean_source_text
+
 FONT = ImageFont.load_default()
 font = FONT  # backwards-compat alias for any legacy calls that reference `font`
 
@@ -1437,7 +1440,7 @@ async def scrape(data, read_client):
                 story["created_at"] = t.get("created_at")
                 data["extracted"][tid] = dict(story)
                 
-            safe, why = passes_safety_gate(story, text, fpl, sources=[username])
+            safe, why = passes_safety_gate(story, text, fpl, sources=[username], source_tier_func=source_tier)
             if not safe:
                 skipped += 1
                 print(f"   skip ({why}): {text[:70]!r}")
@@ -1630,7 +1633,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
             story = build_story(text, fpl)
             story["media_url"] = fxt.get("media_url")
             story["created_at"] = fxt.get("created_at")
-            safe, why = passes_safety_gate(story, text, fpl, sources=[username])
+            safe, why = passes_safety_gate(story, text, fpl, sources=[username], source_tier_func=source_tier)
             if not safe:
                 print(f"  [DRY] skip ({why}): {text[:60]!r}")
                 continue
