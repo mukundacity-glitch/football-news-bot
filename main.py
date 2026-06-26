@@ -1,11 +1,6 @@
-"""
-FPL VORTEX — Football news automation.
 
 import os
 import re
-
-from playwright.async_api import async_playwright
-
 import json
 import hashlib
 import base64
@@ -21,17 +16,22 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageChops
 from pilmoji import Pilmoji
 
-# Connected to FPL Source of Truth Data Engine
+# Connected to Core Engines & Ground Truth Caches
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key, is_big_player
 from src.renderer import create_transfer_image, create_injury_image, _create_fallback_card
-
-# Connected to Regex Parser & Safety Engine
 from src.parser import extract_story_fallback, detect_historical, passes_safety_gate, _clean_source_text
+from src.constants import (
+    CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
+    JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
+    ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
+    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP
+)
 
+# Shared Canvas Namespace Initialization
 FONT = ImageFont.load_default()
-font = FONT  # backwards-compat alias for any legacy calls that reference `font`
+font = FONT 
 
-# ── TWIKIT PATCH (inline) ────────────────────────────────────────────────
+# Twikit API Runtime Inline Workaround
 try:
     _tx_mod = __import__("twikit.x_client_transaction.transaction", fromlist=["ClientTransaction"])
 except Exception as e:
@@ -47,7 +47,6 @@ if _tx_mod is not None:
         key_byte_indices = []
         response = self.validate_response(home_page_response) or self.home_page_response
         response_str = str(response)
-
         on_demand_file = _tx_mod.ON_DEMAND_FILE_REGEX.search(response_str)
         if on_demand_file:
             on_demand_file_index = on_demand_file.group(1)
@@ -60,7 +59,6 @@ if _tx_mod is not None:
                 key_byte_indices_match = _tx_mod.INDICES_REGEX.finditer(str(on_demand_file_response.text))
                 for item in key_byte_indices_match:
                     key_byte_indices.append(item.group(2))
-
         if not key_byte_indices:
             raise Exception("Couldn't get KEY_BYTE indices")
         key_byte_indices = list(map(int, key_byte_indices))
@@ -68,7 +66,6 @@ if _tx_mod is not None:
 
     _tx_mod.ClientTransaction.get_indices = _patched_get_indices
     print("[PATCH] twikit ClientTransaction.get_indices patched (issue #408 workaround).")
-# ── END TWIKIT PATCH ─────────────────────────────────────────────────────
 
 from twikit import Client
 
