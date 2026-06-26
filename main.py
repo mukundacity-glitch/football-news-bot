@@ -268,6 +268,27 @@ def is_big_name_player(name: str) -> bool:
 CLUB_NAME_SET = set()
 CLUB_HASHTAGS = {}
 PL_CLUB_NAMES = set()
+def resolve_club_key(name: str):
+    if not name: return None
+    n = name.lower()
+    for alias in _SORTED_ALIASES:
+        if re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', n):
+            return CLUB_ALIASES[alias]
+    return None
+
+MANAGER_SURNAMES = {
+    "de zerbi", "zerbi", "guardiola", "arteta", "klopp", "slot", "postecoglou",
+    "ten hag", "amorim", "emery", "howe", "maresca", "iraola", "frank",
+    "nuno", "moyes", "dyche", "hurzeler", "glasner", "ancelotti", "xabi alonso",
+    "alonso", "flick", "simeone", "mourinho", "conte", "tuchel", "nagelsmann",
+    "neil", "o'neil", "mcinnes", "wilder", "edwards", "robinson", "silva",
+    "kompany", "lopetegui", "obi",
+}
+
+BIG_NAMES_NON_FPL: set = set()
+
+def is_big_club_name(name: str) -> bool:
+    return False
 
 def init_club_data():
     global CLUB_NAME_SET, CLUB_HASHTAGS, PL_CLUB_NAMES
