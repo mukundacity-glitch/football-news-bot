@@ -111,49 +111,13 @@ CHANNEL_HANDLE = "@FPLVortex"
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
 _LOGIC_VER = "2026-06-25-rawtext"
 
-# ── JOURNALISTS ──────────────────────────────────────────────────────────
-JOURNALISTS = [
-    "FabrizioRomano", "David_Ornstein", "_pauljoyce", "sistoney67",
-    "SamiMokbel_BBC", "JacobsBen", "JamesPearceLFC", "SachaTavolieri",
-    "Plettigoal", "MatteoMoretto", "AlfredoPedulla", "DiMarzio",
-    "SkySportsNews", "BBCSport", "TheAthleticFC", "guardian_sport",
-    "lequipe", "marca", "diarioas", "kicker",
-    "alex_crook", "AlexCrabb31", "Transferzone00",
-    "premierleague", "OfficialFPL", "PremierInjuries",
-    "Arsenal", "AVFCOfficial", "ManCity", "LFC", "ChelseaFC",
-    "ManUtd", "SpursOfficial", "NUFC", "NFFC", "Everton",
-    "WestHam", "CPFC", "OfficialBHAFC", "Wolves", "BrentfordFC",
-    "FulhamFC", "AFCBournemouth", "lcfc",
-]
-NITTER_INSTANCES = [
-    "https://nitter.net",
-    "https://nitter.privacydev.net",
-    "https://nitter.poast.org",
-    "https://nitter.moomoo.me",
-    "https://n.opnxng.com",
-    "https://n.s0.gg",
-]
-
-# ── SOURCE TIERS ─────────────────────────────────────────────────────────
-OFFICIAL_ACCOUNTS = {
-    "premierleague", "officialfpl", "fpl", "uefa", "fifacom", "fifaworldcup",
-    "arsenal", "avfcofficial", "afcbournemouth", "brentfordfc",
-    "officialbhafc", "chelseafc", "cpfc", "everton", "fulhamfc",
-    "lcfc", "liverpoolfc", "lfc", "mancity", "manutd", "newcastle_nufc", "nufc",
-    "nffc", "southamptonfc", "spursofficial", "westham", "wolves",
-}
-OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {"officialfpl", "fpl", "premierleague", "premierinjuries"}
-ELITE_TRUSTED = {
-    "fabrizioromano", "david_ornstein", "_pauljoyce", "sistoney67",
-    "samimokbel_bbc", "jacobsben", "jamespearcelfc", "sachatavolieri",
-    "plettigoal", "matteomoretto", "alfredopedulla", "dimarzio",
-}
-TRUSTED_REPORTERS = ELITE_TRUSTED
-TRUSTED_MEDIA = {
-    "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
-    "guardian_sport", "lequipe", "marca", "diarioas", "as", "kicker",
-    "alex_crook", "alexcrabb31",
-}
+# ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
+from src.constants import (
+    CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR,
+    JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
+    ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
+    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP
+)
 
 def source_tier(handle: str) -> int:
     h = (handle or "").lower().lstrip("@")
@@ -162,46 +126,7 @@ def source_tier(handle: str) -> int:
     if h in TRUSTED_MEDIA: return 3
     return 0
 
-# ── LIGHT PRE-FILTER ─────────────────────────────────────────────────────
-FOOTBALL_KW = [
-    "transfer", "sign", "deal", "fee", "bid", "loan", "contract", "agree",
-    "medical", "official", "here we go", "talks", "joins", "move", "target",
-    "injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt",
-    "sack", "appoint", "manager", "head coach", "stay", "return", "recall",
-    "suspended", "suspension", "banned", "red card", "sent off",
-]
-STAFF_BLOCK_KW = [
-    "head of recruitment", "sporting director", "director of football",
-    "technical director", "chief scout", "scouting", "ceo", "chairman",
-    "owner", "president", "physio", "kit man", "head of football",
-    "transfer chief", "negotiator",
-]
-
-CLUB_ALIASES = {
-    "arsenal": "Arsenal",
-    "aston villa": "Aston_Villa", "villa": "Aston_Villa", "avfc": "Aston_Villa",
-    "bournemouth": "Bournemouth", "afcb": "Bournemouth",
-    "brentford": "Brentford",
-    "brighton": "Brighton", "bhafc": "Brighton",
-    "burnley": "Burnley",
-    "chelsea": "Chelsea", "cfc": "Chelsea",
-    "crystal palace": "Crystal_Palace", "palace": "Crystal_Palace", "cpfc": "Crystal_Palace",
-    "everton": "Everton", "efc": "Everton",
-    "fulham": "Fulham", "ffc": "Fulham",
-    "ipswich": "Ipswich", "ipswich town": "Ipswich", "itfc": "Ipswich",
-    "leeds": "Leeds", "leeds united": "Leeds", "lufc": "Leeds",
-    "leicester": "Leicester", "leicester city": "Leicester", "lcfc": "Leicester",
-    "liverpool": "Liverpool", "lfc": "Liverpool",
-    "manchester city": "Man_City", "man city": "Man_City", "mcfc": "Man_City", "city": "Man_City",
-    "manchester united": "Man_Utd", "man united": "Man_Utd", "man utd": "Man_Utd", "mufc": "Man_Utd",
-    "newcastle": "Newcastle", "newcastle united": "Newcastle", "nufc": "Newcastle",
-    "nottingham forest": "Nottm_Forest", "nott'm forest": "Nottm_Forest", "forest": "Nottm_Forest", "nffc": "Nottm_Forest",
-    "southampton": "Southampton", "saintsfc": "Southampton",
-    "sunderland": "Sunderland",  # optional coverage
-    "tottenham": "Spurs", "spurs": "Spurs", "tottenham hotspur": "Spurs", "thfc": "Spurs",
-    "west ham": "West_Ham", "west ham united": "West_Ham", "whufc": "West_Ham",
-    "wolves": "Wolves", "wolverhampton": "Wolves"
-}
+# Retained local variables required for cache wiring fallback
 _SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
 CLUB_WORD_FRAGMENTS: set = set()
 
@@ -218,40 +143,6 @@ POSITION_WORDS = {
     "goalkeeper", "defender", "midfielder", "striker", "winger",
     "forward", "keeper", "playmaker", "captain", "international",
 }
-FPL_LOGO_IDS = {
-    "Arsenal": "3", "Aston_Villa": "7", "Bournemouth": "91", "Brentford": "94",
-    "Brighton": "36", "Burnley": "90", "Chelsea": "8", "Crystal_Palace": "31", "Everton": "11",
-    "Fulham": "54", "Ipswich": "40", "Leeds": "2", "Leicester": "13", "Liverpool": "14",
-    "Man_City": "43", "Man_Utd": "1", "Newcastle": "4", "Nottm_Forest": "17",
-    "Southampton": "20", "Spurs": "6", "Sunderland": "56", "West_Ham": "21", "Wolves": "39",
-}
-CLUB_COLORS = {
-    "Arsenal": (239, 1, 7), "Aston_Villa": (103, 14, 54), "Bournemouth": (181, 14, 18),
-    "Brentford": (227, 6, 19), "Brighton": (0, 87, 184), "Chelsea": (3, 70, 148),
-    "Crystal_Palace": (27, 69, 143), "Everton": (39, 68, 136), "Fulham": (15, 15, 15),
-    "Ipswich": (0, 0, 255), "Leicester": (0, 83, 160), "Liverpool": (200, 16, 46),
-    "Man_City": (108, 173, 223), "Man_Utd": (218, 41, 28), "Newcastle": (15, 15, 15),
-    "Nottm_Forest": (229, 50, 51), "Southampton": (215, 25, 32), "Spurs": (17, 24, 38),
-    "West_Ham": (122, 38, 58), "Wolves": (253, 185, 19),
-}
-CLUB_HASHTAG_MAP = {
-    "Arsenal": "#Arsenal", "Aston_Villa": "#AVFC", "Bournemouth": "#AFCB",
-    "Brentford": "#Brentford", "Brighton": "#BHAFC", "Chelsea": "#Chelsea",
-    "Crystal_Palace": "#CPFC", "Everton": "#EFC", "Fulham": "#FFC",
-    "Ipswich": "#ITFC", "Leicester": "#LCFC", "Liverpool": "#LFC",
-    "Man_City": "#MCFC", "Man_Utd": "#MUFC", "Newcastle": "#NUFC",
-    "Nottm_Forest": "#NFFC", "Southampton": "#SaintsFC", "Spurs": "#THFC",
-    "West_Ham": "#WHUFC", "Wolves": "#Wolves",
-}
-
-MANAGER_SURNAMES = {
-    "de zerbi", "zerbi", "guardiola", "arteta", "klopp", "slot", "postecoglou",
-    "ten hag", "amorim", "emery", "howe", "maresca", "iraola", "frank",
-    "nuno", "moyes", "dyche", "hurzeler", "glasner", "ancelotti", "xabi alonso",
-    "alonso", "flick", "simeone", "mourinho", "conte", "tuchel", "nagelsmann",
-    "neil", "o'neil", "mcinnes", "wilder", "edwards", "robinson", "silva",
-    "kompany", "lopetegui", "obi",
-}
 
 def is_big_name_player(name: str) -> bool:
     return False
@@ -267,15 +158,6 @@ def resolve_club_key(name: str):
         if re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', n):
             return CLUB_ALIASES[alias]
     return None
-
-MANAGER_SURNAMES = {
-    "de zerbi", "zerbi", "guardiola", "arteta", "klopp", "slot", "postecoglou",
-    "ten hag", "amorim", "emery", "howe", "maresca", "iraola", "frank",
-    "nuno", "moyes", "dyche", "hurzeler", "glasner", "ancelotti", "xabi alonso",
-    "alonso", "flick", "simeone", "mourinho", "conte", "tuchel", "nagelsmann",
-    "neil", "o'neil", "mcinnes", "wilder", "edwards", "robinson", "silva",
-    "kompany", "lopetegui", "obi",
-}
 
 BIG_NAMES_NON_FPL: set = set()
 
@@ -379,170 +261,6 @@ def fpl_team_key(el, fpl_data):
             return resolve_club_key((t.get("name", "") + " " + t.get("short_name", "")).lower())
     return None
 
-# ── STORY EXTRACTION (regex-only, no LLM) ────────────────────────────────
-def _clean_source_text(text: str) -> str:
-    t = text or ""
-    t = re.sub(r'\bRT\s+@\w+:?', ' ', t)
-    t = re.sub(r'https?://\S+|www\.\S+', ' ', t)
-    
-    # ARCHITECT FIX: Strip only the @ and # characters, preserving the actual club names
-    t = re.sub(r'[@#]', '', t)
-    
-    t = re.sub(r'["""]', '', t)
-    t = re.sub(r'\s+', ' ', t).strip()
-    return t
-
-_FALLBACK_BANNED_SOLO = {
-    "neil", "silva", "alonso", "robinson", "edwards", "wilder", "obi",
-    "kompany", "nuno", "frank", "howe", "moyes", "dyche", "emery", "conte",
-    "tuchel", "klopp", "arteta", "slot", "amorim", "maresca", "iraola",
-}
-
-def _is_safe_fallback_name(name: str) -> bool:
-    if not name: return False
-    tokens = [t for t in re.split(r"[\s\-']+", name.strip()) if t]
-    if len(tokens) < 2: return False
-    low = name.lower()
-    if low in _FALLBACK_BANNED_SOLO: return False
-    if any(m in low for m in MANAGER_SURNAMES): return False
-    return True
-
-def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
-    cleaned = _clean_source_text(tweet_text)
-    tl = cleaned.lower()
-
-    def has_word(words_list, text):
-        return any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text) for w in words_list)
-
-    loan_signal = ("on loan" in tl) or bool(re.search(r"\bjoine?d?\b.*\bon loan\b", tl))
-    if has_word(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl): event = "suspension"
-    elif loan_signal: event = "loan"
-    elif has_word(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt"], tl): event = "injury"
-    elif has_word(["sack", "appoint", "head coach", "manager"], tl): event = "manager"
-    elif has_word(["new deal", "new contract", "signs new", "extension", "renew"], tl): event = "renewal"
-    elif has_word(["stay", "staying", "no exit", "not for sale", "remain"], tl) and not has_word(["sign for", "joins", "move to"], tl): event = "stay"
-    elif has_word(["loan"], tl): event = "loan"
-    else: event = "transfer"
-
-    stage = 4 if has_word(["here we go", "official", "confirmed", "completed", "joins"], tl) else \
-        2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
-
-    confidence_signals = 0
-    if stage >= 4: confidence_signals += 3
-    elif stage >= 2: confidence_signals += 1
-    if has_word(["here we go", "official", "confirmed", "done deal", "medical"], tl): confidence_signals += 2
-    if has_word(["talks", "interest", "target", "bid", "offer"], tl): confidence_signals += 1
-    confidence = min(0.95, 0.45 + confidence_signals * 0.1)
-
-    FILLER = {"excl", "exclusive", "breaking", "official", "understand", "understands",
-              "update", "here", "done", "deal", "medical", "nothing", "all", "source",
-              "news", "report", "reports", "told", "says", "said", "claim", "claims",
-              "today", "tonight", "tomorrow", "now", "latest", "just", "also",
-              "meanwhile", "plus", "however", "elsewhere", "separately",
-              "full", "free", "new", "big", "top", "key", "real", "transfer",
-              "window", "deadline", "fee", "bid", "offer", "loan", "agree", "agreed",
-              "talks", "interest", "signed", "signing", "joins", "joined", "move",
-              "permanent", "option", "clause", "release", "extension", "premier",
-              "league", "champions", "europa", "conference", "sport", "press",
-              "watch", "video", "highlights", "live", "stream", "footage",
-              "scenes", "behind", "relive", "throwback"}
-    ROLE_WORDS = set()
-    for phrase in STAFF_BLOCK_KW:
-        for word in phrase.split():
-            if len(word) > 3: ROLE_WORDS.add(word)
-    ROLE_WORDS |= POSITION_WORDS
-
-    def _is_bad_name(low: str) -> bool:
-        if event != "manager" and (low in MANAGER_SURNAMES or any(m in low for m in MANAGER_SURNAMES)): return True
-        words = low.split()
-        if any(w in FILLER for w in words): return True
-        if any(w in CLUB_WORD_FRAGMENTS for w in words): return True
-        if any(w in COUNTRY_NAMES for w in words): return True
-        if any(w in NATIONALITY_ADJECTIVES for w in words): return True
-        if any(w in ROLE_WORDS for w in words): return True
-        if looks_like_club(low): return True
-        return False
-
-    name = None
-    for m in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:\s+(?:(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-Z][a-zà-ÿ]+)+)\b', cleaned):
-        if not _is_bad_name(m.lower()):
-            name = m
-            break
-    if not name:
-        for m in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:[-\' ][A-Z][a-zà-ÿ]+)+)\b', cleaned):
-            if not _is_bad_name(m.lower()):
-                name = m
-                break
-    if not name and fpl_data:
-        for m in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', cleaned):
-            if _is_bad_name(m.lower()): continue
-            if find_player_in_fpl(m, fpl_data):
-                name = m
-                break
-
-    if name and not _is_safe_fallback_name(name):
-        name = None
-
-    clubs = []
-    for alias in _SORTED_ALIASES:
-        if re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl):
-            k = CLUB_ALIASES[alias]
-            if k not in clubs: clubs.append(k)
-
-    fpl_player_el = find_player_in_fpl(name, fpl_data) if name and fpl_data else None
-    actual_current_club_key = fpl_team_key(fpl_player_el, fpl_data) if fpl_player_el else None
-
-    from_key = None
-    to_key = None
-    direction_confident = False
-    from_anchor = None
-
-    if actual_current_club_key:
-        from_key = actual_current_club_key
-        other_clubs = [c for c in clubs if c != actual_current_club_key]
-        if other_clubs:
-            to_key = other_clubs[0]
-            direction_confident = True
-        else:
-            to_key = None
-            direction_confident = event in ("stay", "renewal", "injury", "suspension")
-    else:
-        if clubs:
-            to_key = clubs[0]
-            if len(clubs) > 1:
-                from_key = clubs[1]
-            direction_confident = False
-
-    is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
-
-    if event in ("stay", "renewal"):
-        if to_key and not from_key:
-            from_key, to_key = to_key, None
-        to_key = None
-        is_collapsed = False
-
-    if is_collapsed and to_key and not from_anchor:
-        to_key = None
-
-    fee_match = re.search(r'([£€$]\d+(?:\.\d+)?\s*(?:m|k|million|billion))', cleaned, re.IGNORECASE)
-    extracted_fee = fee_match.group(1).upper() if fee_match else None
-
-    return {
-        "is_football": True, "event": event,
-        "is_real_move": event in ("transfer", "loan", "loan_option"),
-        "player": name,
-        "from_club": (from_key.replace("_", " ") if from_key else None),
-        "to_club": (to_key.replace("_", " ") if to_key else None),
-        "from_key": from_key, "to_key": to_key,
-        "fee": extracted_fee, "contract": None, "conditional": None, "fpl_impact": None,
-        "diagnosis": None, "expected_return": None, "next_match": None,
-        "stage": stage, "collapsed": is_collapsed,
-        "headline": name if name else "Transfer update",
-        "body": tweet_text, "confidence": confidence,
-        "direction_confident": direction_confident,
-        "from_fallback": True,
-    }
-
 def _summarise(name, event, from_key, to_key, stage, collapsed):
     who = name or "The player"
     fc = from_key.replace("_", " ") if from_key else None
@@ -583,40 +301,6 @@ def looks_like_video_post(tweet_text: str) -> bool:
 def has_written_claim(tweet_text: str) -> bool:
     cleaned = _clean_source_text(tweet_text)
     return bool(_CLAIM_MARKERS.search(cleaned)) and len(cleaned.split()) >= 5
-
-ALLOW_HISTORICAL_POSTS = False
-
-_HISTORICAL_MARKERS = re.compile(
-    r"\b(on this day|on this date|this day in|otd|\d+\s+years?\s+(ago|on)|"
-    r"years?\s+ago|anniversary|throwback|#tbt|flashback|remember when|"
-    r"back in (the\s+)?(19|20)\d\d|years on|on this very day)\b", re.I)
-
-_FRESH_CUE = re.compile(
-    r"\b(today|tonight|tomorrow|breaking|here we go|confirmed|just (in|now)|"
-    r"official|now|set to|close to|agreed|agree|recovered|back in training|"
-    r"returns? to training|fit again|stepped up|ruled fit|available again|"
-    r"new deal|signs new|signed new|extension)\b", re.I)
-
-_RECYCLED_STATUS = re.compile(
-    r"\b(has|have)\s+joined\b.*\bon loan\b|"
-    r"\bon loan\b.*\b(rest of the|until end of|for the season)\b|"
-    r"\bfor the rest of the (season|campaign)\b", re.I)
-
-def detect_historical(text: str) -> bool:
-    t = text or ""
-    tl = t.lower()
-    has_fresh = bool(_FRESH_CUE.search(tl))
-    if _HISTORICAL_MARKERS.search(tl) and not has_fresh:
-        return True
-    if re.search(r"\b19\d\d\b", t):
-        return True
-    cur = datetime.now(timezone.utc).year
-    for y in re.findall(r"\b(?:in|back in|during|on)\s+(20\d\d)\b", tl):
-        if int(y) <= cur - 2:
-            return True
-    if _RECYCLED_STATUS.search(tl) and not has_fresh:
-        return True
-    return False
 
 # ── STORY BUILDER (COMBINED & CORRECTLY PLACED) ──────────────────────────
 def build_story(tweet_text, fpl_data):
@@ -819,82 +503,6 @@ def player_already_at_club(story, fpl_data) -> bool:
     to_key = story.get("to_key")
     if el is None or cur is None: return False
     return bool(cur and to_key and cur == to_key)
-
-def passes_safety_gate(story, raw_text, fpl_data, sources=None):
-    sources = sources or []
-    tl = (raw_text or "").lower()
-    NON_NEWS_KW = ["documentary", "amazon prime", "netflix", "man of the match",
-                   "potm", "player of the month", "kit launch", "new kit", "sponsor",
-                   "anniversary", "birthday", "wins the", "award", "fifa the best",
-                   "ballon d'or", "merch", "video game", "ea sports"]
-    if any(k in tl for k in NON_NEWS_KW): return False, "off_topic_content"
-    if not story.get("is_football"): return False, "not_football"
-    if tweet_too_old(story.get("created_at")): return False, f"older_than_{MAX_TWEET_AGE_DAYS}d"
-    if story.get("historical") and not ALLOW_HISTORICAL_POSTS: return False, "historical_news"
-    if story.get("confidence", 0) < 0.40: return False, "low_confidence"
-    if any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', tl) for w in STAFF_BLOCK_KW): return False, "staff_or_offpitch"
-    if not story.get("player"): return False, "no_player"
-    
-    mixed = detect_mixed_story(story, raw_text, fpl_data)
-    tiers = [source_tier(s) for s in (sources or [])]
-    is_elite = any(t in (1, 2) for t in tiers)
-    
-    if mixed and not is_elite: 
-        return False, f"mixed_story:{mixed}"
-    if story.get("from_video") and not story.get("has_written_claim"): return False, "video_no_written_claim"
-    if player_already_at_club(story, fpl_data): return False, "already_at_destination"
-
-    # --- 1. MANAGER GATE: STRICTLY EPL CLUBS ---
-    if story["event"] == "manager":
-        to_key = story.get("to_key")
-        to_club = story.get("to_club")
-        pl_club = bool(to_key) or (to_club and to_club.lower() in PL_CLUB_NAMES)
-        if not pl_club: return False, "manager_no_pl_club"
-        
-        appoint_cue = re.search(
-            r"\b(appoint|appointed|new (head coach|manager|boss)|"
-            r"set to (become|take over|be appointed)|sacked|"
-            r"named (as )?(head coach|manager)|takes over|"
-            r"agree(s|d)? to (become|join)|done deal)\b", tl)
-        if not appoint_cue: return False, "manager_no_appointment_cue"
-        return True, "ok_manager"
-
-    pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
-
-    # --- 2. INJURY/SUSPENSION GATE: STRICTLY FPL PLAYERS ---
-    if story["event"] in ("injury", "suspension"):
-        injury_source_ok = any(t in (1, 2) for t in tiers) or \
-            any((s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS for s in sources)
-        if not injury_source_ok: return False, "injury_source_not_approved"
-        
-        if pl_player: return True, f"ok_{story['event']}"
-        return False, f"{story['event']}_not_pl_player"
-
-    # --- 3. TRANSFER/LOAN GATE: MUST INVOLVE EPL CLUB OR FPL PLAYER ---
-    pl_club = bool(story.get("to_key") or story.get("from_key"))
-    if not pl_club:
-        for nm in (story.get("to_club"), story.get("from_club")):
-            if nm and nm.lower() in PL_CLUB_NAMES:
-                pl_club = True
-                break
-
-    if not (pl_player or pl_club):
-        return False, "not_pl_relevant"
-
-    # Elite sources are trusted to report on players entering the EPL before they hit the API
-    if not is_elite and not pl_player:
-        return False, "player_not_verified_fpl"
-
-    if pl_player and (pl_club or story.get("to_club") or story.get("from_club")):
-        return True, "ok_pl_transfer"
-        
-    if pl_player:
-        return True, "ok_verified_pl_player_staying"
-
-    elite_source = any(t == 2 for t in tiers)
-    if elite_source and pl_club: return True, "ok_elite_source_incoming_pl_transfer"
-    
-    return False, "not_pl_relevant_catchall"
 
 def classify_post(story, sources):
     if story.get("collapsed"): return "rumour"
