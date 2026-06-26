@@ -469,22 +469,12 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
 
     def _is_bad_name(low: str) -> bool:
         if event != "manager" and (low in MANAGER_SURNAMES or any(m in low for m in MANAGER_SURNAMES)): return True
-        
-        # --- NEW: Explicitly block major European clubs from being read as humans ---
-        EURO_CLUB_BLOCKLIST = {"inter", "milan", "juventus", "roma", "napoli", 
-                               "real madrid", "barcelona", "atletico", "bayern", 
-                               "dortmund", "psg", "ajax", "porto", "benfica", "celtic", "rangers"}
-        if any(c in low for c in EURO_CLUB_BLOCKLIST): return True
-
         words = low.split()
         if any(w in FILLER for w in words): return True
         if any(w in CLUB_WORD_FRAGMENTS for w in words): return True
         if any(w in COUNTRY_NAMES for w in words): return True
         if any(w in NATIONALITY_ADJECTIVES for w in words): return True
         if any(w in ROLE_WORDS for w in words): return True
-        if looks_like_club(low): return True
-        
-        return False
         if looks_like_club(low): return True
         return False
 
@@ -498,7 +488,13 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             if not _is_bad_name(m.lower()):
                 name = m
                 break
-  
+    if not name and fpl_data:
+        for m in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', cleaned):
+            if _is_bad_name(m.lower()): continue
+            if find_player_in_fpl(m, fpl_data):
+                name = m
+                break
+
     if name and not _is_safe_fallback_name(name):
         name = None
 
@@ -508,22 +504,16 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             k = CLUB_ALIASES[alias]
             if k not in clubs: clubs.append(k)
 
-    # ─── STRICT DIRECTION LOGIC (FPL GROUND TRUTH) ───
-    
-    # 1. Check if the player actually exists in the official FPL database
     fpl_player_el = find_player_in_fpl(name, fpl_data) if name and fpl_data else None
     actual_current_club_key = fpl_team_key(fpl_player_el, fpl_data) if fpl_player_el else None
 
     from_key = None
     to_key = None
     direction_confident = False
-    from_anchor = None # Prevents variable errors on collapsed deal checks
+    from_anchor = None
 
     if actual_current_club_key:
-        # RULE 1: If player is in FPL, their current club is an undeniable fact.
         from_key = actual_current_club_key
-        
-        # Any *other* club mentioned in the tweet is the destination.
         other_clubs = [c for c in clubs if c != actual_current_club_key]
         if other_clubs:
             to_key = other_clubs[0]
@@ -531,12 +521,9 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         else:
             to_key = None
             direction_confident = event in ("stay", "renewal", "injury", "suspension")
-
     else:
-        # RULE 2: Player is NOT in FPL (Incoming transfer from abroad/lower leagues)
         if clubs:
-            # Default to the first club mentioned if we can't safely deduce direction
-            to_key = clubs[0] 
+            to_key = clubs[0]
             if len(clubs) > 1:
                 from_key = clubs[1]
             direction_confident = False
@@ -552,8 +539,6 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     if is_collapsed and to_key and not from_anchor:
         to_key = None
 
-    # ─── DYNAMIC FEE EXTRACTOR ───
-    # Looks for £, €, or $ followed by numbers and optionally m, k, million, etc.
     fee_match = re.search(r'([£€$]\d+(?:\.\d+)?\s*(?:m|k|million|billion))', cleaned, re.IGNORECASE)
     extracted_fee = fee_match.group(1).upper() if fee_match else None
 
@@ -565,11 +550,6 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         "to_club": (to_key.replace("_", " ") if to_key else None),
         "from_key": from_key, "to_key": to_key,
         "fee": extracted_fee, "contract": None, "conditional": None, "fpl_impact": None,
-        "player": name,
-        "from_club": (from_key.replace("_", " ") if from_key else None),
-        "to_club": (to_key.replace("_", " ") if to_key else None),
-        "from_key": from_key, "to_key": to_key,
-        "fee": None, "contract": None, "conditional": None, "fpl_impact": None,
         "diagnosis": None, "expected_return": None, "next_match": None,
         "stage": stage, "collapsed": is_collapsed,
         "headline": name if name else "Transfer update",
