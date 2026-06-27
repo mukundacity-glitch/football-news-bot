@@ -119,157 +119,56 @@ def _render_html_sync(html_content, filename, error_box=None):
             import traceback
             error_box.append(traceback.format_exc())
 
-def create_transfer_image(story, sources, filename, collapsed=False):
+
+# ── SHARED ASSET / RENDER HELPERS ─────────────────────────────────────────
+def _data_uri(path: Path, min_size: int = 500) -> str:
+    """Return a base64 data-URI for an image file, or '' if missing/too small."""
+    try:
+        if path.exists() and path.stat().st_size >= min_size:
+            return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+    except Exception:
+        pass
+    return ""
+
+
+def _crest_uri(club_key) -> str:
+    """Resolve (downloading if needed) a club crest to a data-URI."""
+    if not club_key:
+        return ""
+    safe = club_key.replace(" ", "_").replace("'", "")
+    cp = Path(f"logos/{safe}.png")
+    if not cp.exists() and FPL_LOGO_IDS.get(safe):
+        _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS[safe]}.png", cp)
+    return _data_uri(cp)
+
+
+def _img_assets(story):
+    """Shared: resolve the verified player, display name, brand logo and player photo."""
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
     player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
 
-    to_club = story.get("to_club") or (story.get("to_key") or "").replace("_", " ")
-    from_club = story.get("from_club") or (story.get("from_key") or "").replace("_", " ")
+    logo_uri = _data_uri(Path("Logo.png"))
 
-    mode = story.get("mode", "confirmed")
-    if collapsed or story.get("collapsed"):
-        status = "DEAL COLLAPSED"
-        badge_color = "#e31e24"
-    elif mode == "rumour":
-        status = "TRANSFER RUMOUR"
-        badge_color = "#e31e24"
-    else:
-        status = "OFFICIAL" if story.get("stage", 1) >= 4 else "CONFIRMED"
-        badge_color = "#54e07c"
-
-    club_color = get_club_color(story.get("to_key") or story.get("from_key"))
-    source_text = " · ".join(f"@{s}" for s in sources[:2])
-
-    logo_data_uri = ""
-    logo_path = Path("Logo.png")
-    if logo_path.exists() and logo_path.stat().st_size >= 500:
-        logo_data_uri = "data:image/png;base64," + base64.b64encode(logo_path.read_bytes()).decode("ascii")
-
-    photo_data_uri = None
+    photo_uri = ""
     pid = player_el.get("code") if player_el else None
     if pid:
         pp = Path(f"players/{pid}.png")
         if not pp.exists():
             _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
-        if pp.exists() and pp.stat().st_size >= 500:
-            photo_data_uri = "data:image/png;base64," + base64.b64encode(pp.read_bytes()).decode("ascii")
-
-    if not photo_data_uri and story.get("media_url"):
+        photo_uri = _data_uri(pp)
+    if not photo_uri and story.get("media_url"):
         murl = story["media_url"]
         mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ".png")
         if not mp.exists():
             _download_asset(murl, mp)
-        if mp.exists() and mp.stat().st_size >= 500:
-            photo_data_uri = "data:image/png;base64," + base64.b64encode(mp.read_bytes()).decode("ascii")
+        photo_uri = _data_uri(mp)
 
-    def _crest_uri(club_key):
-        if not club_key: return ""
-        safe = club_key.replace(" ", "_").replace("'", "")
-        cp = Path(f"logos/{safe}.png")
-        if not cp.exists() and FPL_LOGO_IDS.get(safe):
-            _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS[safe]}.png", cp)
-        if cp.exists() and cp.stat().st_size >= 500:
-            return "data:image/png;base64," + base64.b64encode(cp.read_bytes()).decode("ascii")
-        return ""
+    return player_el, player_name, logo_uri, photo_uri
 
-    main_crest_uri = _crest_uri(story.get("to_key") or story.get("from_key"))
-    from_crest_uri = _crest_uri(story.get("from_key"))
-    to_crest_uri = _crest_uri(story.get("to_key"))
 
-    crest_img_html = f'<img class="crest-badge" src="{main_crest_uri}" />' if main_crest_uri else ''
-    if photo_data_uri:
-        photo_img_html = f'<img src="{photo_data_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />'
-    else:
-        if main_crest_uri:
-            photo_img_html = f'<img src="{main_crest_uri}" style="width:70%;height:70%;object-fit:contain;position:relative;z-index:1;opacity:0.85;" />'
-        else:
-            photo_img_html = f'<div style="z-index:1;font-size:150px;color:rgba(255,255,255,0.15);font-weight:900;">V</div>'
-
-    def _club_with_crest(name, crest_uri):
-        if not name: return "TBD"
-        if crest_uri:
-            return f'{name} <img src="{crest_uri}" style="width:52px;height:52px;object-fit:contain;vertical-align:middle;margin-left:10px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5));" />'
-        return name
-
-    from_html = _club_with_crest(from_club or "TBD", from_crest_uri)
-    to_html = _club_with_crest(to_club or "TBD", to_crest_uri)
-    fee_value = story.get('fee') or "Undisclosed"
-    if fee_value and fee_value != "Undisclosed" and not fee_value.startswith("$"):
-        fee_value = "$" + fee_value
-
-    logo_html = f'<img src="{logo_data_uri}" style="width:64px;height:64px;object-fit:contain;margin-right:16px;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.6));" />' if logo_data_uri else ''
-
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@700;900&display=swap');
-            body {{ margin: 0; padding: 0; width: 1380px; height: 776px; background: linear-gradient(135deg, #0b1220 0%, #1c2846 100%); font-family: 'Montserrat', sans-serif; color: white; display: flex; overflow: hidden; position: relative; }}
-            .accent-slash {{ position: absolute; width: 200%; height: 100px; background: {club_color}; opacity: 0.15; transform: rotate(-35deg) translateY(-200px); z-index: 0; }}
-            .accent-slash:nth-child(2) {{ transform: rotate(-35deg) translateY(200px); opacity: 0.05; }}
-            .container {{ width: 100%; height: 100%; display: flex; flex-direction: row; padding: 40px 60px 80px 60px; box-sizing: border-box; z-index: 1; }}
-            .left-column {{ flex: 1; display: flex; flex-direction: column; justify-content: flex-start; padding-top: 30px; }}
-            .right-column {{ width: 420px; display: flex; align-items: center; justify-content: flex-end; }}
-            .wordmark {{ font-size: 52px; font-weight: 900; margin-bottom: 24px; text-shadow: 0 4px 10px rgba(0,0,0,0.5); display: flex; align-items: center; }}
-            .wordmark span {{ color: #54e07c; margin-left: 10px; }}
-            .status-badge {{ display: inline-block; background: {badge_color}; color: #fff; padding: 14px 30px; font-size: 42px; font-weight: 900; border-radius: 12px; letter-spacing: 3px; margin-bottom: 20px; text-transform: uppercase; box-shadow: 0 8px 20px rgba(0,0,0,0.4); }}
-            .player-name {{ font-size: 88px; font-weight: 900; line-height: 1.0; text-transform: uppercase; margin-bottom: 28px; text-shadow: 0 8px 20px rgba(0,0,0,0.6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 820px; }}
-            .details-grid {{ display: grid; grid-template-columns: 130px 1fr; gap: 18px 30px; font-size: 44px; }}
-            .detail-label {{ font-weight: 700; text-transform: uppercase; }}
-            .detail-label.from {{ color: #f5c518; }}
-            .detail-label.to {{ color: #00d4ff; }}
-            .detail-label.fee {{ color: #e31e24; }}
-            .detail-value {{ font-weight: 900; text-transform: uppercase; color: white; display: flex; align-items: center; }}
-            .photo-panel {{ width: 370px; height: 560px; background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(20px); border: 2px solid rgba(255, 255, 255, 0.1); border-radius: 24px; display: flex; align-items: center; justify-content: center; box-shadow: 0 20px 50px rgba(0,0,0,0.5); position: relative; overflow: hidden; }}
-            .crest-badge {{ position: absolute; top: 16px; right: 16px; width: 75px; height: 75px; z-index: 2; filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5)); }}
-            .photo-panel::before {{ content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(circle at center, {club_color} 0%, transparent 70%); opacity: 0.2; z-index: 0; }}
-            .footer {{ position: absolute; bottom: 0; left: 0; width: 100%; height: 65px; background: #141821; display: flex; align-items: center; justify-content: space-between; padding: 0 60px; box-sizing: border-box; font-size: 24px; font-weight: 700; color: #bec8dc; border-top: 4px solid {club_color}; }}
-        </style>
-    </head>
-    <body>
-        <div class="accent-slash"></div>
-        <div class="accent-slash"></div>
-        <div class="container">
-            <div class="left-column">
-                <div class="wordmark">{logo_html}FPL<span>VORTEX</span></div>
-                <div><div class="status-badge">{status}</div></div>
-                <div class="player-name">{player_name}</div>
-                <div class="details-grid">
-                    <div class="detail-label from">FROM</div>
-                    <div class="detail-value">{from_html}</div>
-                    <div class="detail-label to">TO</div>
-                    <div class="detail-value">{to_html}</div>
-                    <div class="detail-label fee">FEE</div>
-                    <div class="detail-value" style="color:#54e07c;">{fee_value}</div>
-                </div>
-            </div>
-            <div class="right-column">
-                <div class="photo-panel">
-                    {crest_img_html}
-                    {photo_img_html}
-                </div>
-            </div>
-        </div>
-        <div class="footer">
-            <div>Source: {source_text} | @FPLVortex</div>
-            <div style="color: #d4af37;">{story.get('event', 'TRANSFER').upper()}</div>
-        </div>
-        <script>
-            document.addEventListener("DOMContentLoaded", function() {{
-                const nameEl = document.querySelector('.player-name');
-                let fontSize = 88;
-                while(nameEl.scrollWidth > nameEl.clientWidth && fontSize > 30) {{
-                    fontSize--;
-                    nameEl.style.fontSize = fontSize + 'px';
-                }}
-            }});
-        </script>
-    </body>
-    </html>
-    """
-
+def _render_card(html_content, filename) -> bool:
+    """Render HTML to PNG via the threaded Playwright helper. Returns True on success."""
     try:
         import threading
         error_box = []
@@ -278,13 +177,150 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         t.join()
         if error_box:
             print("  [THREAD TRACEBACK]\n" + error_box[0])
-        if not Path(filename).exists() or Path(filename).stat().st_size < 1000:
-            raise RuntimeError("Thread completed but image missing")
-    except Exception as e:
-        import traceback; traceback.print_exc()
+        if Path(filename).exists() and Path(filename).stat().st_size >= 1000:
+            return True
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    return False
+
+
+def _build_card_html(player_name, status, badge_color, club_color,
+                     logo_uri, photo_uri, crest_uri, rows, source_text, footer_tag):
+    """One template for ALL card types so branding (lion logo, header, footer) is identical.
+
+    rows: list of (label, label_color, value_html, value_style).
+    """
+    logo_html = (f'<img src="{logo_uri}" style="width:64px;height:64px;object-fit:contain;'
+                 f'margin-right:16px;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.6));" />') if logo_uri else ''
+    crest_badge_html = f'<img class="crest-badge" src="{crest_uri}" />' if crest_uri else ''
+    if photo_uri:
+        photo_img_html = f'<img src="{photo_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />'
+    elif crest_uri:
+        photo_img_html = f'<img src="{crest_uri}" style="width:70%;height:70%;object-fit:contain;position:relative;z-index:1;opacity:0.85;" />'
+    else:
+        photo_img_html = '<div style="z-index:1;font-size:150px;color:rgba(255,255,255,0.15);font-weight:900;">V</div>'
+
+    rows_html = "".join(
+        f'<div class="detail-label" style="color:{color};">{label}</div>'
+        f'<div class="detail-value" style="{vstyle}">{value}</div>'
+        for (label, color, value, vstyle) in rows)
+
+    return f"""<!DOCTYPE html><html><head><style>
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@700;900&display=swap');
+        body {{ margin:0; padding:0; width:1380px; height:776px; background:linear-gradient(135deg,#0b1220 0%,#1c2846 100%); font-family:'Montserrat',sans-serif; color:white; display:flex; overflow:hidden; position:relative; }}
+        .accent-slash {{ position:absolute; width:200%; height:100px; background:{club_color}; opacity:0.15; transform:rotate(-35deg) translateY(-200px); z-index:0; }}
+        .accent-slash:nth-child(2) {{ transform:rotate(-35deg) translateY(200px); opacity:0.05; }}
+        .container {{ width:100%; height:100%; display:flex; flex-direction:row; padding:40px 60px 80px 60px; box-sizing:border-box; z-index:1; }}
+        .left-column {{ flex:1; display:flex; flex-direction:column; justify-content:flex-start; padding-top:30px; }}
+        .right-column {{ width:420px; display:flex; align-items:center; justify-content:flex-end; }}
+        .wordmark {{ font-size:52px; font-weight:900; margin-bottom:24px; text-shadow:0 4px 10px rgba(0,0,0,0.5); display:flex; align-items:center; }}
+        .wordmark span {{ color:#54e07c; margin-left:10px; }}
+        .status-badge {{ display:inline-block; background:{badge_color}; color:#fff; padding:14px 30px; font-size:42px; font-weight:900; border-radius:12px; letter-spacing:3px; margin-bottom:20px; text-transform:uppercase; box-shadow:0 8px 20px rgba(0,0,0,0.4); }}
+        .player-name {{ font-size:88px; font-weight:900; line-height:1.0; text-transform:uppercase; margin-bottom:28px; text-shadow:0 8px 20px rgba(0,0,0,0.6); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:820px; }}
+        .details-grid {{ display:grid; grid-template-columns:max-content 1fr; gap:18px 40px; font-size:44px; align-items:center; }}
+        .detail-label {{ font-weight:700; text-transform:uppercase; }}
+        .detail-value {{ font-weight:900; text-transform:uppercase; color:white; display:flex; align-items:center; }}
+        .photo-panel {{ width:370px; height:560px; background:rgba(255,255,255,0.03); border:2px solid rgba(255,255,255,0.1); border-radius:24px; display:flex; align-items:center; justify-content:center; box-shadow:0 20px 50px rgba(0,0,0,0.5); position:relative; overflow:hidden; }}
+        .crest-badge {{ position:absolute; top:18px; right:18px; width:120px; height:120px; object-fit:contain; z-index:2; filter:drop-shadow(0 4px 8px rgba(0,0,0,0.6)); }}
+        .photo-panel::before {{ content:''; position:absolute; top:0; left:0; right:0; bottom:0; background:radial-gradient(circle at center,{club_color} 0%,transparent 70%); opacity:0.2; z-index:0; }}
+        .footer {{ position:absolute; bottom:0; left:0; width:100%; height:65px; background:#141821; display:flex; align-items:center; justify-content:space-between; padding:0 60px; box-sizing:border-box; font-size:24px; font-weight:700; color:#bec8dc; border-top:4px solid {club_color}; }}
+    </style></head><body>
+        <div class="accent-slash"></div><div class="accent-slash"></div>
+        <div class="container">
+            <div class="left-column">
+                <div class="wordmark">{logo_html}FPL<span>VORTEX</span></div>
+                <div><div class="status-badge">{status}</div></div>
+                <div class="player-name">{player_name}</div>
+                <div class="details-grid">{rows_html}</div>
+            </div>
+            <div class="right-column"><div class="photo-panel">{crest_badge_html}{photo_img_html}</div></div>
+        </div>
+        <div class="footer"><div>Source: {source_text} | @FPLVortex</div><div style="color:#d4af37;">{footer_tag}</div></div>
+        <script>
+            document.addEventListener("DOMContentLoaded", function() {{
+                const nameEl = document.querySelector('.player-name'); let fs = 88;
+                while (nameEl.scrollWidth > nameEl.clientWidth && fs > 28) {{ fs--; nameEl.style.fontSize = fs + 'px'; }}
+            }});
+        </script>
+    </body></html>"""
+
+
+def _club_cell(name, crest_uri):
+    """Club name with an inline crest (or just the name)."""
+    if crest_uri:
+        return (f'{name} <img src="{crest_uri}" style="width:60px;height:60px;object-fit:contain;'
+                f'vertical-align:middle;margin-left:12px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5));" />')
+    return name
+
+
+def create_transfer_image(story, sources, filename, collapsed=False):
+    player_el, player_name, logo_uri, photo_uri = _img_assets(story)
+
+    to_key = story.get("to_key")
+    from_key = story.get("from_key")
+    to_club = story.get("to_club") or (to_key or "").replace("_", " ")
+    from_club = story.get("from_club") or (from_key or "").replace("_", " ")
+
+    mode = story.get("mode", "confirmed")
+    if collapsed or story.get("collapsed"):
+        status, badge = "DEAL COLLAPSED", "#e31e24"
+    elif mode == "rumour" or not to_key:
+        # No verified destination -> never claim CONFIRMED/OFFICIAL.
+        status, badge = "TRANSFER RUMOUR", "#e31e24"
+    else:
+        status = "OFFICIAL" if story.get("stage", 1) >= 4 else "CONFIRMED"
+        badge = "#54e07c"
+
+    club_color = get_club_color(to_key or from_key)
+    main_crest = _crest_uri(to_key or from_key)
+    fee_value = story.get("fee") or "Undisclosed"   # already carries its currency symbol
+
+    rows = []
+    if from_club:
+        rows.append(("FROM", "#f5c518", _club_cell(from_club, _crest_uri(from_key)), ""))
+    if to_club:
+        rows.append(("TO", "#00d4ff", _club_cell(to_club, _crest_uri(to_key)), ""))
+    if to_club or (fee_value and fee_value != "Undisclosed"):
+        rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
+
+    source_text = " · ".join(f"@{s}" for s in sources[:2])
+    html = _build_card_html(player_name, status, badge, club_color, logo_uri, photo_uri,
+                            main_crest, rows, source_text,
+                            (story.get("event", "TRANSFER") or "TRANSFER").upper())
+
+    if not _render_card(html, filename):
         Image.new('RGB', (1380, 776), color=(11, 18, 32)).save(filename)
 
+
 def create_injury_image(story, sources, filename):
+    # Same template/branding as transfer cards (lion logo + header + footer).
+    player_el, player_name, logo_uri, photo_uri = _img_assets(story)
+    club_key = story.get("to_key") or story.get("from_key")
+    club_color = get_club_color(club_key)
+    crest_uri = _crest_uri(club_key)
+
+    stage = story.get("stage", 1)
+    avail = {4: "Available / fit again", 3: "Ruled out", 2: "Doubt", 1: "To be assessed"}.get(stage, "To be assessed")
+    rows = []
+    if story.get("diagnosis"):
+        rows.append(("DIAGNOSIS", "#ff8c8c", str(story["diagnosis"]), ""))
+    rows.append(("AVAILABILITY", "#ff8c8c", avail, ""))
+    rows.append(("TIMELINE", "#ff8c8c", story.get("expected_return") or "Awaiting update", ""))
+    if story.get("next_match"):
+        rows.append(("NEXT MATCH", "#ff8c8c", str(story["next_match"]), ""))
+
+    source_text = " · ".join(f"@{s}" for s in sources[:2])
+    html = _build_card_html(player_name, "INJURY UPDATE", "#d2261e", club_color,
+                            logo_uri, photo_uri, crest_uri, rows, source_text,
+                            (story.get("event", "INJURY") or "INJURY").upper())
+
+    if not _render_card(html, filename):
+        _create_injury_image_pil(story, sources, filename)
+
+
+def _create_injury_image_pil(story, sources, filename):
+    """PIL fallback for injury cards if HTML rendering is unavailable."""
     W, H = 1380, 776
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
@@ -308,19 +344,6 @@ def create_injury_image(story, sources, filename):
             if p_img is not None:
                 p_img = _fit_contain(p_img, 400, 500)
                 img.paste(p_img, (right_center[0] - p_img.width // 2, right_center[1] - p_img.height // 2 + 30), p_img)
-                img_pasted = True
-
-    if not img_pasted and story.get("media_url"):
-        murl = story["media_url"]
-        mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ".png")
-        if not mp.exists():
-            try: _download_asset(murl, mp)
-            except Exception: pass
-        if mp.exists() and mp.stat().st_size >= 500:
-            t_img = _safe_open_rgba(mp)
-            if t_img is not None:
-                t_img = _fit_contain(t_img, 400, 500)
-                img.paste(t_img, (right_center[0] - t_img.width // 2, right_center[1] - t_img.height // 2 + 30), t_img)
                 img_pasted = True
 
     if not img_pasted:
@@ -372,6 +395,7 @@ def create_injury_image(story, sources, filename):
     bf = get_premium_font(32, "Bold")
     draw.text((60, H - 70), bar, font=bf, fill=(220, 190, 190))
     img.save(filename)
+
 
 def _create_fallback_card(story, sources, filename):
     W, H = 1200, 675
