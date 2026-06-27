@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -461,7 +460,7 @@ def detect_mixed_story(story, raw_text, fpl_data=None) -> str:
             dests = sum(1 for a in _SORTED_ALIASES if re.search(r'(?<![a-z])' + re.escape(a) + r'(?![a-z])', tl))
             if dests >= 1: return "negated_move_misread_as_transfer"
     name_candidates = set()
-    for mm in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:\s+[A-Z][a-zà-ÿ]+){1,2})\b', text):
+    for mm in re.findall(r'\b([A-ZÀ-ÖØ-Þ][a-zà-ÿ]+(?:\s+[A-ZÀ-ÖØ-Þ][a-zà-ÿ]+){1,2})\b', text):
         low = mm.lower()
         if any(m in low for m in MANAGER_SURNAMES): continue
         if looks_like_club(low): continue
@@ -474,7 +473,7 @@ def detect_mixed_story(story, raw_text, fpl_data=None) -> str:
     else:
         distinct = deduped
     if len(distinct) >= 2:
-        coordinated = bool(re.search(r'\b[A-Z][a-zà-ÿ]+ [A-Z][a-zà-ÿ]+\s+(?:and|&)\s+[A-Z][a-zà-ÿ]+ [A-Z][a-zà-ÿ]+', text))
+        coordinated = bool(re.search(r'\b[A-ZÀ-ÖØ-Þ][a-zà-ÿ]+ [A-ZÀ-ÖØ-Þ][a-zà-ÿ]+\s+(?:and|&)\s+[A-ZÀ-ÖØ-Þ][a-zà-ÿ]+ [A-ZÀ-ÖØ-Þ][a-zà-ÿ]+', text))
         if coordinated or len(distinct) >= 3: return "multiple_players_suspected"
     return ""
 
@@ -499,6 +498,12 @@ def classify_post(story, sources):
         if has_official or n_elite >= 1: return "confirmed"
         return None
 
+    # A transfer/loan can't be OFFICIAL/CONFIRMED without a known destination club.
+    if story.get("event") in ("transfer", "loan", "loan_option") and not story.get("to_key"):
+        if has_official or n_elite >= 1 or has_media:
+            return "rumour"
+        return None
+
     trusted_strong = strong_words and (has_official or n_elite >= 1)
     video_only = story.get("from_video") and not has_official
     if (has_official or trusted_strong or n_elite >= 2) and not video_only: return "confirmed"
@@ -517,6 +522,11 @@ def validate_story(story, fpl_data=None):
     if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
 
+    # ACCURACY GATE: only post about players verified in the current FPL/Premier League dataset.
+    PERSON_EVENTS = ("transfer", "loan", "loan_option", "renewal", "stay", "injury", "suspension", "manager")
+    if fpl_data and ev in PERSON_EVENTS and find_player_in_fpl(player, fpl_data) is None:
+        return False, "not_verified_pl_player"
+
     PLACEHOLDERS = ("player name", "example", "xxx", "[", "]", "tbd", "to follow",
                     "lorem", "duration & details", "updated heading", "from club", "to club")
     blob = " ".join(str(story.get(k, "") or "") for k in
@@ -533,16 +543,22 @@ def validate_story(story, fpl_data=None):
         tc = (story.get("to_club") or "").strip().lower()
         if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
         
-        # New "Catch-All": Check if ANY club alias exists anywhere in the tweet body/text
-        tweet_body = (story.get("body", "") + " " + (story.get("headline", "") or "")
-                      + " " + (story.get("raw_text", "") or "")).lower()
-        has_any_club = any(
-            re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tweet_body)
-            for alias in CLUB_ALIASES
-        )
-        
-        if not (tk or story.get("to_club") or fk or story.get("from_club") or has_any_club): 
-            return False, "no_clubs"
+        # Require at least one RESOLVED real club. build_story sets from_key to the
+        # player's real FPL club, so verified players always keep their true origin.
+        if not (tk or fk):
+            return False, "no_resolved_club"
+
+        # Destination-less transfer: only post if there's a genuine departure cue
+        # (kills "linked to his own club" misparses like Onana->Man Utd).
+        if not tk:
+            _blob = (story.get("raw_text", "") + " " + story.get("body", "") + " "
+                     + (story.get("headline") or "")).lower()
+            _EXIT_CUES = ("leav", "exit", "depart", "released", "for sale", "up for sale",
+                          "wants out", "wants a move", "wants to go", "could go", "transfer listed",
+                          "axed", "let go", "on his way out", "set to go", "seeking a move",
+                          "open to leaving", "available for transfer")
+            if not any(c in _blob for c in _EXIT_CUES):
+                return False, "no_destination"
         leak = (story.get("body", "") + " " + story.get("headline", "")).lower()
         if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak): return False, "event_data_mismatch"
     if ev == "manager" and not (story.get("to_key") or story.get("to_club")): return False, "manager_no_club"
@@ -566,7 +582,7 @@ def status_label(story, mode):
     if mode == "rumour": return "RUMOUR"
     ev = story.get("event")
     tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    if ev in ("transfer", "loan", "loan_option") and (
+    if ev in ("transfer", "loan", "loan_option") and story.get("to_key") and (
             story.get("stage", 1) >= 4 or any(w in tl for w in ("official", "here we go", "completed", "confirmed"))):
         return "OFFICIAL"
     label = EVENT_PREFIX.get(ev)
