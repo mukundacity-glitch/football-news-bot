@@ -18,7 +18,7 @@ JOURNALISTS = [
     "SamiMokbel_BBC", "JacobsBen", "JamesPearceLFC", "SachaTavolieri",
     "Plettigoal", "MatteoMoretto", "AlfredoPedulla", "DiMarzio",
     "SkySportsNews", "BBCSport", "TheAthleticFC", "guardian_sport",
-    "lequipe", "marca", "diarioas", "kicker", "alex_crook", "AlexCrabb31", 
+    "lequipe", "marca", "diarioas", "kicker", "alex_crook", "AlexCrabb31",
     "Transferzone00", "premierleague", "OfficialFPL", "PremierInjuries",
     "Arsenal", "AVFCOfficial", "ManCity", "LFC", "ChelseaFC",
     "ManUtd", "SpursOfficial", "NUFC", "NFFC", "Everton",
@@ -76,20 +76,44 @@ MANAGER_SURNAMES = {
     "wilder", "edwards", "robinson", "silva", "kompany", "lopetegui", "obi",
 }
 
+# Position & Nationality filters (used by parser._is_bad_name)
+# Lowercase, single-token words — _is_bad_name lowercases and splits candidate names.
+POSITION_WORDS = {
+    "goalkeeper", "keeper", "goalie", "defender", "defenders", "fullback",
+    "wingback", "centreback", "centre-back", "center-back", "midfielder",
+    "midfielders", "midfield", "winger", "wingers", "striker", "strikers",
+    "forward", "forwards", "attacker", "attackers", "playmaker", "sweeper",
+    "stopper", "defence", "defense", "attack",
+}
+
+NATIONALITY_ADJECTIVES = {
+    "english", "british", "welsh", "scottish", "irish", "french", "spanish",
+    "portuguese", "italian", "german", "dutch", "belgian", "brazilian",
+    "argentine", "argentinian", "uruguayan", "colombian", "chilean", "mexican",
+    "american", "canadian", "croatian", "serbian", "polish", "czech", "slovak",
+    "swedish", "norwegian", "danish", "finnish", "swiss", "austrian", "turkish",
+    "greek", "russian", "ukrainian", "hungarian", "romanian", "bulgarian",
+    "moroccan", "algerian", "tunisian", "egyptian", "nigerian", "ghanaian",
+    "senegalese", "ivorian", "cameroonian", "malian", "japanese", "korean",
+    "australian", "ecuadorian", "paraguayan", "peruvian", "venezuelan",
+    "icelandic", "albanian", "kosovan", "bosnian", "slovenian", "georgian",
+    "armenian", "israeli", "iranian", "jamaican", "spaniard",
+}
+
 # Club Mapping Metadata
 CLUB_ALIASES = {
     "arsenal": "Arsenal", "aston villa": "Aston_Villa", "villa": "Aston_Villa",
     "bournemouth": "Bournemouth", "brentford": "Brentford", "brighton": "Brighton",
-    "burnley": "Burnley", "chelsea": "Chelsea", "crystal palace": "Crystal_Palace", 
-    "palace": "Crystal_Palace", "everton": "Everton", "fulham": "Fulham", 
-    "ipswich": "Ipswich", "ipswich town": "Ipswich", "leeds": "Leeds", 
-    "leeds united": "Leeds", "leicester": "Leicester", "leicester city": "Leicester", 
-    "liverpool": "Liverpool", "manchester city": "Man_City", "man city": "Man_City", 
-    "manchester united": "Man_Utd", "man united": "Man_Utd", "man utd": "Man_Utd", 
+    "burnley": "Burnley", "chelsea": "Chelsea", "crystal palace": "Crystal_Palace",
+    "palace": "Crystal_Palace", "everton": "Everton", "fulham": "Fulham",
+    "ipswich": "Ipswich", "ipswich town": "Ipswich", "leeds": "Leeds",
+    "leeds united": "Leeds", "leicester": "Leicester", "leicester city": "Leicester",
+    "liverpool": "Liverpool", "manchester city": "Man_City", "man city": "Man_City",
+    "manchester united": "Man_Utd", "man united": "Man_Utd", "man utd": "Man_Utd",
     "newcastle": "Newcastle", "newcastle united": "Newcastle", "nottingham forest": "Nottm_Forest",
     "nott'm forest": "Nottm_Forest", "forest": "Nottm_Forest", "southampton": "Southampton",
-    "sunderland": "Sunderland", "tottenham": "Spurs", "spurs": "Spurs", 
-    "tottenham hotspur": "Spurs", "west ham": "West_Ham", "west ham united": "West_Ham", 
+    "sunderland": "Sunderland", "tottenham": "Spurs", "spurs": "Spurs",
+    "tottenham hotspur": "Spurs", "west ham": "West_Ham", "west ham united": "West_Ham",
     "wolves": "Wolves", "wolverhampton": "Wolves",
 }
 
