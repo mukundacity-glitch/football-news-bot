@@ -75,23 +75,28 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
 
     name = None
-    for m in re.findall(r'\b([A-Z][a-zà-ÿ]+(?:\s+(?:(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-Z][a-zà-ÿ]+)+)\b', cleaned):
+    for m in re.findall(r'\b([A-ZÀ-ÖØ-Þ][a-zà-ÿ]+(?:\s+(?:(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-ZÀ-ÖØ-Þ][a-zà-ÿ]+)+)\b', cleaned):
         if not _is_bad_name(m.lower(), event):
             name = m
             break
             
     if not name and fpl_data:
-        for m in re.findall(r'\b([A-Z][a-zà-ÿ]{2,})\b', cleaned):
+        for m in re.findall(r'\b([A-ZÀ-ÖØ-Þ][a-zà-ÿ]{2,})\b', cleaned):
             if _is_bad_name(m.lower(), event): continue
             if find_player_in_fpl(m, fpl_data):
                 name = m
                 break
 
-    clubs = []
+    # Resolve clubs and order them by FIRST appearance in the text, so the
+    # destination heuristic picks the club the tweet actually leads with.
+    club_pos = {}
     for alias in _SORTED_ALIASES:
-        if re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl):
+        m = re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl)
+        if m:
             k = CLUB_ALIASES[alias]
-            if k not in clubs: clubs.append(k)
+            if k not in club_pos or m.start() < club_pos[k]:
+                club_pos[k] = m.start()
+    clubs = sorted(club_pos, key=lambda k: club_pos[k])
 
     fpl_player_el = find_player_in_fpl(name, fpl_data) if name and fpl_data else None
     actual_current_club_key = fpl_team_key(fpl_player_el, fpl_data) if fpl_player_el else None
