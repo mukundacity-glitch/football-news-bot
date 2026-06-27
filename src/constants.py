@@ -11,6 +11,7 @@ PENDING_DIR = Path("queue/pending")
 POSTED_DIR = Path("queue/posted")
 LOGOS_DIR = Path("data/logos")
 PLAYERS_DIR = Path("data/players")
+DRAFTS_DIR = Path("fpl_drafts")
 
 # Target Scrape Accounts
 JOURNALISTS = [
