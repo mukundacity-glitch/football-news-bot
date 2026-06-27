@@ -9,9 +9,18 @@ verification functions to enforce data integrity across the bot's logic.
 import json
 import urllib.request
 import re
+import unicodedata
 from pathlib import Path
 from datetime import datetime, timezone
 from src.constants import CLUB_ALIASES
+
+
+def _strip(s: str) -> str:
+    """Lowercase + remove diacritics so 'Álvarez' matches 'alvarez', 'Guimarães' matches 'guimaraes'."""
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", str(s))
+    return "".join(c for c in s if not unicodedata.combining(c)).lower().strip()
 
 # Sort aliases by length for safe regex matching (longest first) to prevent partial word overrides
 _SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
@@ -23,7 +32,7 @@ def resolve_club_key(name: str) -> str | None:
     if not name:
         return None
     
-    n = name.lower()
+    n = _strip(name)
     for alias in _SORTED_ALIASES:
         if re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', n):
             return CLUB_ALIASES[alias]
@@ -74,15 +83,15 @@ def find_player_in_fpl(player_name: str, fpl_data: dict) -> dict | None:
     if not fpl_data or not player_name: 
         return None
         
-    q = player_name.lower().strip()
+    q = _strip(player_name)
     tokens = [t for t in re.split(r'[\s\-]+', q) if t]
     
     if not tokens: 
         return None
         
     for el in fpl_data.get("elements", []):
-        web = el["web_name"].lower()
-        full = f"{el['first_name']} {el['second_name']}".lower()
+        web = _strip(el["web_name"])
+        full = _strip(f"{el['first_name']} {el['second_name']}")
         
         # Priority 1: Exact match on full name or web name
         if q == full or q == web: 
