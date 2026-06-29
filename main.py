@@ -222,6 +222,18 @@ def is_reliable_source(sources) -> bool:
     outlet (tiers 1-3). Reliable sources may post without an FPL-database match."""
     return any(source_tier(s) in (1, 2, 3) for s in (sources or []))
 
+# Normalised handles of every account we scrape — used to catch the common
+# misparse where a REPORTER'S name ("Alex Crook", "David Ornstein") gets picked
+# up as the "player".
+_SOURCE_HANDLES = {
+    re.sub(r'[^a-z0-9]', '', h.lower())
+    for h in (set(JOURNALISTS) | OFFICIAL_ACCOUNTS | ELITE_TRUSTED | TRUSTED_MEDIA)
+}
+
+def looks_like_reporter(name) -> bool:
+    n = re.sub(r'[^a-z0-9]', '', (name or '').lower())
+    return bool(n) and n in _SOURCE_HANDLES
+
 # ── STATE ────────────────────────────────────────────────────────────────
 # Daily post cap. Generous, but capped so a freak news day can't burst-flag us.
 DAILY_POST_LIMIT = _env_int("DAILY_POST_LIMIT", 30)
@@ -585,6 +597,7 @@ def validate_story(story, fpl_data=None, sources=None):
     for ph in PLACEHOLDERS:
         if ph in blob: return False, f"placeholder_text:{ph!r}"
     if looks_like_club(player): return False, "player_is_club"
+    if looks_like_reporter(player): return False, "player_is_reporter_name"
     if re.search(r'\bRT\s+@|@\w+|https?://', story.get("body", "")): return False, "raw_source_text_in_body"
     if player_already_at_club(story, fpl_data): return False, "already_at_destination"
     if ev in ("transfer", "loan", "loan_option"):
@@ -955,6 +968,7 @@ _TWIKIT_SUCCESS_PARSE_KEYS = {
 _X_DUPLICATE_CODES = {"187"}
 _X_FLAG_CODES = {"226", "326", "334", "64", "261"}   # automated / locked / suspended
 _X_RATELIMIT_CODES = {"429", "88"}
+_X_AUTH_CODES = {"32", "89", "99", "135", "215", "401"}  # bad/expired posting cookies
 
 class XBackoffError(Exception):
     """Raised when X signals automation/rate-limit. The posting run must abort
@@ -975,6 +989,9 @@ def classify_x_error(exc) -> str:
     if (codes & _X_FLAG_CODES or "automated" in s or "spam" in s or "locked" in s
             or "suspend" in s or "accountlocked" in cls or "accountsuspended" in cls):
         return "flagged"
+    if (codes & _X_AUTH_CODES or "could not authenticate" in s or "unauthorized" in cls
+            or "bad authentication" in s or "invalid or expired token" in s):
+        return "auth"
     return "transient"
 
 def _set_cooldown(data, kind):
@@ -1044,9 +1061,9 @@ async def post_item(post_client, item, data):
         print(f"  POST BLOCKED (no image could be produced): {item.get('player')!r}")
         return False
 
-    media_id = await post_client.upload_media(image_path, media_type="image/png")
     posted_live = False
     try:
+        media_id = await post_client.upload_media(image_path, media_type="image/png")
         await post_client.create_tweet(text=caption, media_ids=[media_id])
         posted_live = True
 
@@ -1074,6 +1091,15 @@ async def post_item(post_client, item, data):
             # Automation/spam/rate-limit flag — abort the whole run, do not retry.
             _set_cooldown(data, kind)
             raise XBackoffError(kind, exc)
+        if kind == "auth":
+            # Posting cookies are invalid/expired — EVERY post will fail the same
+            # way, so abort once with an actionable message (no cooldown; a re-run
+            # works immediately after the cookies are refreshed).
+            print("  [X-AUTH] ❌ X rejected the login (code 32 / 401 'Could not "
+                  "authenticate you'). The posting cookies are expired or wrong.\n"
+                  "          Refresh the GitHub Secrets X_POST_AUTH_TOKEN and "
+                  "X_POST_CT0_TOKEN, then re-run. Nothing was posted; account is NOT flagged.")
+            raise XBackoffError("auth", exc)
         # transient -> let the caller's single cautious retry handle it.
         raise
 
