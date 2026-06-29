@@ -223,8 +223,9 @@ def is_reliable_source(sources) -> bool:
     return any(source_tier(s) in (1, 2, 3) for s in (sources or []))
 
 # ── STATE ────────────────────────────────────────────────────────────────
-# Conservative default daily post cap. Override with env DAILY_POST_LIMIT.
-DAILY_POST_LIMIT = _env_int("DAILY_POST_LIMIT", 8)
+# Daily post cap — effectively unlimited so nothing gets stuck. Override with
+# env DAILY_POST_LIMIT if you ever want to throttle.
+DAILY_POST_LIMIT = _env_int("DAILY_POST_LIMIT", 1000)
 
 def load_data() -> dict:
     fresh = {"daily": {"date": "", "count": 0, "limit": DAILY_POST_LIMIT}, "stories": {}, "posted_ids": []}
@@ -1384,15 +1385,20 @@ async def build_draft(item, data, fpl):
 # the env var ENABLE_AUTOPOST=true. The GitHub Actions BOT_PAUSED repo variable
 # remains a separate, independent kill switch.
 #
-# Defaults are deliberately conservative to avoid X's automation/spam flags
-# (errors 226/334/326). Every limit can be tuned via env vars.
+# Throughput policy: post EVERY eligible story (no volume cap) — nothing gets
+# stuck waiting for a quota. What actually prevents X's automation/spam flags
+# (errors 226/334/326) is the SPACING between posts, not the count, so the
+# per-post jitter below is the real protection. If X ever does flag us, the
+# cooldown kicks in automatically. Every value is tunable via env vars.
 ENABLE_AUTOPOST = (os.getenv("ENABLE_AUTOPOST", "").strip().lower() == "true")
-MAX_POSTS_PER_RUN = _env_int("MAX_POSTS_PER_RUN", 1)    # one post per scrape run
-MAX_POSTS_PER_HOUR = _env_int("MAX_POSTS_PER_HOUR", 2)  # hard hourly ceiling
-# Random human-like pause before each post (anti-automation). (min, max) seconds.
+# Effectively unlimited by default — drains the whole ready queue each run.
+MAX_POSTS_PER_RUN = _env_int("MAX_POSTS_PER_RUN", 1000)
+MAX_POSTS_PER_HOUR = _env_int("MAX_POSTS_PER_HOUR", 1000)
+# Random human-like pause before each post. THIS is the anti-flag mechanism —
+# it spaces posts out so they never go as a burst. (min, max) seconds.
 POST_JITTER_RANGE_S = (
-    _env_int("POST_JITTER_MIN_S", 60),
-    _env_int("POST_JITTER_MAX_S", 180),
+    _env_int("POST_JITTER_MIN_S", 45),
+    _env_int("POST_JITTER_MAX_S", 120),
 )
 # Back-off windows after X flags us, so we stop hammering a flagged account.
 COOLDOWN_FLAGGED_MIN = _env_int("COOLDOWN_FLAGGED_MIN", 180)     # 3h after 226/326
