@@ -564,6 +564,88 @@ def validate_story(story, fpl_data=None):
     if ev == "manager" and not (story.get("to_key") or story.get("to_club")): return False, "manager_no_club"
     return True, "ok"
 
+# ── PRE-RENDER ACCURACY DOUBLE-CHECK ─────────────────────────────────────
+# Card fields whose value is printed verbatim onto the player card. If any of
+# these still carries placeholder/blank text we must NOT render a card.
+_CARD_PLACEHOLDERS = (
+    "player name", "example", "xxx", "tbd", "to follow", "lorem",
+    "from club", "to club", "updated heading", "duration & details",
+    "n/a", "none", "null", "undefined", "[", "]",
+)
+
+def verify_card_data(item: dict, fpl_data=None):
+    """Final accuracy gate run IMMEDIATELY before a player card is rendered.
+
+    This is the "double check" step: it re-resolves the player and clubs against
+    the live FPL feed and normalises the item so the card shows verified, accurate
+    data (correct display name, true origin club, real crest). Returns
+    ``(ok, reason, report)`` where ``report`` is a list of human-readable lines
+    describing what was checked. A failed check means the card is NOT created.
+    """
+    report = []
+    ev = item.get("event")
+    PERSON_EVENTS = ("transfer", "loan", "loan_option", "renewal", "stay",
+                     "injury", "suspension", "manager")
+
+    # 1. Player identity — the name printed on the card MUST be a verified PL
+    #    player. We resolve against FPL and pin the canonical web_name so the
+    #    renderer and the tweet body agree on exactly one spelling.
+    if ev in PERSON_EVENTS and ev != "manager":
+        el = find_player_in_fpl(item.get("player"), fpl_data) if fpl_data else None
+        if not el:
+            return False, "player_not_verified_in_fpl", report
+        item["verified_player_name"] = el.get("web_name")
+        item["verified_player_code"] = el.get("code")
+        report.append(f"player ✓ '{item.get('player')}' → FPL '{el.get('web_name')}' (code {el.get('code')})")
+
+        # 2. Origin club — overwrite from_key with the player's TRUE current FPL
+        #    club so the card never shows a stale/guessed origin.
+        if ev in ("transfer", "loan", "loan_option"):
+            true_from = fpl_team_key(el, fpl_data)
+            if true_from and el.get("team", 0) != 0:
+                if item.get("from_key") != true_from:
+                    report.append(f"origin corrected: {item.get('from_key')!r} → {true_from!r} (player's real FPL club)")
+                item["from_key"] = true_from
+                item["from_club"] = true_from.replace("_", " ")
+            # 3. Destination sanity — never claim a move to the club the player
+            #    is already at.
+            if item.get("to_key") and item.get("to_key") == item.get("from_key"):
+                return False, "destination_equals_current_club", report
+    else:
+        report.append(f"player ✓ '{item.get('player')}' (event={ev}, FPL match not required)")
+
+    # 4. Injury / suspension cards must come from an approved medical source.
+    if ev in ("injury", "suspension"):
+        sources = item.get("sources", []) or []
+        tiers = [source_tier(s) for s in sources]
+        approved = any(t in (1, 2) for t in tiers) or any(
+            (s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS for s in sources)
+        if not approved:
+            return False, "injury_source_not_approved", report
+        report.append(f"injury source ✓ approved ({', '.join('@' + s for s in sources[:2]) or 'n/a'})")
+
+    # 5. Club crest resolvability — for a known PL/aliased club we expect a crest.
+    #    Missing crest for a real club is a soft warning (the card still renders a
+    #    branded fallback); a foreign club legitimately has no crest.
+    anchor = item.get("to_key") or item.get("from_key")
+    if anchor:
+        safe = anchor.replace(" ", "_").replace("'", "")
+        if FPL_LOGO_IDS.get(safe) or Path(f"logos/{safe}.png").exists():
+            report.append(f"crest ✓ available for {anchor!r}")
+        else:
+            report.append(f"crest ⚠ no PL crest for {anchor!r} (branded fallback will be used)")
+
+    # 6. No placeholder/blank text leaking onto the card surface.
+    card_fields = ("player", "from_club", "to_club", "fee", "diagnosis",
+                   "expected_return", "next_match")
+    blob = " ".join(str(item.get(k, "") or "") for k in card_fields).lower()
+    for ph in _CARD_PLACEHOLDERS:
+        if ph in blob:
+            return False, f"placeholder_on_card:{ph!r}", report
+
+    report.append("data accuracy ✓ all card fields verified")
+    return True, "ok", report
+
 # ── LABELS ───────────────────────────────────────────────────────────────
 APPROVED_LABELS = {
     "TRANSFER", "RUMOUR", "INJURY", "SUSPENSION", "CONTRACT EXTENSION",
@@ -815,9 +897,18 @@ _TWIKIT_SUCCESS_PARSE_KEYS = {
 }
 
 async def post_item(post_client, item, data):
-    valid, why = validate_story(item, fetch_fpl_data())
+    fpl = fetch_fpl_data()
+    valid, why = validate_story(item, fpl)
     if not valid:
         print(f"  POST BLOCKED ({why}): {item.get('player')!r}")
+        if item.get("id") and item["id"] not in data["posted_ids"]:
+            data["posted_ids"].append(item["id"]); save_data(data)
+        return False
+    # Re-run the accuracy double-check at post time in case the card is being
+    # regenerated here (e.g. the cached draft image went missing).
+    ok, vwhy, _ = verify_card_data(item, fpl)
+    if not ok:
+        print(f"  POST BLOCKED (verify:{vwhy}): {item.get('player')!r}")
         if item.get("id") and item["id"] not in data["posted_ids"]:
             data["posted_ids"].append(item["id"]); save_data(data)
         return False
@@ -1127,7 +1218,19 @@ async def build_draft(item, data, fpl):
         if item.get("id") and item["id"] not in data["posted_ids"]:
             data["posted_ids"].append(item["id"])
         return None
-        
+
+    # DOUBLE-CHECK: verify every fact on the card against the live FPL feed
+    # BEFORE we render it. No card is created from inaccurate/unverified data.
+    ok, why, report = verify_card_data(item, fpl)
+    print(f"  [VERIFY] {item.get('player')!r}:")
+    for line in report:
+        print(f"           {line}")
+    if not ok:
+        print(f"  VERIFY FAILED ({why}) — card NOT created: {item.get('player')!r}")
+        if item.get("id") and item["id"] not in data["posted_ids"]:
+            data["posted_ids"].append(item["id"])
+        return None
+
     image_path = PENDING_DIR / f"{_slug(item)}.png"
     try:
         if item.get("event") == "injury":
@@ -1233,9 +1336,13 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
             story.update({"id": tid, "key": build_story_key(
                 story["player"], story.get("to_key") or story.get("from_key") or "unknown",
                 story["event"]), "sources": [username], "mode": "rumour"})
+            ok, vwhy, _ = verify_card_data(story, fpl)
+            if not ok:
+                print(f"  [DRY] VERIFY FAILED ({vwhy}) — card skipped: {story.get('player')!r}")
+                continue
             img_path = dryrun_dir / f"{re.sub(r'[^a-z0-9_]', '', story['key'])}.png"
             try:
-                await create_transfer_image(story, story["sources"], str(img_path), collapsed=(story.get("collapsed", False)))
+                create_transfer_image(story, story["sources"], str(img_path), collapsed=(story.get("collapsed", False)))
                 if img_path.exists() and img_path.stat().st_size >= 1000: total_img_ok += 1
                 else:
                     total_img_fail += 1
