@@ -10,7 +10,7 @@ import asyncio
 import requests
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageChops
 from pilmoji import Pilmoji
@@ -75,6 +75,16 @@ X_POST_AUTH_TOKEN = (os.getenv("X_POST_AUTH_TOKEN") or "").strip()
 X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or "").strip()
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
+
+def _env_int(name, default):
+    """Read an int env var, falling back to default for unset OR empty values.
+    (An unset GitHub Actions Variable is passed through as an empty string.)"""
+    raw = (os.getenv(name) or "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        print(f"[CONFIG] {name}={raw!r} is not an int — using default {default}.")
+        return default
 
 # ── PATHS ────────────────────────────────────────────────────────────────
 POSTED_FILE = Path("posted_news.json")
@@ -182,9 +192,42 @@ def hashtag_for(name_or_key: str):
     n = name_or_key.replace("_", " ").lower()
     return CLUB_HASHTAG_MAP.get(resolve_club_key(n) or "", CLUB_HASHTAGS.get(n))
 
+# Full, broadcast-style club names for the tweet description AND the card, so the
+# two never disagree (e.g. "Man_City" -> "Manchester City" in both places).
+CLUB_FULL_NAME = {
+    "Arsenal": "Arsenal", "Aston_Villa": "Aston Villa", "Bournemouth": "Bournemouth",
+    "Brentford": "Brentford", "Brighton": "Brighton", "Burnley": "Burnley",
+    "Chelsea": "Chelsea", "Crystal_Palace": "Crystal Palace", "Everton": "Everton",
+    "Fulham": "Fulham", "Ipswich": "Ipswich Town", "Leeds": "Leeds United",
+    "Leicester": "Leicester City", "Liverpool": "Liverpool", "Man_City": "Manchester City",
+    "Man_Utd": "Manchester United", "Newcastle": "Newcastle United", "Nottm_Forest": "Nottingham Forest",
+    "Southampton": "Southampton", "Spurs": "Tottenham", "Sunderland": "Sunderland",
+    "West_Ham": "West Ham", "Wolves": "Wolves",
+}
+
+def club_display(key_or_name) -> str:
+    """Resolve a club key or raw name to its full display name."""
+    if not key_or_name:
+        return ""
+    if key_or_name in CLUB_FULL_NAME:
+        return CLUB_FULL_NAME[key_or_name]
+    k = resolve_club_key(key_or_name)
+    if k and k in CLUB_FULL_NAME:
+        return CLUB_FULL_NAME[k]
+    # Foreign / unknown club: prettify the raw string (e.g. "real_madrid" -> "Real Madrid").
+    return str(key_or_name).replace("_", " ").strip().title()
+
+def is_reliable_source(sources) -> bool:
+    """True if any source is an official account, elite reporter, or trusted media
+    outlet (tiers 1-3). Reliable sources may post without an FPL-database match."""
+    return any(source_tier(s) in (1, 2, 3) for s in (sources or []))
+
 # ── STATE ────────────────────────────────────────────────────────────────
+# Daily post cap. Generous, but capped so a freak news day can't burst-flag us.
+DAILY_POST_LIMIT = _env_int("DAILY_POST_LIMIT", 30)
+
 def load_data() -> dict:
-    fresh = {"daily": {"date": "", "count": 0, "limit": 24}, "stories": {}, "posted_ids": []}
+    fresh = {"daily": {"date": "", "count": 0, "limit": DAILY_POST_LIMIT}, "stories": {}, "posted_ids": []}
     if POSTED_FILE.exists():
         try:
             with open(POSTED_FILE) as f: d = json.load(f)
@@ -222,7 +265,7 @@ def save_data(data: dict):
 def check_daily_limit(data: dict) -> bool:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if data["daily"]["date"] != today:
-        data["daily"] = {"date": today, "count": 0, "limit": 24}
+        data["daily"] = {"date": today, "count": 0, "limit": DAILY_POST_LIMIT}
     return data["daily"]["count"] < data["daily"]["limit"]
 
 def increment_daily(data: dict):
@@ -511,10 +554,11 @@ def classify_post(story, sources):
     if has_media: return "rumour"
     return None
 
-def validate_story(story, fpl_data=None):
+def validate_story(story, fpl_data=None, sources=None):
     ev = story.get("event")
     player = (story.get("player") or "").strip()
     if not player: return False, "missing_player"
+    if sources is None: sources = story.get("sources", [])
     _ptokens = [t for t in re.split(r"[\s\-']+", player) if t]
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
@@ -522,10 +566,16 @@ def validate_story(story, fpl_data=None):
     if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
 
-    # ACCURACY GATE: only post about players verified in the current FPL/Premier League dataset.
+    # ACCURACY GATE: post about FPL-verified players, OR — when the source is a
+    # reliable reporter/website (tiers 1-3) — players not yet in the FPL dataset.
     PERSON_EVENTS = ("transfer", "loan", "loan_option", "renewal", "stay", "injury", "suspension", "manager")
     if fpl_data and ev in PERSON_EVENTS and find_player_in_fpl(player, fpl_data) is None:
-        return False, "not_verified_pl_player"
+        if not is_reliable_source(sources):
+            return False, "not_verified_pl_player"
+        # Reliable source but unverified player still needs a PL-club anchor so we
+        # only post genuinely Premier-League-related news.
+        if not (story.get("to_key") or story.get("from_key")):
+            return False, "reliable_source_but_no_pl_club"
 
     PLACEHOLDERS = ("player name", "example", "xxx", "[", "]", "tbd", "to follow",
                     "lorem", "duration & details", "updated heading", "from club", "to club")
@@ -564,6 +614,109 @@ def validate_story(story, fpl_data=None):
     if ev == "manager" and not (story.get("to_key") or story.get("to_club")): return False, "manager_no_club"
     return True, "ok"
 
+# ── PRE-RENDER ACCURACY DOUBLE-CHECK ─────────────────────────────────────
+# Card fields whose value is printed verbatim onto the player card. If any of
+# these still carries placeholder/blank text we must NOT render a card.
+_CARD_PLACEHOLDERS = (
+    "player name", "example", "xxx", "tbd", "to follow", "lorem",
+    "from club", "to club", "updated heading", "duration & details",
+    "n/a", "none", "null", "undefined", "[", "]",
+)
+
+def verify_card_data(item: dict, fpl_data=None):
+    """Final accuracy gate run IMMEDIATELY before a player card is rendered.
+
+    This is the "double check" step: it re-resolves the player and clubs against
+    the live FPL feed and normalises the item so the card shows verified, accurate
+    data (correct display name, true origin club, real crest). Returns
+    ``(ok, reason, report)`` where ``report`` is a list of human-readable lines
+    describing what was checked. A failed check means the card is NOT created.
+    """
+    report = []
+    ev = item.get("event")
+    reliable = is_reliable_source(item.get("sources"))
+    PERSON_EVENTS = ("transfer", "loan", "loan_option", "renewal", "stay",
+                     "injury", "suspension", "manager")
+
+    # 1. Player identity — resolve against the FPL feed and pin ONE display name
+    #    used by both the card and the tweet (so they can never disagree).
+    #    A reliable source (official/elite/trusted media) may post even when the
+    #    player isn't in the FPL database yet (e.g. a brand-new signing).
+    if ev in PERSON_EVENTS and ev != "manager":
+        el = find_player_in_fpl(item.get("player"), fpl_data) if fpl_data else None
+        if el:
+            full = f"{el.get('first_name', '')} {el.get('second_name', '')}".strip()
+            item["display_name"] = full or el.get("web_name") or item.get("player")
+            item["verified_player_code"] = el.get("code")
+            report.append(f"player ✓ '{item.get('player')}' → FPL '{item['display_name']}' (code {el.get('code')})")
+
+            # 2. Club anchoring — attach the player's TRUE current FPL club.
+            true_from = fpl_team_key(el, fpl_data)
+            if true_from and el.get("team", 0) != 0:
+                if ev in ("transfer", "loan", "loan_option"):
+                    # Origin is the player's real club, never a stale guess.
+                    if item.get("from_key") != true_from:
+                        report.append(f"origin corrected: {item.get('from_key')!r} → {true_from!r} (player's real FPL club)")
+                    item["from_key"] = true_from
+                    # 3. Destination sanity — never claim a move to the club the
+                    #    player is already at.
+                    if item.get("to_key") and item.get("to_key") == item.get("from_key"):
+                        return False, "destination_equals_current_club", report
+                elif not item.get("from_key") and not item.get("to_key"):
+                    # Injury/suspension/contract: show the player's club on the card.
+                    item["from_key"] = true_from
+                    report.append(f"club ✓ {true_from!r} (player's FPL club)")
+        elif reliable:
+            # Trusted source, player not in FPL yet — accept with the parsed name
+            # and let the card fall back to the tweet/website photo.
+            item["display_name"] = item.get("player")
+            report.append(f"player ⚠ '{item.get('player')}' not in FPL — accepted on reliable source "
+                          f"({', '.join('@' + s for s in (item.get('sources') or [])[:2])})")
+        else:
+            return False, "player_not_verified_and_source_not_reliable", report
+    else:
+        item["display_name"] = item.get("player")
+        report.append(f"player ✓ '{item.get('player')}' (event={ev})")
+
+    # Normalise club fields to full broadcast names so the card and tweet match
+    # exactly (e.g. card 'MANCHESTER CITY' == tweet 'MANCHESTER CITY').
+    if item.get("to_key"):
+        item["to_club"] = club_display(item["to_key"])
+    if item.get("from_key"):
+        item["from_club"] = club_display(item["from_key"])
+
+    # 4. Injury / suspension cards must come from an approved medical source.
+    if ev in ("injury", "suspension"):
+        sources = item.get("sources", []) or []
+        tiers = [source_tier(s) for s in sources]
+        approved = any(t in (1, 2) for t in tiers) or any(
+            (s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS for s in sources)
+        if not approved:
+            return False, "injury_source_not_approved", report
+        report.append(f"injury source ✓ approved ({', '.join('@' + s for s in sources[:2]) or 'n/a'})")
+
+    # 5. Club crest resolvability — for a known PL/aliased club we expect a crest.
+    #    Missing crest for a real club is a soft warning (the card still renders a
+    #    branded fallback); a foreign club legitimately has no crest.
+    anchor = item.get("to_key") or item.get("from_key")
+    if anchor:
+        safe = anchor.replace(" ", "_").replace("'", "")
+        if FPL_LOGO_IDS.get(safe) or Path(f"logos/{safe}.png").exists():
+            report.append(f"crest ✓ available for {anchor!r}")
+        else:
+            report.append(f"crest ⚠ no PL crest for {anchor!r} (branded fallback will be used)")
+
+    # 6. No placeholder/blank text leaking onto the card surface.
+    card_fields = ("player", "from_club", "to_club", "fee", "diagnosis",
+                   "expected_return", "next_match")
+    blob = " ".join(str(item.get(k, "") or "") for k in card_fields).lower()
+    for ph in _CARD_PLACEHOLDERS:
+        if ph in blob:
+            return False, f"placeholder_on_card:{ph!r}", report
+
+    report.append("data accuracy ✓ all card fields verified")
+    return True, "ok", report
+
 # ── LABELS ───────────────────────────────────────────────────────────────
 APPROVED_LABELS = {
     "TRANSFER", "RUMOUR", "INJURY", "SUSPENSION", "CONTRACT EXTENSION",
@@ -589,125 +742,103 @@ def status_label(story, mode):
     return label if label in APPROVED_LABELS else None
 
 # ── HASHTAGS ─────────────────────────────────────────────────────────────
-BASE_TAGS = ["#FPLVortex"]
 
 def build_hashtags(story):
+    """Exactly 4 SEO hashtags: club(s) first, then an event tag, padded with
+    #PremierLeague / #FPL. Source/brand tags are intentionally left out."""
     ev = story["event"]
-    tags = list(BASE_TAGS)
-    if ev in ("injury", "suspension"): tags.append("#InjuryNews")
-    elif ev in ("transfer", "loan", "loan_option", "renewal", "stay"): tags.append("#Transfers")
-    else: tags.append("#FootballNews")
+    out = []
+    # Club tags carry the most search value — lead with them.
     for key, name in ((story.get("to_key"), story.get("to_club")),
                       (story.get("from_key"), story.get("from_club"))):
         ht = hashtag_for(key) or hashtag_for(name)
-        if ht and ht not in tags: tags.append(ht)
-    if (story.get("to_key") or story.get("from_key")) and "#PremierLeague" not in tags:
-        tags.append("#PremierLeague")
-    return " ".join(tags[:4])
+        if ht and ht not in out: out.append(ht)
+    if ev in ("injury", "suspension"): etag = "#InjuryNews"
+    elif ev in ("transfer", "loan", "loan_option"): etag = "#TransferNews"
+    elif ev in ("renewal", "stay"): etag = "#ContractNews"
+    elif ev == "manager": etag = "#ManagerNews"
+    else: etag = "#FootballNews"
+    if etag not in out: out.append(etag)
+    for extra in ("#PremierLeague", "#FPL", "#PL", "#FPLVortex"):
+        if len(out) >= 4: break
+        if extra not in out: out.append(extra)
+    return " ".join(out[:4])
 
 # ── TWEET TEXT ───────────────────────────────────────────────────────────
-_TWEET_TEMPLATES = {
-    "OFFICIAL": [
-        "✅ OFFICIAL | {player} completes move to {dest}!",
-        "🔵 DONE DEAL | {player} joins {dest} — it's fully confirmed!",
-        "🚨 HERE WE GO | {player} is officially a {dest} player!",
-        "💎 SIGNED & SEALED | {player} has finalized his move to {dest}!",
-        "🤝 IT'S ANNOUNCED | {player} unrevealed as a new signing for {dest}!",
-        "🏟️ NEW ERA | {player} begins a new chapter at {dest}!",
-    ],
-    "TRANSFER": [
-        "🔴 TRANSFER | {player} linked with a move to {dest}.",
-        "⚡ TRANSFER NEWS | {player} attracting serious interest from {dest}.",
-        "📋 TRANSFER UPDATE | {player} is on {dest}'s radar this window.",
-        "🔥 MARKET TALK | {dest} are monitoring the situation of {player}.",
-        "🎯 TARGET SPOTTED | {dest} identifying {player} as a key option.",
-        "📈 MOVE POSSIBLE | Discussions surrounding {player} to {dest} gathering pace.",
-    ],
-    "RUMOUR": [
-        "👀 RUMOUR | {player} being linked with {dest} — unconfirmed.",
-        "🔍 TRANSFER TALK | Speculation suggests {player} could move to {dest}.",
-        "💬 UNCONFIRMED | {player} mentioned in connection with {dest}.",
-        "📰 PRESS REPORTS | Gossip linking {player} with a potential switch to {dest}.",
-        "🔮 WHISPERS | Internal chatter suggests {dest} might look at {player}.",
-        "📡 ON THE RADAR | Rumours growing over {player} testing the waters with {dest}.",
-    ],
-    "INJURY": [
-        "🚑 INJURY NEWS | {player} facing a spell on the sidelines.",
-        "❌ INJURY UPDATE | {player} being assessed — FPL managers take note!",
-        "⚠️ FITNESS CONCERN | {player} pickup an issue, confirms {origin}.",
-        "🏥 MEDICAL ROOM | {player} undergoing tests following a fresh setback.",
-        "💔 FPL BLOW | {player} sustained an injury and is set for a scans.",
-        "⏳ TIMELINE PENDING | {player} is a major doubt for upcoming fixtures.",
-    ],
-    "LOAN": [
-        "🔄 LOAN DEAL | {player} set for a temporary move to {dest}.",
-        "📤 LOAN UPDATE | {player} heading to {dest} on a short-term switch.",
-        "🤝 LOAN MOVE | {player} closing in on a temporary contract with {dest}.",
-        "🚀 TEMPORARY SWITCH | {player} departs on loan to join {dest}.",
-        "📦 SENT ON LOAN | {player} will spend the next stage of the season at {dest}.",
-        "📈 DEVELOPMENT Swapping shirts: {player} completes loan move to {dest}.",
-    ],
-    "SUSPENSION": [
-        "🟥 SUSPENSION | {player} set to miss upcoming fixtures.",
-        "⛔ BANNED | {player} faces a suspension penalty — check your FPL lines!",
-        "🚫 SUSPENDED | {player} ruled out of the selection pool through a disciplinary ban.",
-        "🟨 CARD TROUBLE | Disciplinary action sidelines {player} for the upcoming matches.",
-        "❌ RULED OUT | {player} will serve a suspension block starting immediately.",
-        "⚖️ DISCIPLINARY | {player} faces a mandatory layout suspension.",
-    ],
-    "CONTRACT EXTENSION": [
-        "📝 NEW DEAL | {player} set to extend his stay at {origin}!",
-        "🖊️ CONTRACT | {player} closing in on a brand new deal at {origin}!",
-        "✍️ STAYING PUT | {player} commits his future by signing a new contract!",
-        "🔒 LOCKED IN | {player} pens a renewal deal to stay with {origin}!",
-        "💎 EXTENSION | {player} rejects exit talks and extends with {origin}!",
-        "👑 FUTURE SECURED | {player} stays right where he is at {origin}!",
-    ],
-    "MANAGER NEWS": [
-        "🎩 MANAGER | {player} in the frame for the empty {dest} job.",
-        "👔 MANAGERIAL | {player} heavily linked with the {dest} hotseat.",
-        "📣 MANAGER NEWS | {player} being seriously considered at {dest}.",
-        "🗂️ DUGOUT SEARCH | {dest} open discussions over appointing {player}.",
-        "🧠 TACTICAL SHIFT | {player} leading the race to become the new boss at {dest}.",
-        "📋 APPOINTMENT PENDING | {player} enters advanced stages for the {dest} vacancy.",
-    ],
-    "HISTORICAL": [
-        "📅 HISTORICAL | {player} — {dest}.",
-        "🕰️ ON THIS DAY | Looking back at {player} — {dest}.",
-        "📖 FLASHBACK | Iconic moments: {player} — {dest}.",
-        "⏪ REWIND | Throwback file on {player} during his time with {dest}.",
-        "🎞️ MEMORY LANE | Celebrating {player} and his milestones at {dest}.",
-        "🌟 RETRO ARCHIVE | Unlocking a classic moment involving {player} and {dest}.",
-    ],
-}
+# Structured 3-line description that mirrors the player card exactly. No source
+# and no date here — those already live on the card. Emojis add appeal; the body
+# always fits a free (non-premium) X account's 280-char limit.
 
-def _pick_template(key: str, templates: list) -> str:
-    idx = int(hashlib.md5((key or "default").encode()).hexdigest(), 16) % len(templates)
-    return templates[idx]
+def tweet_player_name(story) -> str:
+    """The single display name used by BOTH the card and the tweet (no mismatch)."""
+    return (story.get("display_name") or story.get("player") or "Player").strip()
+
+def _avail_text(stage) -> str:
+    return {4: "FIT AGAIN", 3: "RULED OUT", 2: "MAJOR DOUBT", 1: "BEING ASSESSED"}.get(stage, "BEING ASSESSED")
 
 def build_tweet_body(story, sources, mode) -> str:
+    ev = story.get("event")
+    player = tweet_player_name(story).upper()
+    to_full = club_display(story.get("to_key") or story.get("to_club"))
+    from_full = club_display(story.get("from_key") or story.get("from_club"))
     label = status_label(story, mode)
-    if label is None:
-        label = "TRANSFER"
 
-    player = story.get("player") or "Transfer update"
-    to_club = (story.get("to_club") or (story.get("to_key") or "").replace("_", " ")).strip()
-    from_club = (story.get("from_club") or (story.get("from_key") or "").replace("_", " ")).strip()
-    dest = to_club or from_club or "a new club"
-    origin = from_club or to_club or "their current club"
+    headline = ""
+    details = []   # each entry is one "EMOJI LABEL — VALUE" line
 
-    templates = _TWEET_TEMPLATES.get(label, _TWEET_TEMPLATES["TRANSFER"])
-    template = _pick_template(story.get("key", player), templates)
+    if ev in ("transfer", "loan", "loan_option"):
+        move = "LOAN MOVE" if ev in ("loan", "loan_option") else "TRANSFER"
+        if story.get("collapsed"):
+            headline = f"❌ TRANSFER- {player} {move} TO {to_full or 'NEW CLUB'} HAS COLLAPSED."
+        else:
+            if label == "OFFICIAL":
+                emoji, status = "✅", "CONFIRMED"
+            elif label == "RUMOUR":
+                emoji, status = "👀", "LINKED WITH A"
+            else:
+                emoji, status = ("🔄" if move == "LOAN MOVE" else "🔵"), "CONFIRMED"
+            if from_full and to_full:
+                route = f" FROM {from_full.upper()} TO {to_full.upper()}"
+            elif to_full:
+                route = f" TO {to_full.upper()}"
+            elif from_full:
+                route = f" — SET TO LEAVE {from_full.upper()}"
+            else:
+                route = ""
+            prefix = "LOAN" if move == "LOAN MOVE" else "TRANSFER"
+            headline = f"{emoji} {prefix}- {player} {status} {move}{route}."
+        details.append(f"💰 PRICE — {story.get('fee') or 'TBD'}")
+        details.append(f"📝 CONTRACT — {story.get('contract') or 'TBD'}")
 
-    first_line = template.format(player=player, dest=dest, origin=origin)
-    return first_line + "\n\n" + build_hashtags(story)
+    elif ev in ("injury", "suspension"):
+        club = (to_full or from_full).upper()
+        club_part = f" ({club})" if club else ""
+        if ev == "suspension":
+            headline = f"🟥 SUSPENSION- {player}{club_part} IS SUSPENDED."
+            if story.get("diagnosis"):
+                details.append(f"⛔ REASON — {story['diagnosis']}")
+            details.append(f"📅 STATUS — {_avail_text(story.get('stage', 1))}")
+        else:
+            headline = f"🚑 INJURY- {player}{club_part} {_avail_text(story.get('stage', 1))}."
+            if story.get("diagnosis"):
+                details.append(f"🏥 DIAGNOSIS — {story['diagnosis']}")
+            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'TBC'}")
 
-def build_detail_line(story) -> str:
-    bits = []
-    if story.get("fee"): bits.append(story["fee"])
-    if story.get("contract"): bits.append(story["contract"])
-    if story.get("conditional"): bits.append(story["conditional"])
-    return "  |  ".join(bits)
+    elif ev in ("renewal", "stay"):
+        club = (from_full or to_full).upper()
+        headline = f"📝 CONTRACT- {player} SIGNS A NEW DEAL" + (f" AT {club}" if club else "") + "."
+        if story.get("contract"):
+            details.append(f"📝 TERMS — {story['contract']}")
+
+    elif ev == "manager":
+        club = (to_full or from_full).upper()
+        headline = f"🎩 MANAGER- {player} LINKED WITH THE {club or 'CLUB'} JOB."
+
+    else:
+        headline = f"🔵 NEWS- {player}."
+
+    lines = [headline] + details
+    return "\n".join(lines) + "\n\n" + build_hashtags(story)
 
 def twitter_len(text: str) -> int:
     url_re = re.compile(r'https?://\S+|www\.\S+')
@@ -814,10 +945,69 @@ _TWIKIT_SUCCESS_PARSE_KEYS = {
     "entities", "extended_entities", "card",
 }
 
+# ── X SAFETY: ERROR CLASSIFICATION & BACK-OFF ────────────────────────────
+# X returns numeric error codes when it doesn't like our activity. Retrying on
+# the wrong one is what gets an account locked. We classify the error and react:
+#   duplicate (187)         -> tweet already exists; record dedup, never retry.
+#   flagged   (226/326/64)  -> automation/spam/locked/suspended; STOP + cooldown.
+#   rate_limited (429/88)   -> too many requests; STOP + short cooldown.
+#   transient               -> network/parse blip; one cautious retry is allowed.
+_X_DUPLICATE_CODES = {"187"}
+_X_FLAG_CODES = {"226", "326", "334", "64", "261"}   # automated / locked / suspended
+_X_RATELIMIT_CODES = {"429", "88"}
+
+class XBackoffError(Exception):
+    """Raised when X signals automation/rate-limit. The posting run must abort
+    immediately and back off — these are never safe to retry."""
+    def __init__(self, kind, original):
+        super().__init__(f"{kind}: {original}")
+        self.kind = kind
+
+def classify_x_error(exc) -> str:
+    s = str(exc).lower()
+    cls = type(exc).__name__.lower()
+    # Pull any explicit "code": NNN values out of the error payload.
+    codes = set(re.findall(r'code["\']?\s*[:=]\s*["\']?(\d+)', s))
+    if codes & _X_DUPLICATE_CODES or "duplicate" in s or "duplicatetweet" in cls:
+        return "duplicate"
+    if codes & _X_RATELIMIT_CODES or "toomanyrequests" in cls or "rate limit" in s:
+        return "rate_limited"
+    if (codes & _X_FLAG_CODES or "automated" in s or "spam" in s or "locked" in s
+            or "suspend" in s or "accountlocked" in cls or "accountsuspended" in cls):
+        return "flagged"
+    return "transient"
+
+def _set_cooldown(data, kind):
+    """Persist a back-off window so subsequent runs don't keep hitting X while flagged."""
+    mins = COOLDOWN_FLAGGED_MIN if kind == "flagged" else COOLDOWN_RATELIMIT_MIN
+    until = datetime.now(timezone.utc) + timedelta(minutes=mins)
+    data["cooldown_until"] = until.isoformat()
+    save_data(data)
+    print(f"  [X-SAFETY] {kind.upper()} detected — backing off {mins} min "
+          f"(until {until.isoformat()}). No further posts will be attempted until then.")
+
+def in_cooldown(data) -> bool:
+    cu = data.get("cooldown_until")
+    if not cu:
+        return False
+    try:
+        return datetime.now(timezone.utc) < datetime.fromisoformat(cu)
+    except Exception:
+        return False
+
 async def post_item(post_client, item, data):
-    valid, why = validate_story(item, fetch_fpl_data())
+    fpl = fetch_fpl_data()
+    valid, why = validate_story(item, fpl)
     if not valid:
         print(f"  POST BLOCKED ({why}): {item.get('player')!r}")
+        if item.get("id") and item["id"] not in data["posted_ids"]:
+            data["posted_ids"].append(item["id"]); save_data(data)
+        return False
+    # Re-run the accuracy double-check at post time in case the card is being
+    # regenerated here (e.g. the cached draft image went missing).
+    ok, vwhy, _ = verify_card_data(item, fpl)
+    if not ok:
+        print(f"  POST BLOCKED (verify:{vwhy}): {item.get('player')!r}")
         if item.get("id") and item["id"] not in data["posted_ids"]:
             data["posted_ids"].append(item["id"]); save_data(data)
         return False
@@ -867,6 +1057,25 @@ async def post_item(post_client, item, data):
             posted_live = True
         else:
             raise
+
+    except Exception as exc:
+        kind = classify_x_error(exc)
+        if kind == "duplicate":
+            # X already has this tweet. Record dedup so we NEVER try it again,
+            # but don't count it against today's quota (nothing new was posted).
+            print(f"  [X-SAFETY] DUPLICATE (187) — already on X; recording dedup, will not retry: {item.get('player')!r}")
+            if item.get("id") and item["id"] not in data["posted_ids"]:
+                data["posted_ids"].append(item["id"])
+            record_content_dedup(item, data)
+            save_data(data)
+            move_to_posted(item)
+            return False
+        if kind in ("flagged", "rate_limited"):
+            # Automation/spam/rate-limit flag — abort the whole run, do not retry.
+            _set_cooldown(data, kind)
+            raise XBackoffError(kind, exc)
+        # transient -> let the caller's single cautious retry handle it.
+        raise
 
     if posted_live:
         record_posted(item, data)
@@ -1030,7 +1239,7 @@ async def scrape(data, read_client):
                 print(f"   skip ({why}): {text[:70]!r}")
                 continue
                 
-            valid, vwhy = validate_story(story, fpl)
+            valid, vwhy = validate_story(story, fpl, sources=[username])
             if not valid:
                 skipped += 1
                 print(f"   invalid ({vwhy}): {text[:70]!r}")
@@ -1127,7 +1336,19 @@ async def build_draft(item, data, fpl):
         if item.get("id") and item["id"] not in data["posted_ids"]:
             data["posted_ids"].append(item["id"])
         return None
-        
+
+    # DOUBLE-CHECK: verify every fact on the card against the live FPL feed
+    # BEFORE we render it. No card is created from inaccurate/unverified data.
+    ok, why, report = verify_card_data(item, fpl)
+    print(f"  [VERIFY] {item.get('player')!r}:")
+    for line in report:
+        print(f"           {line}")
+    if not ok:
+        print(f"  VERIFY FAILED ({why}) — card NOT created: {item.get('player')!r}")
+        if item.get("id") and item["id"] not in data["posted_ids"]:
+            data["posted_ids"].append(item["id"])
+        return None
+
     image_path = PENDING_DIR / f"{_slug(item)}.png"
     try:
         if item.get("event") == "injury":
@@ -1157,23 +1378,44 @@ async def build_draft(item, data, fpl):
     return item
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
-AUTOPOST_MODES = {"confirmed", "rumour"}
 
-# ================== MANUAL DRAFT MODE ==================
-# Auto-posting is completely disabled for safety
-BOT_PAUSED = True
-ENABLE_AUTOPOST = False
-MAX_POSTS_PER_RUN = 0
-MAX_POSTS_PER_HOUR = 0
+# ================== AUTO-POST SAFETY CONFIG ==================
+# Auto-posting is OPT-IN. It stays OFF (draft-only) unless you explicitly set
+# the env var ENABLE_AUTOPOST=true. The GitHub Actions BOT_PAUSED repo variable
+# remains a separate, independent kill switch.
+#
+# Policy: NEVER getting flagged is the priority. Posts go out one at a time,
+# well spaced (the jitter below is the real anti-flag mechanism), highest-value
+# PLAYER news first (see EVENT_PRIORITY). On a normal day every story posts; on
+# a freak flood the per-run/hour caps defer the least important items to the
+# next run rather than bursting. If X ever pushes back, the cooldown engages.
+#
+# Auto-post defaults ON so it's set-and-forget after merge. To pause without a
+# code change, set repo Variable ENABLE_AUTOPOST=false (or BOT_PAUSED=true).
+ENABLE_AUTOPOST = ((os.getenv("ENABLE_AUTOPOST") or "true").strip().lower() == "true")
+MAX_POSTS_PER_RUN = _env_int("MAX_POSTS_PER_RUN", 10)
+MAX_POSTS_PER_HOUR = _env_int("MAX_POSTS_PER_HOUR", 12)
+# Random human-like pause before each post. THIS is the anti-flag mechanism —
+# it spaces posts out so they never go as a burst. (min, max) seconds.
+POST_JITTER_RANGE_S = (
+    _env_int("POST_JITTER_MIN_S", 60),
+    _env_int("POST_JITTER_MAX_S", 150),
+)
+# Back-off windows after X flags us, so we stop hammering a flagged account.
+COOLDOWN_FLAGGED_MIN = _env_int("COOLDOWN_FLAGGED_MIN", 180)     # 3h after 226/326
+COOLDOWN_RATELIMIT_MIN = _env_int("COOLDOWN_RATELIMIT_MIN", 30)  # 30m after 429
 
 # Draft saving settings
 SAVE_DRAFTS_TO_DISK = True
 DRAFTS_FOLDER = "fpl_drafts"        # All drafts will be saved here
-# ======================================================
+# ============================================================
 
+# Posting order when there's a queue — PLAYER news goes out first so the most
+# valuable stories are live before any cap/cooldown could ever bite.
+# Injuries and transfers lead; manager/contract news is lowest.
 EVENT_PRIORITY = {
-    "injury": 0, "suspension": 1, "transfer": 2,
-    "loan": 2, "loan_option": 2, "manager": 3, "renewal": 4, "stay": 4,
+    "injury": 0, "transfer": 1, "loan": 1, "loan_option": 1,
+    "suspension": 2, "manager": 3, "renewal": 4, "stay": 4,
 }
 
 def _recent_post_count(data, within_seconds):
@@ -1221,7 +1463,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
             if not safe:
                 print(f"  [DRY] skip ({why}): {text[:60]!r}")
                 continue
-            valid, vwhy = validate_story(story, fpl)
+            valid, vwhy = validate_story(story, fpl, sources=[username])
             if not valid:
                 print(f"  [DRY] invalid ({vwhy}): {text[:60]!r}")
                 continue
@@ -1233,9 +1475,13 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
             story.update({"id": tid, "key": build_story_key(
                 story["player"], story.get("to_key") or story.get("from_key") or "unknown",
                 story["event"]), "sources": [username], "mode": "rumour"})
+            ok, vwhy, _ = verify_card_data(story, fpl)
+            if not ok:
+                print(f"  [DRY] VERIFY FAILED ({vwhy}) — card skipped: {story.get('player')!r}")
+                continue
             img_path = dryrun_dir / f"{re.sub(r'[^a-z0-9_]', '', story['key'])}.png"
             try:
-                await create_transfer_image(story, story["sources"], str(img_path), collapsed=(story.get("collapsed", False)))
+                create_transfer_image(story, story["sources"], str(img_path), collapsed=(story.get("collapsed", False)))
                 if img_path.exists() and img_path.stat().st_size >= 1000: total_img_ok += 1
                 else:
                     total_img_fail += 1
@@ -1276,17 +1522,31 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
 
 # 1. Unindent main to the absolute left edge (module level)
 async def main(post: bool = True, allow_rumours: bool = False):
-    # ================== MANUAL DRAFT MODE ==================
-    # Force draft-only mode (no auto posting)
-    post = False
-    mode_str = "DRAFT-ONLY (Manual Save Mode)"
+    # ================== POSTING MODE ==================
+    # Live posting only when ENABLE_AUTOPOST=true AND the run wasn't forced to
+    # draft-only (--draft-only). Otherwise we save drafts and post nothing.
+    if not ENABLE_AUTOPOST:
+        post = False
+        mode_str = "DRAFT-ONLY (set ENABLE_AUTOPOST=true to post live)"
+    elif not post:
+        mode_str = "DRAFT-ONLY (--draft-only)"
+    else:
+        mode_str = (f"LIVE AUTO-POST — safety caps: {MAX_POSTS_PER_RUN}/run, "
+                    f"{MAX_POSTS_PER_HOUR}/hr, jitter {POST_JITTER_RANGE_S[0]}-{POST_JITTER_RANGE_S[1]}s")
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
           f"(classifier=regex, mode={mode_str})")
-    # ======================================================
-    
+    # ==================================================
+
     init_club_data()
     fpl = fetch_fpl_data()
     data = load_data()
+
+    # X safety: if a previous run was flagged/rate-limited, stay off X until the
+    # cooldown expires.
+    if post and in_cooldown(data):
+        print(f"[BOT] X safety cooldown active until {data.get('cooldown_until')} — "
+              f"not posting this run.")
+        post = False
     
     # ... rest of your main() logic
 
@@ -1335,11 +1595,14 @@ async def main(post: bool = True, allow_rumours: bool = False):
               "Set X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN. Nothing posted.")
         return
 
-    modes_ok = set(AUTOPOST_MODES)
+    # Accuracy safety: by default only fully CONFIRMED/OFFICIAL stories go live.
+    # Lower-confidence RUMOURs are posted only when explicitly opted in.
+    modes_ok = {"confirmed"} | ({"rumour"} if allow_rumours else set())
     postable = [d for d in drafts if d.get("mode") in modes_ok]
 
     if not postable:
-        print("[BOT] No postable stories this run.")
+        print("[BOT] No postable stories this run "
+              f"(modes allowed: {sorted(modes_ok)}).")
         return
 
     postable.sort(key=lambda s: (
@@ -1391,6 +1654,11 @@ async def main(post: bool = True, allow_rumours: bool = False):
                 # instead of ending the run at zero.
                 print(f"  [SKIP] {item.get('key')} not posted — trying next ranked candidate.")
                 continue
+        except XBackoffError as be:
+            # X flagged automation / rate-limit — stop the ENTIRE run now.
+            # Never retry; the cooldown is already persisted.
+            print(f"[BOT] X-SAFETY STOP ({be}) — aborting posting run, no retries.")
+            break
         except Exception as e:
             if item.get("id") and item["id"] in data["posted_ids"]:
                 print(f"  [ERROR] {item['key']}: {e} — already recorded, NOT retrying")
@@ -1400,6 +1668,9 @@ async def main(post: bool = True, allow_rumours: bool = False):
                     await asyncio.sleep(10)
                     if await post_item(post_client, item, data):
                         posted += 1
+                except XBackoffError as be:
+                    print(f"[BOT] X-SAFETY STOP ({be}) on retry — aborting posting run.")
+                    break
                 except Exception as e2:
                     print(f"  [ERROR] {item['key']} (attempt 2): {e2} — skipping")
                     if item.get("id") and item["id"] not in data["posted_ids"]:

@@ -146,7 +146,11 @@ def _img_assets(story):
     """Shared: resolve the verified player, display name, brand logo and player photo."""
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
-    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
+    # Prefer the single canonical display name set by verify_card_data so the card
+    # and the tweet always show the exact same name.
+    player_name = (story.get("display_name")
+                   or (player_el["web_name"] if player_el else story.get("player"))
+                   or "PLAYER")
 
     logo_uri = _data_uri(Path("Logo.png"))
 
@@ -274,15 +278,14 @@ def create_transfer_image(story, sources, filename, collapsed=False):
 
     club_color = get_club_color(to_key or from_key)
     main_crest = _crest_uri(to_key or from_key)
-    fee_value = story.get("fee") or "Undisclosed"   # already carries its currency symbol
+    fee_value = story.get("fee") or "TBD"   # matches the tweet body; carries its currency symbol
 
     rows = []
     if from_club:
         rows.append(("FROM", "#f5c518", _club_cell(from_club, _crest_uri(from_key)), ""))
     if to_club:
         rows.append(("TO", "#00d4ff", _club_cell(to_club, _crest_uri(to_key)), ""))
-    if to_club or (fee_value and fee_value != "Undisclosed"):
-        rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
+    rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
 
     source_text = " · ".join(f"@{s}" for s in sources[:2])
     html = _build_card_html(player_name, status, badge, club_color, logo_uri, photo_uri,
