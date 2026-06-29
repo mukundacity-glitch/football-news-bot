@@ -146,7 +146,11 @@ def _img_assets(story):
     """Shared: resolve the verified player, display name, brand logo and player photo."""
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
-    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
+    # Prefer the single canonical display name set by verify_card_data so the card
+    # and the tweet always show the exact same name.
+    player_name = (story.get("display_name")
+                   or (player_el["web_name"] if player_el else story.get("player"))
+                   or "PLAYER")
 
     logo_uri = _data_uri(Path("Logo.png"))
 

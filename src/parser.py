@@ -156,9 +156,12 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None, source_tier_func
     if story["event"] in ("injury", "suspension"):
         injury_source_ok = any(t in (1, 2) for t in tiers) or any((s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS for s in sources)
         if not injury_source_ok: return False, "injury_source_not_approved"
-        
-        # Absolute requirement: MUST be a verified FPL player. No random league injuries.
+
+        # Verified FPL player is ideal. A reliable source reporting on a player at a
+        # resolved Premier League club is also allowed (e.g. a new signing not yet
+        # in the FPL dataset) — keeps it PL-relevant without blocking real news.
         if pl_player: return True, f"ok_{story['event']}"
+        if story.get("to_key") or story.get("from_key"): return True, f"ok_{story['event']}_pl_club"
         return False, f"{story['event']}_not_pl_player"
 
     # TRANSFER SAFETY LOCK
