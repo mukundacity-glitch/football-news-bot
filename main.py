@@ -792,7 +792,7 @@ def build_tweet_body(story, sources, mode) -> str:
             headline = f"❌ TRANSFER- {player} {move} TO {to_full or 'NEW CLUB'} HAS COLLAPSED."
         else:
             if label == "OFFICIAL":
-                emoji, status = "✅", "OFFICIAL"
+                emoji, status = "✅", "CONFIRMED"
             elif label == "RUMOUR":
                 emoji, status = "👀", "LINKED WITH A"
             else:
@@ -807,9 +807,8 @@ def build_tweet_body(story, sources, mode) -> str:
                 route = ""
             prefix = "LOAN" if move == "LOAN MOVE" else "TRANSFER"
             headline = f"{emoji} {prefix}- {player} {status} {move}{route}."
-        details.append(f"💰 PRICE — {story.get('fee') or 'Undisclosed'}")
-        if story.get("contract"):
-            details.append(f"📝 CONTRACT — {story['contract']}")
+        details.append(f"💰 PRICE — {story.get('fee') or 'TBD'}")
+        details.append(f"📝 CONTRACT — {story.get('contract') or 'TBD'}")
 
     elif ev in ("injury", "suspension"):
         club = (to_full or from_full).upper()

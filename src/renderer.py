@@ -278,15 +278,14 @@ def create_transfer_image(story, sources, filename, collapsed=False):
 
     club_color = get_club_color(to_key or from_key)
     main_crest = _crest_uri(to_key or from_key)
-    fee_value = story.get("fee") or "Undisclosed"   # already carries its currency symbol
+    fee_value = story.get("fee") or "TBD"   # matches the tweet body; carries its currency symbol
 
     rows = []
     if from_club:
         rows.append(("FROM", "#f5c518", _club_cell(from_club, _crest_uri(from_key)), ""))
     if to_club:
         rows.append(("TO", "#00d4ff", _club_cell(to_club, _crest_uri(to_key)), ""))
-    if to_club or (fee_value and fee_value != "Undisclosed"):
-        rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
+    rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
 
     source_text = " · ".join(f"@{s}" for s in sources[:2])
     html = _build_card_html(player_name, status, badge, club_color, logo_uri, photo_uri,
