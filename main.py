@@ -223,9 +223,8 @@ def is_reliable_source(sources) -> bool:
     return any(source_tier(s) in (1, 2, 3) for s in (sources or []))
 
 # ── STATE ────────────────────────────────────────────────────────────────
-# Daily post cap — effectively unlimited so nothing gets stuck. Override with
-# env DAILY_POST_LIMIT if you ever want to throttle.
-DAILY_POST_LIMIT = _env_int("DAILY_POST_LIMIT", 1000)
+# Daily post cap. Generous, but capped so a freak news day can't burst-flag us.
+DAILY_POST_LIMIT = _env_int("DAILY_POST_LIMIT", 30)
 
 def load_data() -> dict:
     fresh = {"daily": {"date": "", "count": 0, "limit": DAILY_POST_LIMIT}, "stories": {}, "posted_ids": []}
@@ -1385,20 +1384,22 @@ async def build_draft(item, data, fpl):
 # the env var ENABLE_AUTOPOST=true. The GitHub Actions BOT_PAUSED repo variable
 # remains a separate, independent kill switch.
 #
-# Throughput policy: post EVERY eligible story (no volume cap) — nothing gets
-# stuck waiting for a quota. What actually prevents X's automation/spam flags
-# (errors 226/334/326) is the SPACING between posts, not the count, so the
-# per-post jitter below is the real protection. If X ever does flag us, the
-# cooldown kicks in automatically. Every value is tunable via env vars.
-ENABLE_AUTOPOST = (os.getenv("ENABLE_AUTOPOST", "").strip().lower() == "true")
-# Effectively unlimited by default — drains the whole ready queue each run.
-MAX_POSTS_PER_RUN = _env_int("MAX_POSTS_PER_RUN", 1000)
-MAX_POSTS_PER_HOUR = _env_int("MAX_POSTS_PER_HOUR", 1000)
+# Policy: NEVER getting flagged is the priority. Posts go out one at a time,
+# well spaced (the jitter below is the real anti-flag mechanism), highest-value
+# PLAYER news first (see EVENT_PRIORITY). On a normal day every story posts; on
+# a freak flood the per-run/hour caps defer the least important items to the
+# next run rather than bursting. If X ever pushes back, the cooldown engages.
+#
+# Auto-post defaults ON so it's set-and-forget after merge. To pause without a
+# code change, set repo Variable ENABLE_AUTOPOST=false (or BOT_PAUSED=true).
+ENABLE_AUTOPOST = ((os.getenv("ENABLE_AUTOPOST") or "true").strip().lower() == "true")
+MAX_POSTS_PER_RUN = _env_int("MAX_POSTS_PER_RUN", 10)
+MAX_POSTS_PER_HOUR = _env_int("MAX_POSTS_PER_HOUR", 12)
 # Random human-like pause before each post. THIS is the anti-flag mechanism —
 # it spaces posts out so they never go as a burst. (min, max) seconds.
 POST_JITTER_RANGE_S = (
-    _env_int("POST_JITTER_MIN_S", 45),
-    _env_int("POST_JITTER_MAX_S", 120),
+    _env_int("POST_JITTER_MIN_S", 60),
+    _env_int("POST_JITTER_MAX_S", 150),
 )
 # Back-off windows after X flags us, so we stop hammering a flagged account.
 COOLDOWN_FLAGGED_MIN = _env_int("COOLDOWN_FLAGGED_MIN", 180)     # 3h after 226/326
@@ -1409,9 +1410,12 @@ SAVE_DRAFTS_TO_DISK = True
 DRAFTS_FOLDER = "fpl_drafts"        # All drafts will be saved here
 # ============================================================
 
+# Posting order when there's a queue — PLAYER news goes out first so the most
+# valuable stories are live before any cap/cooldown could ever bite.
+# Injuries and transfers lead; manager/contract news is lowest.
 EVENT_PRIORITY = {
-    "injury": 0, "suspension": 1, "transfer": 2,
-    "loan": 2, "loan_option": 2, "manager": 3, "renewal": 4, "stay": 4,
+    "injury": 0, "transfer": 1, "loan": 1, "loan_option": 1,
+    "suspension": 2, "manager": 3, "renewal": 4, "stay": 4,
 }
 
 def _recent_post_count(data, within_seconds):
