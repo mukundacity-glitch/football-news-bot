@@ -89,5 +89,17 @@ jobs:
             echo "No state changes to commit."
           else
             git commit -m "update bot state [skip ci]"
-            git push
+            # Rebase-then-push with retries so a concurrent push to main (e.g. a
+            # merge landing mid-run) can't fail the job. Keep OUR bot-state files
+            # on conflict — they are the freshest dedup/queue snapshot.
+            pushed=""
+            for i in 1 2 3 4 5; do
+              if git push; then pushed=1; break; fi
+              echo "push rejected (attempt $i) — rebasing on origin/main and retrying"
+              git pull --rebase --autostash -X ours origin main || git rebase --abort || true
+              sleep 3
+            done
+            if [ -z "$pushed" ]; then
+              echo "WARNING: could not push bot state after retries; will re-attempt next run."
+            fi
           fi
