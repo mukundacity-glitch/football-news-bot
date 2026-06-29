@@ -51,7 +51,15 @@ jobs:
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
           X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          
+          # Live posting is OPT-IN. Set repo Variable ENABLE_AUTOPOST=true to post
+          # to X; leave unset/empty to stay in safe draft-only mode. Optional
+          # overrides (MAX_POSTS_PER_RUN, MAX_POSTS_PER_HOUR, DAILY_POST_LIMIT,
+          # POST_JITTER_MIN_S, POST_JITTER_MAX_S) can also be set as Variables.
+          ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST }}
+          MAX_POSTS_PER_RUN: ${{ vars.MAX_POSTS_PER_RUN }}
+          MAX_POSTS_PER_HOUR: ${{ vars.MAX_POSTS_PER_HOUR }}
+          DAILY_POST_LIMIT: ${{ vars.DAILY_POST_LIMIT }}
+
         run: |
           set +e
           python main.py
@@ -70,6 +78,10 @@ jobs:
         run: |
           git config user.name "fpl-vortex-bot"
           git config user.email "bot@users.noreply.github.com"
+          # data/posted_news.json is the dedup + daily-count + cooldown ledger.
+          # It MUST be persisted every run or the bot forgets what it already
+          # posted and re-posts the same news. (Old paths kept for compatibility.)
+          git add data/posted_news.json 2>/dev/null || true
           git add posted_news.json fpl_player_state.json 2>/dev/null || true
           git add queue/ 2>/dev/null || true
           git add fpl_drafts/ 2>/dev/null || true

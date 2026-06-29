@@ -10,7 +10,7 @@ import asyncio
 import requests
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageChops
 from pilmoji import Pilmoji
@@ -75,6 +75,16 @@ X_POST_AUTH_TOKEN = (os.getenv("X_POST_AUTH_TOKEN") or "").strip()
 X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or "").strip()
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
+
+def _env_int(name, default):
+    """Read an int env var, falling back to default for unset OR empty values.
+    (An unset GitHub Actions Variable is passed through as an empty string.)"""
+    raw = (os.getenv(name) or "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        print(f"[CONFIG] {name}={raw!r} is not an int — using default {default}.")
+        return default
 
 # ── PATHS ────────────────────────────────────────────────────────────────
 POSTED_FILE = Path("posted_news.json")
@@ -183,8 +193,11 @@ def hashtag_for(name_or_key: str):
     return CLUB_HASHTAG_MAP.get(resolve_club_key(n) or "", CLUB_HASHTAGS.get(n))
 
 # ── STATE ────────────────────────────────────────────────────────────────
+# Conservative default daily post cap. Override with env DAILY_POST_LIMIT.
+DAILY_POST_LIMIT = _env_int("DAILY_POST_LIMIT", 8)
+
 def load_data() -> dict:
-    fresh = {"daily": {"date": "", "count": 0, "limit": 24}, "stories": {}, "posted_ids": []}
+    fresh = {"daily": {"date": "", "count": 0, "limit": DAILY_POST_LIMIT}, "stories": {}, "posted_ids": []}
     if POSTED_FILE.exists():
         try:
             with open(POSTED_FILE) as f: d = json.load(f)
@@ -222,7 +235,7 @@ def save_data(data: dict):
 def check_daily_limit(data: dict) -> bool:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if data["daily"]["date"] != today:
-        data["daily"] = {"date": today, "count": 0, "limit": 24}
+        data["daily"] = {"date": today, "count": 0, "limit": DAILY_POST_LIMIT}
     return data["daily"]["count"] < data["daily"]["limit"]
 
 def increment_daily(data: dict):
@@ -896,6 +909,56 @@ _TWIKIT_SUCCESS_PARSE_KEYS = {
     "entities", "extended_entities", "card",
 }
 
+# ── X SAFETY: ERROR CLASSIFICATION & BACK-OFF ────────────────────────────
+# X returns numeric error codes when it doesn't like our activity. Retrying on
+# the wrong one is what gets an account locked. We classify the error and react:
+#   duplicate (187)         -> tweet already exists; record dedup, never retry.
+#   flagged   (226/326/64)  -> automation/spam/locked/suspended; STOP + cooldown.
+#   rate_limited (429/88)   -> too many requests; STOP + short cooldown.
+#   transient               -> network/parse blip; one cautious retry is allowed.
+_X_DUPLICATE_CODES = {"187"}
+_X_FLAG_CODES = {"226", "326", "334", "64", "261"}   # automated / locked / suspended
+_X_RATELIMIT_CODES = {"429", "88"}
+
+class XBackoffError(Exception):
+    """Raised when X signals automation/rate-limit. The posting run must abort
+    immediately and back off — these are never safe to retry."""
+    def __init__(self, kind, original):
+        super().__init__(f"{kind}: {original}")
+        self.kind = kind
+
+def classify_x_error(exc) -> str:
+    s = str(exc).lower()
+    cls = type(exc).__name__.lower()
+    # Pull any explicit "code": NNN values out of the error payload.
+    codes = set(re.findall(r'code["\']?\s*[:=]\s*["\']?(\d+)', s))
+    if codes & _X_DUPLICATE_CODES or "duplicate" in s or "duplicatetweet" in cls:
+        return "duplicate"
+    if codes & _X_RATELIMIT_CODES or "toomanyrequests" in cls or "rate limit" in s:
+        return "rate_limited"
+    if (codes & _X_FLAG_CODES or "automated" in s or "spam" in s or "locked" in s
+            or "suspend" in s or "accountlocked" in cls or "accountsuspended" in cls):
+        return "flagged"
+    return "transient"
+
+def _set_cooldown(data, kind):
+    """Persist a back-off window so subsequent runs don't keep hitting X while flagged."""
+    mins = COOLDOWN_FLAGGED_MIN if kind == "flagged" else COOLDOWN_RATELIMIT_MIN
+    until = datetime.now(timezone.utc) + timedelta(minutes=mins)
+    data["cooldown_until"] = until.isoformat()
+    save_data(data)
+    print(f"  [X-SAFETY] {kind.upper()} detected — backing off {mins} min "
+          f"(until {until.isoformat()}). No further posts will be attempted until then.")
+
+def in_cooldown(data) -> bool:
+    cu = data.get("cooldown_until")
+    if not cu:
+        return False
+    try:
+        return datetime.now(timezone.utc) < datetime.fromisoformat(cu)
+    except Exception:
+        return False
+
 async def post_item(post_client, item, data):
     fpl = fetch_fpl_data()
     valid, why = validate_story(item, fpl)
@@ -958,6 +1021,25 @@ async def post_item(post_client, item, data):
             posted_live = True
         else:
             raise
+
+    except Exception as exc:
+        kind = classify_x_error(exc)
+        if kind == "duplicate":
+            # X already has this tweet. Record dedup so we NEVER try it again,
+            # but don't count it against today's quota (nothing new was posted).
+            print(f"  [X-SAFETY] DUPLICATE (187) — already on X; recording dedup, will not retry: {item.get('player')!r}")
+            if item.get("id") and item["id"] not in data["posted_ids"]:
+                data["posted_ids"].append(item["id"])
+            record_content_dedup(item, data)
+            save_data(data)
+            move_to_posted(item)
+            return False
+        if kind in ("flagged", "rate_limited"):
+            # Automation/spam/rate-limit flag — abort the whole run, do not retry.
+            _set_cooldown(data, kind)
+            raise XBackoffError(kind, exc)
+        # transient -> let the caller's single cautious retry handle it.
+        raise
 
     if posted_live:
         record_posted(item, data)
@@ -1260,19 +1342,30 @@ async def build_draft(item, data, fpl):
     return item
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
-AUTOPOST_MODES = {"confirmed", "rumour"}
 
-# ================== MANUAL DRAFT MODE ==================
-# Auto-posting is completely disabled for safety
-BOT_PAUSED = True
-ENABLE_AUTOPOST = False
-MAX_POSTS_PER_RUN = 0
-MAX_POSTS_PER_HOUR = 0
+# ================== AUTO-POST SAFETY CONFIG ==================
+# Auto-posting is OPT-IN. It stays OFF (draft-only) unless you explicitly set
+# the env var ENABLE_AUTOPOST=true. The GitHub Actions BOT_PAUSED repo variable
+# remains a separate, independent kill switch.
+#
+# Defaults are deliberately conservative to avoid X's automation/spam flags
+# (errors 226/334/326). Every limit can be tuned via env vars.
+ENABLE_AUTOPOST = (os.getenv("ENABLE_AUTOPOST", "").strip().lower() == "true")
+MAX_POSTS_PER_RUN = _env_int("MAX_POSTS_PER_RUN", 1)    # one post per scrape run
+MAX_POSTS_PER_HOUR = _env_int("MAX_POSTS_PER_HOUR", 2)  # hard hourly ceiling
+# Random human-like pause before each post (anti-automation). (min, max) seconds.
+POST_JITTER_RANGE_S = (
+    _env_int("POST_JITTER_MIN_S", 60),
+    _env_int("POST_JITTER_MAX_S", 180),
+)
+# Back-off windows after X flags us, so we stop hammering a flagged account.
+COOLDOWN_FLAGGED_MIN = _env_int("COOLDOWN_FLAGGED_MIN", 180)     # 3h after 226/326
+COOLDOWN_RATELIMIT_MIN = _env_int("COOLDOWN_RATELIMIT_MIN", 30)  # 30m after 429
 
 # Draft saving settings
 SAVE_DRAFTS_TO_DISK = True
 DRAFTS_FOLDER = "fpl_drafts"        # All drafts will be saved here
-# ======================================================
+# ============================================================
 
 EVENT_PRIORITY = {
     "injury": 0, "suspension": 1, "transfer": 2,
@@ -1383,17 +1476,31 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
 
 # 1. Unindent main to the absolute left edge (module level)
 async def main(post: bool = True, allow_rumours: bool = False):
-    # ================== MANUAL DRAFT MODE ==================
-    # Force draft-only mode (no auto posting)
-    post = False
-    mode_str = "DRAFT-ONLY (Manual Save Mode)"
+    # ================== POSTING MODE ==================
+    # Live posting only when ENABLE_AUTOPOST=true AND the run wasn't forced to
+    # draft-only (--draft-only). Otherwise we save drafts and post nothing.
+    if not ENABLE_AUTOPOST:
+        post = False
+        mode_str = "DRAFT-ONLY (set ENABLE_AUTOPOST=true to post live)"
+    elif not post:
+        mode_str = "DRAFT-ONLY (--draft-only)"
+    else:
+        mode_str = (f"LIVE AUTO-POST — safety caps: {MAX_POSTS_PER_RUN}/run, "
+                    f"{MAX_POSTS_PER_HOUR}/hr, jitter {POST_JITTER_RANGE_S[0]}-{POST_JITTER_RANGE_S[1]}s")
     print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
           f"(classifier=regex, mode={mode_str})")
-    # ======================================================
-    
+    # ==================================================
+
     init_club_data()
     fpl = fetch_fpl_data()
     data = load_data()
+
+    # X safety: if a previous run was flagged/rate-limited, stay off X until the
+    # cooldown expires.
+    if post and in_cooldown(data):
+        print(f"[BOT] X safety cooldown active until {data.get('cooldown_until')} — "
+              f"not posting this run.")
+        post = False
     
     # ... rest of your main() logic
 
@@ -1442,11 +1549,14 @@ async def main(post: bool = True, allow_rumours: bool = False):
               "Set X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN. Nothing posted.")
         return
 
-    modes_ok = set(AUTOPOST_MODES)
+    # Accuracy safety: by default only fully CONFIRMED/OFFICIAL stories go live.
+    # Lower-confidence RUMOURs are posted only when explicitly opted in.
+    modes_ok = {"confirmed"} | ({"rumour"} if allow_rumours else set())
     postable = [d for d in drafts if d.get("mode") in modes_ok]
 
     if not postable:
-        print("[BOT] No postable stories this run.")
+        print("[BOT] No postable stories this run "
+              f"(modes allowed: {sorted(modes_ok)}).")
         return
 
     postable.sort(key=lambda s: (
@@ -1498,6 +1608,11 @@ async def main(post: bool = True, allow_rumours: bool = False):
                 # instead of ending the run at zero.
                 print(f"  [SKIP] {item.get('key')} not posted — trying next ranked candidate.")
                 continue
+        except XBackoffError as be:
+            # X flagged automation / rate-limit — stop the ENTIRE run now.
+            # Never retry; the cooldown is already persisted.
+            print(f"[BOT] X-SAFETY STOP ({be}) — aborting posting run, no retries.")
+            break
         except Exception as e:
             if item.get("id") and item["id"] in data["posted_ids"]:
                 print(f"  [ERROR] {item['key']}: {e} — already recorded, NOT retrying")
@@ -1507,6 +1622,9 @@ async def main(post: bool = True, allow_rumours: bool = False):
                     await asyncio.sleep(10)
                     if await post_item(post_client, item, data):
                         posted += 1
+                except XBackoffError as be:
+                    print(f"[BOT] X-SAFETY STOP ({be}) on retry — aborting posting run.")
+                    break
                 except Exception as e2:
                     print(f"  [ERROR] {item['key']} (attempt 2): {e2} — skipping")
                     if item.get("id") and item["id"] not in data["posted_ids"]:
