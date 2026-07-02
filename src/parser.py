@@ -66,7 +66,15 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     if has_word(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl): event = "suspension"
     elif loan_signal: event = "loan"
     elif has_word(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt"], tl): event = "injury"
-    elif has_word(["sack", "appoint", "head coach", "manager"], tl): event = "manager"
+    elif has_word(["sack", "appoint", "head coach", "manager"], tl):
+    event = "manager"
+    DEPARTING_CUES = ["sack", "sacked", "fired", "dismissed", "leaves", "left",
+                       "parts ways", "part ways", "steps down", "resign", "quit",
+                       "no longer", "exit", "exits", "axed", "relieved of"]
+    ARRIVING_CUES = ["appoint", "appointed", "in talks to replace", "set to replace",
+                      "join as manager", "new head coach", "confirmed as", "unveiled as"]
+    direction = "departing" if has_word(DEPARTING_CUES, tl) else \
+                "arriving" if has_word(ARRIVING_CUES, tl) else None
     elif has_word(["new deal", "new contract", "signs new", "extension", "renew"], tl): event = "renewal"
     elif has_word(["stay", "staying", "no exit", "not for sale", "remain"], tl) and not has_word(["sign for", "joins", "move to"], tl): event = "stay"
     else: event = "transfer"
@@ -144,6 +152,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
 
     return {
         "is_football": True, "event": event,
+        "direction": direction if event == "manager" else None,
         "is_real_move": event in ("transfer", "loan", "loan_option"),
         "player": name,
         "from_club": from_key.replace("_", " ") if from_key else None,
