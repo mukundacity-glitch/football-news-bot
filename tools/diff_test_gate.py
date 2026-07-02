@@ -21,13 +21,20 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+# add repo root so GitHub Actions can find main.py
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from main import (  # noqa: E402
-    validate_story, verify_card_data, classify_post, fetch_fpl_data,
+# add repo root so GitHub Actions can find main.py
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+from main import (
+    validate_story,
+    verify_card_data,
+    classify_post,
+    fetch_fpl_data,
 )
-from master_story_gate_v6_fixed import master_story_gate  # noqa: E402
 
+# optional imports (keep safe)
 try:
     from src.parser import passes_safety_gate
     from main import source_tier
@@ -35,6 +42,8 @@ except Exception:
     passes_safety_gate = None
     source_tier = None
 
+# only import this if the file exists in repo root
+from master_story_gate_v6_fixed import master_story_gate
 
 KEY_FIELDS = ("from_key", "to_key", "display_name", "mode", "player")
 
