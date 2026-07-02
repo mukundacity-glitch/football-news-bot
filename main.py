@@ -575,7 +575,8 @@ def validate_story(story, fpl_data=None, sources=None):
     _ptokens = [t for t in re.split(r"[\s\-']+", player) if t]
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
-        if _plow in PROTECTED_ENTITIES:
+    
+    if _plow in PROTECTED_ENTITIES:
         return False, PROTECTED_ENTITIES[_plow]
 
     _raw_blob = (story.get("raw_text", "") + " " + story.get("body", "")).lower()
