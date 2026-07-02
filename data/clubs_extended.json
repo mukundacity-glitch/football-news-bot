@@ -1,0 +1,35 @@
+{
+  "_comment": "Knowledge base of football CLUBS beyond the Premier League (foreign + EFL) used to reject a club that was misparsed as a player. Detection = exact name match, OR >=2 significant-token overlap with a known club, OR a strong club-indicator token. NOT a per-failure name list.",
+  "known_clubs": [
+    "paris saint germain", "paris saint-germain", "psg", "stade rennais", "rennes",
+    "olympique de marseille", "marseille", "olympique lyonnais", "lyon", "as monaco", "monaco",
+    "lille", "nice", "lens", "strasbourg", "nantes", "toulouse", "montpellier", "reims",
+    "real madrid", "barcelona", "atletico madrid", "sevilla", "valencia", "villarreal",
+    "real betis", "real sociedad", "athletic bilbao", "athletic club", "girona", "celta vigo",
+    "bayern munich", "borussia dortmund", "rb leipzig", "bayer leverkusen", "eintracht frankfurt",
+    "borussia monchengladbach", "vfb stuttgart", "vfl wolfsburg", "werder bremen", "hoffenheim",
+    "juventus", "inter milan", "ac milan", "napoli", "as roma", "lazio", "atalanta",
+    "fiorentina", "bologna", "torino", "udinese", "genoa",
+    "ajax", "psv", "psv eindhoven", "feyenoord", "az alkmaar", "twente",
+    "benfica", "porto", "sporting cp", "sporting lisbon", "braga",
+    "olympiacos", "panathinaikos", "paok", "aek athens",
+    "galatasaray", "fenerbahce", "besiktas", "trabzonspor",
+    "celtic", "rangers", "anderlecht", "club brugge", "genk",
+    "shakhtar donetsk", "dynamo kyiv", "zenit", "spartak moscow", "cska moscow",
+    "red bull salzburg", "sturm graz", "young boys", "basel", "fc copenhagen", "malmo", "aik",
+    "sheffield wednesday", "bolton wanderers", "middlesbrough", "sunderland", "leeds united",
+    "norwich city", "watford", "stoke city", "coventry city", "bristol city", "cardiff city",
+    "swansea city", "hull city", "preston north end", "blackburn rovers", "queens park rangers",
+    "millwall", "wrexham", "plymouth argyle", "derby county", "west bromwich albion",
+    "sheffield united", "birmingham city", "portsmouth", "charlton athletic", "wigan athletic",
+    "crewe alexandra", "bristol rovers", "olympiacos fc", "sporting clube de portugal"
+  ],
+  "club_tokens": [
+    "fc", "cf", "afc", "sc", "cd", "ud", "sv", "vfb", "vfl", "tsv",
+    "stade", "olympique", "borussia", "atletico", "fenerbahce", "galatasaray",
+    "besiktas", "olympiacos", "panathinaikos", "paok", "dynamo", "dinamo",
+    "spartak", "zenit", "shakhtar", "psv", "ajax", "feyenoord", "benfica",
+    "sporting", "wanderers", "rovers", "hotspur", "wednesday", "argyle",
+    "alexandra", "athletic", "eintracht", "bayer", "juventus"
+  ]
+}

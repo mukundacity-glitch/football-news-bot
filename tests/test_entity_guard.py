@@ -56,6 +56,24 @@ def test_stadiums_rejected():
         assert is_postable_player(s, "", "transfer")[0] is False, s
 
 
+def test_club_as_player_rejected():
+    # From the real run: foreign clubs misparsed as players.
+    for name in ("Le Paris Saint", "Stade Rennais", "Paris Saint-Germain",
+                 "Olympiacos", "Borussia Dortmund", "Sheffield Wednesday",
+                 "Bolton Wanderers", "Real Madrid"):
+        cat, reason = classify_entity(name, "")
+        assert cat == "CLUB", (name, cat, reason)
+        assert is_postable_player(name, "", "transfer")[0] is False, name
+
+
+def test_players_with_clublike_tokens_still_pass():
+    # Real players whose names share a single token with a club must NOT be caught.
+    for name in ("Milan Djuric", "David Villa", "Roma Cadette", "Sergio Ramos",
+                 "Michael Svoboda", "Costinha", "Zadok Yohanna", "Pascal Struijk",
+                 "Sil Swinkels", "Luca Stephenson"):
+        assert classify_entity(name, "")[0] == "PLAYER", name
+
+
 # ── MUST ALLOW (real players, incl. non-FPL new/foreign signings) ────────
 
 def test_cases_6_to_10_real_players_allowed():
