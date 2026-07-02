@@ -859,7 +859,13 @@ def build_tweet_body(story, sources, mode) -> str:
 
     elif ev == "manager":
         club = (to_full or from_full).upper()
-        headline = f"🎩 MANAGER- {player} LINKED WITH THE {club or 'CLUB'} JOB."
+        direction = story.get("direction")
+        if direction == "departing":
+            headline = f"🎩 MANAGER- {player} LEAVES {club or 'THE CLUB'}."
+        elif direction == "arriving":
+            headline = f"🎩 MANAGER- {player} LINKED WITH THE {club or 'CLUB'} JOB."
+        else:
+            headline = f"🎩 MANAGER- {player} — MANAGERIAL UPDATE AT {club or 'CLUB'}."
 
     else:
         headline = f"🔵 NEWS- {player}."
@@ -959,6 +965,7 @@ def record_posted(item, data):
     data["stories"][item["key"]] = {
         "stage": item["stage"], "player": item["player"],
         "to_key": item.get("to_key"), "event": item["event"],
+        "direction": item.get("direction"),
         "status": "collapsed" if item.get("collapsed") else "active",
         "sources": item["sources"], "last_updated": datetime.now(timezone.utc).isoformat(),
     }
@@ -1289,7 +1296,8 @@ async def scrape(data, read_client):
             key = reconcile_key(story["player"], anchor, story["event"],
                                 story_map, data.get("stories", {}), data.get("pending", {}))
                                 
-            ok, reason = should_post(data, key, story["stage"], story["collapsed"])
+            ok, reason = should_post(data, key, story["stage"], story["collapsed"],
+                                      new_direction=story.get("direction"))
             if not ok:
                 print(f"   skip ({reason}): {key}")
                 continue
