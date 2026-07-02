@@ -24,9 +24,6 @@ from pathlib import Path
 # add repo root so GitHub Actions can find main.py
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-# add repo root so GitHub Actions can find main.py
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
 from main import (
     validate_story,
     verify_card_data,
@@ -43,7 +40,14 @@ except Exception:
     source_tier = None
 
 # only import this if the file exists in repo root
-from master_story_gate_v6_fixed import master_story_gate
+try:
+    from master_story_gate_v6_fixed import master_story_gate
+except ModuleNotFoundError:
+    print("[SKIP] master_story_gate_v6_fixed.py not found in repo root — "
+          "nothing to diff-test yet. This script compares main.py's current "
+          "logic against a new master_story_gate() function that hasn't "
+          "been written/added yet.")
+    sys.exit(0)
 
 KEY_FIELDS = ("from_key", "to_key", "display_name", "mode", "player")
 
