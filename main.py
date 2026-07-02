@@ -19,6 +19,7 @@ from pilmoji import Pilmoji
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key, is_big_player
 from src.renderer import create_transfer_image, create_injury_image, _create_fallback_card
 from src.parser import extract_story_fallback, detect_historical, passes_safety_gate, _clean_source_text
+from src.entity_guard import is_postable_player, classify_entity
 from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
@@ -571,6 +572,13 @@ def validate_story(story, fpl_data=None, sources=None):
     player = (story.get("player") or "").strip()
     if not player: return False, "missing_player"
     if sources is None: sources = story.get("sources", [])
+
+    # ENTITY SAFETY GATE (hard reject): the subject must be a real player, never a
+    # journalist, company/sponsor, stadium, or a coach filed as a player transfer.
+    _ent_text = " ".join(str(story.get(k, "") or "") for k in ("raw_text", "body", "headline"))
+    _ent_ok, _ent_reason = is_postable_player(player, _ent_text, ev)
+    if not _ent_ok:
+        return False, _ent_reason
     _ptokens = [t for t in re.split(r"[\s\-']+", player) if t]
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
