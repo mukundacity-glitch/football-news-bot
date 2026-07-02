@@ -86,9 +86,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             if find_player_in_fpl(m, fpl_data):
                 name = m
                 break
-
-    # Resolve clubs and order them by FIRST appearance in the text, so the
-    # destination heuristic picks the club the tweet actually leads with.
+                # Resolve clubs and order them by FIRST appearance in the text (fallback only)
     club_pos = {}
     for alias in _SORTED_ALIASES:
         m = re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl)
@@ -101,16 +99,45 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     fpl_player_el = find_player_in_fpl(name, fpl_data) if name and fpl_data else None
     actual_current_club_key = fpl_team_key(fpl_player_el, fpl_data) if fpl_player_el else None
 
-    from_key = actual_current_club_key
-    to_key = None
+    # Directional cue detection: look for a preposition/verb immediately
+    # before each club mention to determine from/to, instead of trusting
+    # raw sentence order.
+    FROM_CUES = [r"from", r"leaves?", r"departs?", r"exits?"]
+    TO_CUES = [r"to", r"joins?", r"sign(?:s|ed)?\s+for", r"move\s+to",
+               r"agree(?:s|d)?\s+(?:a\s+)?(?:deal\s+)?with", r"heading\s+to"]
+    REJECT_CUES = [r"reject(?:ed|s)?\s+by", r"turn(?:ed|s)?\s+down\s+by",
+                   r"pull(?:ed|s)?\s+out", r"walk(?:ed|s)?\s+away\s+from"]
 
-    if actual_current_club_key:
-        other_clubs = [c for c in clubs if c != actual_current_club_key]
-        if other_clubs:
-            to_key = other_clubs[0]
-    elif clubs:
-        to_key = clubs[0]
-        if len(clubs) > 1: from_key = clubs[1]
+    def _cue_before(alias_start, cues):
+        window = tl[max(0, alias_start - 25):alias_start]
+        return any(re.search(cue + r'\s*$', window) for cue in cues)
+
+    cued_from, cued_to, cued_reject = None, None, set()
+    for alias in _SORTED_ALIASES:
+        m = re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl)
+        if not m:
+            continue
+        k = CLUB_ALIASES[alias]
+        if _cue_before(m.start(), REJECT_CUES):
+            cued_reject.add(k)
+        elif _cue_before(m.start(), FROM_CUES) and cued_from is None:
+            cued_from = k
+        elif _cue_before(m.start(), TO_CUES) and cued_to is None:
+            cued_to = k
+
+    from_key = cued_from or actual_current_club_key
+    to_key = cued_to
+
+    if to_key is None:
+        candidates = [c for c in clubs if c != from_key and c not in cued_reject]
+        if actual_current_club_key:
+            if candidates:
+                to_key = candidates[0]
+        elif candidates:
+            to_key = candidates[0]
+            if from_key is None and len(candidates) > 1:
+                from_key = candidates[1]
+
 
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
     fee_match = re.search(r'([£€$]\d+(?:\.\d+)?\s*(?:m|k|million|billion))', cleaned, re.IGNORECASE)
