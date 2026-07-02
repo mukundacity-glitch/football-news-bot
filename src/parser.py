@@ -61,20 +61,21 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         return any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text) for w in words_list)
 
     loan_signal = ("on loan" in tl) or bool(re.search(r"\bjoine?d?\b.*\bon loan\b", tl))
-    
+    direction = None
+
     # Priority classification
     if has_word(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl): event = "suspension"
     elif loan_signal: event = "loan"
     elif has_word(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt"], tl): event = "injury"
     elif has_word(["sack", "appoint", "head coach", "manager"], tl):
-    event = "manager"
-    DEPARTING_CUES = ["sack", "sacked", "fired", "dismissed", "leaves", "left",
-                       "parts ways", "part ways", "steps down", "resign", "quit",
-                       "no longer", "exit", "exits", "axed", "relieved of"]
-    ARRIVING_CUES = ["appoint", "appointed", "in talks to replace", "set to replace",
-                      "join as manager", "new head coach", "confirmed as", "unveiled as"]
-    direction = "departing" if has_word(DEPARTING_CUES, tl) else \
-                "arriving" if has_word(ARRIVING_CUES, tl) else None
+        event = "manager"
+        DEPARTING_CUES = ["sack", "sacked", "fired", "dismissed", "leaves", "left",
+                           "parts ways", "part ways", "steps down", "resign", "quit",
+                           "no longer", "exit", "exits", "axed", "relieved of"]
+        ARRIVING_CUES = ["appoint", "appointed", "in talks to replace", "set to replace",
+                          "join as manager", "new head coach", "confirmed as", "unveiled as"]
+        direction = "departing" if has_word(DEPARTING_CUES, tl) else \
+                    "arriving" if has_word(ARRIVING_CUES, tl) else None
     elif has_word(["new deal", "new contract", "signs new", "extension", "renew"], tl): event = "renewal"
     elif has_word(["stay", "staying", "no exit", "not for sale", "remain"], tl) and not has_word(["sign for", "joins", "move to"], tl): event = "stay"
     else: event = "transfer"
