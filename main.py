@@ -23,7 +23,8 @@ from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
     ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
-    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP
+    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP,
+    PROTECTED_ENTITIES, STAFF_ROLE_KW,
 )
 
 # Shared Canvas Namespace Initialization
@@ -574,6 +575,18 @@ def validate_story(story, fpl_data=None, sources=None):
     _ptokens = [t for t in re.split(r"[\s\-']+", player) if t]
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
+        if _plow in PROTECTED_ENTITIES:
+        return False, PROTECTED_ENTITIES[_plow]
+
+    _raw_blob = (story.get("raw_text", "") + " " + story.get("body", "")).lower()
+    if ev != "manager" and any(role in _raw_blob for role in STAFF_ROLE_KW):
+        for role in STAFF_ROLE_KW:
+            idx = _raw_blob.find(role)
+            if idx == -1:
+                continue
+            window = _raw_blob[max(0, idx - 120): idx + 120]
+            if _plow and _plow.split()[0] in window:
+                return False, "staff_entity"
     if ev == "manager" and len(_ptokens) < 2: return False, "manager_name_single_token"
     if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
