@@ -19,7 +19,8 @@ from pilmoji import Pilmoji
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key, is_big_player
 from src.renderer import create_transfer_image, create_injury_image, _create_fallback_card
 from src.parser import extract_story_fallback, detect_historical, passes_safety_gate, _clean_source_text
-from src.entity_guard import is_postable_player, classify_entity
+from src.entity_guard import (is_postable_player, classify_entity,
+                              is_staff_subject, staff_role_of, staff_action_of)
 from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
@@ -340,8 +341,20 @@ def has_written_claim(tweet_text: str) -> bool:
     return bool(_CLAIM_MARKERS.search(cleaned)) and len(cleaned.split()) >= 5
 
 # ── STORY BUILDER (COMBINED & CORRECTLY PLACED) ──────────────────────────
+_PLAYER_EVENTS = ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay")
+
 def build_story(tweet_text, fpl_data):
     s = extract_story_fallback(tweet_text, fpl_data)
+
+    # ROLE-CUE ROUTING: if the subject is football staff (coach/director/etc.),
+    # this is NOT a player transfer. Tag the role/action for accurate wording and
+    # re-route any player event to STAFF/MANAGER news so it is classified
+    # correctly and still posts — never as a fake player move.
+    if s.get("player") and is_staff_subject(s.get("player"), tweet_text):
+        s["staff_role"] = staff_role_of(s.get("player"), tweet_text)
+        s["staff_action"] = staff_action_of(tweet_text)
+        if s.get("event") in _PLAYER_EVENTS:
+            s["event"] = "manager"
 
     if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
         el = find_player_in_fpl(s["player"], fpl_data)
@@ -632,7 +645,9 @@ def validate_story(story, fpl_data=None, sources=None):
                 return False, "no_destination"
         leak = (story.get("body", "") + " " + story.get("headline", "")).lower()
         if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak): return False, "event_data_mismatch"
-    if ev == "manager" and not (story.get("to_key") or story.get("to_club")): return False, "manager_no_club"
+    # Manager/staff news needs a club, but a DEPARTURE only has an origin club.
+    if ev == "manager" and not (story.get("to_key") or story.get("to_club")
+                                or story.get("from_key") or story.get("from_club")): return False, "manager_no_club"
     return True, "ok"
 
 # ── PRE-RENDER ACCURACY DOUBLE-CHECK ─────────────────────────────────────
@@ -853,7 +868,18 @@ def build_tweet_body(story, sources, mode) -> str:
 
     elif ev == "manager":
         club = (to_full or from_full).upper()
-        headline = f"🎩 MANAGER- {player} LINKED WITH THE {club or 'CLUB'} JOB."
+        role = story.get("staff_role")
+        if role and role != "staff":
+            role_u = role.upper()
+            action = story.get("staff_action")
+            if action == "departure":
+                headline = f"👔 STAFF- {player} LEAVES {club} AS {role_u}." if club else f"👔 STAFF- {player} LEAVES ROLE AS {role_u}."
+            elif action == "appointment":
+                headline = f"👔 STAFF- {player} APPOINTED {club} {role_u}." if club else f"👔 STAFF- {player} APPOINTED AS {role_u}."
+            else:
+                headline = f"👔 STAFF- {player} — {role_u}" + (f" AT {club}" if club else "") + "."
+        else:
+            headline = f"🎩 MANAGER- {player} LINKED WITH THE {club or 'CLUB'} JOB."
 
     else:
         headline = f"🔵 NEWS- {player}."

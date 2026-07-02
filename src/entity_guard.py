@@ -46,6 +46,8 @@ _COMPANY_SUFFIX = {_strip(t) for t in _load("companies_blacklist.json", "suffix_
 _STADIUMS = {_strip(n) for n in _load("companies_blacklist.json", "stadiums", [])}
 _STAFF = {_strip(n) for n in _load("staff_roles.json", "staff", [])}
 _ROLE_CUES = [_strip(c) for c in _load("staff_roles.json", "role_cues", []) if c]
+_DEPARTURE_CUES = [_strip(c) for c in _load("staff_roles.json", "departure_cues", []) if c]
+_APPOINTMENT_CUES = [_strip(c) for c in _load("staff_roles.json", "appointment_cues", []) if c]
 
 # Club knowledge base (foreign + EFL), for rejecting a club misparsed as a player.
 _STOP = {"le", "la", "les", "de", "du", "des", "el", "los", "las", "al", "the",
@@ -88,16 +90,56 @@ def _name_matches(name_norm, blockset) -> bool:
     return False
 
 
-def _role_cue_near_name(name_norm, text_norm) -> bool:
-    """True if a staff role phrase sits within ~60 chars of the name in the text."""
-    if not name_norm or not text_norm:
-        return False
-    for m in re.finditer(re.escape(name_norm), text_norm):
-        lo, hi = max(0, m.start() - 60), m.end() + 60
-        window = text_norm[lo:hi]
-        if any(cue and cue in window for cue in _ROLE_CUES):
-            return True
-    return False
+def _norm_keep_punct(s):
+    """Lowercase + de-accent but KEEP , ; . - so clause breaks are visible."""
+    s = unicodedata.normalize("NFKD", str(s or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    s = re.sub(r"[^a-z0-9,;.\-\s]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def staff_role_of(name, text):
+    """Return the staff role phrase (e.g. 'sporting director') if the subject is
+    football staff, else None. The role title must be bound to THIS name — either
+    directly before it ('sporting director Luis Campos') or in apposition with a
+    connector ('Luis Campos, sporting director' / '... as sporting director'). A
+    role that belongs to a DIFFERENT person (e.g. 'Joao Pedro; head coach Maresca')
+    is not matched. Pure role-cue logic — no name list."""
+    n = _strip(name)
+    if _name_matches(n, _STAFF):
+        return "staff"
+    if not n:
+        return None
+    t = _norm_keep_punct(text)
+    if not t:
+        return None
+    nm = re.escape(n)
+    for cue in _ROLE_CUES:
+        if not cue:
+            continue
+        c = re.escape(cue)
+        # title immediately before the name
+        if re.search(r"(?<![a-z])" + c + r"\s+" + nm + r"\b", t):
+            return cue
+        # apposition: name , | - | as | the  <role>   (NOT a ';' / '.' clause break)
+        if re.search(nm + r"\s*(?:,|-|\bas\b|\bthe\b)\s*" + c + r"\b", t):
+            return cue
+    return None
+
+
+def is_staff_subject(name, text="") -> bool:
+    return staff_role_of(name, text) is not None
+
+
+def staff_action_of(text):
+    """Classify the staff move as 'departure' or 'appointment' (else None) so the
+    news is worded accurately instead of a generic/incorrect claim."""
+    t = _strip(text)
+    if any(c in t for c in _DEPARTURE_CUES):
+        return "departure"
+    if any(c in t for c in _APPOINTMENT_CUES):
+        return "appointment"
+    return None
 
 
 def classify_entity(name, text=""):
@@ -121,9 +163,7 @@ def classify_entity(name, text=""):
     if any(tok in _COMPANY_SUFFIX for tok in name_norm.split()):
         return "COMPANY", "company_entity"
 
-    if _name_matches(name_norm, _STAFF):
-        return "STAFF", "staff_entity"
-    if _role_cue_near_name(name_norm, text_norm):
+    if staff_role_of(name, text):
         return "STAFF", "staff_entity"
 
     return "PLAYER", "player_ok"

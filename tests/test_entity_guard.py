@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.entity_guard import classify_entity, is_postable_player
+from src.entity_guard import classify_entity, is_postable_player, is_staff_subject
 
 
 # ── MUST REJECT ──────────────────────────────────────────────────────────
@@ -33,16 +33,48 @@ def test_case4_journalist_plettenberg_rejected():
         assert is_postable_player(j, "", "transfer")[0] is False, j
 
 
-def test_case5_coach_pako_ayestaran_rejected_as_player():
-    # CASE 5: assistant head coach — staff, not a player transfer.
+def test_case5_coach_pako_ayestaran_not_a_player_transfer():
+    # CASE 5: assistant head coach — staff, never a PLAYER transfer, but it IS
+    # postable as staff/manager news (must not be discarded).
     text = "Aston Villa assistant head coach Pako Ayestaran has departed the club."
     cat, reason = classify_entity("Pako Ayestaran", text)
     assert cat == "STAFF", (cat, reason)
-    assert is_postable_player("Pako Ayestaran", text, "renewal")[0] is False
-    assert is_postable_player("Pako Ayestaran", text, "transfer")[0] is False
+    assert is_postable_player("Pako Ayestaran", text, "transfer")[0] is False  # not a player move
+    assert is_postable_player("Pako Ayestaran", text, "manager")[0] is True    # posts as staff/manager news
     # A generic coach caught purely by role context (name not pre-listed):
     ctx = "Brighton first team coach John Smithson leaves for a new role."
     assert classify_entity("John Smithson", ctx)[0] == "STAFF"
+
+
+def test_staff_role_and_action_detection():
+    from src.entity_guard import staff_role_of, staff_action_of, is_staff_subject
+    dep = "Aston Villa assistant head coach Pako Ayestaran has departed the club."
+    assert is_staff_subject("Pako Ayestaran", dep) is True
+    assert staff_role_of("Pako Ayestaran", dep) == "assistant head coach"
+    assert staff_action_of(dep) == "departure"
+    appt = "Chelsea appoint Luis Campos as sporting director."
+    assert staff_role_of("Luis Campos", appt) == "sporting director"
+    assert staff_action_of(appt) == "appointment"
+
+
+def test_player_mentioned_with_coach_not_flipped():
+    # A coach merely mentioned in a player's transfer must NOT flip the subject.
+    text = "Chelsea complete the signing of Joao Pedro; head coach Maresca is delighted."
+    assert is_staff_subject("Joao Pedro", text) is False
+    assert classify_entity("Joao Pedro", text)[0] == "PLAYER"
+
+
+def test_build_story_routes_staff_to_manager():
+    # End-to-end: a staff (player-event) story is re-routed to manager/staff news.
+    import sys, types
+    if "twikit" not in sys.modules:
+        tw = types.ModuleType("twikit"); tw.Client = object; sys.modules["twikit"] = tw
+    import main
+    main.init_club_data()
+    s = main.build_story("Aston Villa assistant coach Pako Ayestaran has departed the club.", None)
+    assert s["event"] == "manager", s["event"]          # re-routed off the player pipeline
+    assert s.get("staff_role") == "assistant coach"
+    assert s.get("staff_action") == "departure"
 
 
 def test_company_suffix_heuristic():
