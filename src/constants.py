@@ -145,3 +145,40 @@ CLUB_HASHTAG_MAP = {
     "Nottm_Forest": "#NFFC", "Southampton": "#SaintsFC", "Spurs": "#THFC",
     "West_Ham": "#WHUFC", "Wolves": "#Wolves",
 }
+# In main.py, update the import line to also pull in the new registries:
+#
+# from src.constants import (
+#     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
+#     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
+#     ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
+#     CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP,
+#     PROTECTED_ENTITIES, STAFF_ROLE_KW,          # <-- NEW
+# )
+
+# Then inside validate_story(), immediately after the existing block:
+#
+#     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)):
+#         return False, "player_is_manager_name"
+#
+# insert:
+
+    # PROTECTED ENTITY GATE -- journalists, companies, brands can never be
+    # transfer subjects, no matter what regex extracted their name as.
+    if _plow in PROTECTED_ENTITIES:
+        return False, PROTECTED_ENTITIES[_plow]
+
+    # Catch staff (coaches, directors, agents etc.) even when their surname
+    # isn't in the fixed MANAGER_SURNAMES list -- check the raw source text
+    # for a role phrase sitting near the extracted name.
+    _raw_blob = (story.get("raw_text", "") + " " + story.get("body", "")).lower()
+    if ev != "manager" and any(role in _raw_blob for role in STAFF_ROLE_KW):
+        # Only reject if the role phrase is actually describing THIS person,
+        # not unrelated background text -- cheap heuristic: name and role
+        # phrase both appear within the same ~120 char window.
+        for role in STAFF_ROLE_KW:
+            idx = _raw_blob.find(role)
+            if idx == -1:
+                continue
+            window = _raw_blob[max(0, idx - 120): idx + 120]
+            if _plow and _plow.split()[0] in window:
+                return False, "staff_entity"
