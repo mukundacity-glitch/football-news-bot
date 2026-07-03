@@ -21,6 +21,8 @@ from src.renderer import create_transfer_image, create_injury_image, _create_fal
 from src.parser import extract_story_fallback, detect_historical, passes_safety_gate, _clean_source_text
 from src.entity_guard import (is_postable_player, classify_entity,
                               is_staff_subject, staff_role_of, staff_action_of)
+from src import confidence as _conf
+from src import direction as _direction
 from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
@@ -356,11 +358,25 @@ def build_story(tweet_text, fpl_data):
         if s.get("event") in _PLAYER_EVENTS:
             s["event"] = "manager"
 
+    # DIRECTION RESOLUTION: the base parser only knows PL clubs, so it drops
+    # foreign/EFL clubs and can invert direction. Re-resolve origin/destination
+    # from the full club lexicon and correct the story before validation.
+    if s.get("event") in ("transfer", "loan", "loan_option"):
+        rf, rfk, rt, rtk = _direction.resolve(tweet_text)
+        if rt:
+            # Parser's "destination" is actually the resolved ORIGIN => inverted.
+            if s.get("to_key") and rfk and s.get("to_key") == rfk:
+                s["to_club"], s["to_key"] = rt, rtk
+            elif not (s.get("to_key") or s.get("to_club")):
+                s["to_club"], s["to_key"] = rt, rtk
+        if rf and not (s.get("from_key") or s.get("from_club")):
+            s["from_club"], s["from_key"] = rf, rfk
+
     if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
         el = find_player_in_fpl(s["player"], fpl_data)
         is_free_agent = bool(el and el.get("team", 0) == 0)
         actual_club = fpl_team_key(el, fpl_data) if el else None
-        
+
         if actual_club and not is_free_agent and not s.get("from_key"):
             s["from_key"] = actual_club
             s["from_club"] = actual_club.replace("_", " ")
@@ -580,6 +596,30 @@ def classify_post(story, sources):
     if has_media: return "rumour"
     return None
 
+def score_confidence(story, fpl_data=None, sources=None):
+    """Run the confidence engine on a validated story and emit a structured audit
+    log line. Returns the confidence result dict (score/decision/breakdown).
+
+    The signals it needs are already computed by the pipeline:
+      - player_verified: FPL/trusted-DB match OR a reliable-source-reported signing
+      - official_source: a tier-1 (official club/league) source is present
+      - n_sources:       number of distinct sources
+    """
+    sources = sources or story.get("sources", []) or []
+    tiers = [source_tier(s) for s in sources]
+    player = story.get("player") or ""
+    fpl_match = bool(fpl_data and find_player_in_fpl(player, fpl_data) is not None)
+    player_verified = fpl_match or is_reliable_source(sources)
+    result = _conf.evaluate(
+        story,
+        player_verified=player_verified,
+        official_source=(1 in tiers),
+        n_sources=len(set(s.lower() for s in sources if s)),
+    )
+    print("  " + _conf.decision_log_line(story, result))
+    return result
+
+
 def validate_story(story, fpl_data=None, sources=None):
     ev = story.get("event")
     player = (story.get("player") or "").strip()
@@ -633,8 +673,10 @@ def validate_story(story, fpl_data=None, sources=None):
             return False, "no_resolved_club"
 
         # Destination-less transfer: only post if there's a genuine departure cue
-        # (kills "linked to his own club" misparses like Onana->Man Utd).
-        if not tk:
+        # (kills "linked to his own club" misparses like Onana->Man Utd). A
+        # non-PL destination resolved by the direction module (to_club without a
+        # to_key, e.g. Sheffield Wednesday / Bolton) DOES count as a destination.
+        if not (tk or tc):
             _blob = (story.get("raw_text", "") + " " + story.get("body", "") + " "
                      + (story.get("headline") or "")).lower()
             _EXIT_CUES = ("leav", "exit", "depart", "released", "for sale", "up for sale",
@@ -1304,7 +1346,18 @@ async def scrape(data, read_client):
                 skipped += 1
                 print(f"   invalid ({vwhy}): {text[:70]!r}")
                 continue
-                
+
+            # CONFIDENCE ENGINE: score the validated story and log the decision.
+            # SKIP is dropped here (extra precision net — junk, retired/no-origin,
+            # etc.); AUTO_POST / REVIEW carry their score forward for the live gate.
+            _cres = score_confidence(story, fpl, sources=[username])
+            if _cres["decision"] == _conf.SKIP:
+                skipped += 1
+                print(f"   skip (low_confidence:{_cres['score']}): {text[:70]!r}")
+                continue
+            story["confidence_score"] = _cres["score"]
+            story["confidence_decision"] = _cres["decision"]
+
             anchor = story.get("to_key") or story.get("from_key") or "unknown"
             key = reconcile_key(story["player"], anchor, story["event"],
                                 story_map, data.get("stories", {}), data.get("pending", {}))
@@ -1658,7 +1711,20 @@ async def main(post: bool = True, allow_rumours: bool = False):
     # Accuracy safety: by default only fully CONFIRMED/OFFICIAL stories go live.
     # Lower-confidence RUMOURs are posted only when explicitly opted in.
     modes_ok = {"confirmed"} | ({"rumour"} if allow_rumours else set())
-    postable = [d for d in drafts if d.get("mode") in modes_ok]
+
+    # Confidence gate: only AUTO_POST (score >= 90) publishes live. REVIEW-tier
+    # stories (75-89) stay as drafts in the queue for a human to review; they go
+    # live only when rumours are explicitly opted in. Drafts are always saved
+    # either way, so nothing legitimate is lost — it just isn't auto-published.
+    def _conf_ok(d):
+        dec = d.get("confidence_decision", "AUTO_POST")
+        return dec == _conf.AUTO_POST or (allow_rumours and dec == _conf.REVIEW)
+
+    postable = [d for d in drafts if d.get("mode") in modes_ok and _conf_ok(d)]
+    _held = [d for d in drafts if d.get("mode") in modes_ok and not _conf_ok(d)]
+    if _held:
+        print(f"[BOT] {len(_held)} story(ies) held for REVIEW (confidence 75-89) — "
+              f"saved as drafts, not auto-posted.")
 
     if not postable:
         print("[BOT] No postable stories this run "

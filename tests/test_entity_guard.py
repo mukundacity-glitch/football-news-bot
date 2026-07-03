@@ -47,14 +47,20 @@ def test_case5_coach_pako_ayestaran_not_a_player_transfer():
 
 
 def test_staff_role_and_action_detection():
-    from src.entity_guard import staff_role_of, staff_action_of, is_staff_subject
+    from src.entity_guard import (staff_role_of, staff_action_of, is_staff_subject,
+                                  classify_entity_detailed)
     dep = "Aston Villa assistant head coach Pako Ayestaran has departed the club."
     assert is_staff_subject("Pako Ayestaran", dep) is True
     assert staff_role_of("Pako Ayestaran", dep) == "assistant head coach"
     assert staff_action_of(dep) == "departure"
-    appt = "Chelsea appoint Luis Campos as sporting director."
-    assert staff_role_of("Luis Campos", appt) == "sporting director"
+    # A COACH appointment is postable staff.
+    appt = "Chelsea appoint Marcus Sorg as first team coach."
+    assert staff_role_of("Marcus Sorg", appt) == "first team coach"
     assert staff_action_of(appt) == "appointment"
+    # A DIRECTOR is NOT postable staff (spec: only PLAYER/COACH/MANAGER publish).
+    dtxt = "Chelsea appoint Luis Campos as sporting director."
+    assert classify_entity_detailed("Luis Campos", dtxt)[0] == "DIRECTOR"
+    assert is_postable_player("Luis Campos", dtxt, "manager")[0] is False
 
 
 def test_player_mentioned_with_coach_not_flipped():
@@ -78,9 +84,33 @@ def test_build_story_routes_staff_to_manager():
 
 
 def test_company_suffix_heuristic():
-    # Sponsor/brand names caught by suffix even if not pre-listed.
+    # Brand/company/outlet names caught by structural suffix even if not pre-listed.
+    # All are hard-rejects; the exact bucket (COMPANY/BRAND/MEDIA) may vary.
+    _REJECT = {"COMPANY", "BRAND", "SPONSOR", "MEDIA"}
     for name in ("Boyle Sports", "Northbridge Insurance", "Vertex Holdings"):
-        assert classify_entity(name, "")[0] == "COMPANY", name
+        assert classify_entity(name, "")[0] in _REJECT, name
+        assert is_postable_player(name, "", "transfer")[0] is False, name
+
+
+def test_junk_and_fragment_names_rejected():
+    # RSS / scraper / social-noise fragments must never post as a player.
+    from src.entity_guard import classify_entity_detailed
+    for name in ("Link Click", "link click", "Why Harry Kane", "From June",
+                 "Our Carabao Cup", "Should Mateus", "Watch Live", "RT Fabrizio"):
+        assert classify_entity_detailed(name, "")[0] == "UNKNOWN", name
+        assert is_postable_player(name, "", "transfer")[0] is False, name
+
+
+def test_director_executive_agent_rejected():
+    from src.entity_guard import classify_entity_detailed as C
+    assert C("Luis Campos", "Luis Campos appointed as sporting director")[0] == "DIRECTOR"
+    assert C("Todd Boehly", "Chelsea chairman Todd Boehly said")[0] == "EXECUTIVE"
+    assert C("Jorge Mendes", "super agent Jorge Mendes is negotiating")[0] == "AGENT"
+    for n, t in (("Luis Campos", "Luis Campos appointed as sporting director"),
+                 ("Todd Boehly", "Chelsea chairman Todd Boehly"),
+                 ("Jorge Mendes", "super agent Jorge Mendes")):
+        assert is_postable_player(n, t, "transfer")[0] is False, n
+        assert is_postable_player(n, t, "manager")[0] is False, n
 
 
 def test_stadiums_rejected():

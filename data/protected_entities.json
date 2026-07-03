@@ -1,0 +1,34 @@
+{
+  "_comment": "Central taxonomy + reason map for the entity guard. This is LOGIC, not a name dump: 'reasons' pins the canonical rejection reason per entity type; 'role_cues' groups the linguistic titles that identify each non-player football role so a subject can be classified from context (no per-name lists). 'always_reject' is a tiny set of explicit protected names that must never be a transfer subject regardless of context — kept minimal on purpose.",
+  "reasons": {
+    "JOURNALIST": "journalist_entity",
+    "MEDIA": "media_entity",
+    "COMPANY": "company_entity",
+    "BRAND": "brand_entity",
+    "SPONSOR": "sponsor_entity",
+    "STADIUM": "stadium_entity",
+    "CLUB": "club_entity",
+    "AGENT": "agent_entity",
+    "UNKNOWN": "unknown_entity"
+  },
+  "role_cues": {
+    "AGENT": [
+      "agent", "super agent", "super-agent", "player's agent", "representative",
+      "agency", "intermediary", "spokesperson", "spokesman", "lawyer", "advisor"
+    ],
+    "DIRECTOR": [
+      "sporting director", "technical director", "director of football",
+      "football director", "head of recruitment", "head of football operations",
+      "recruitment chief", "transfer chief", "head of scouting", "chief scout"
+    ],
+    "EXECUTIVE": [
+      "chief executive", "ceo", "chairman", "chairwoman", "owner", "co-owner",
+      "president", "vice-president", "vice president", "board member",
+      "managing director", "chief operating officer", "financial director"
+    ]
+  },
+  "always_reject": {
+    "journalists_source": "journalists.json",
+    "note": "Deliberately empty of inline names — journalists/companies/sponsors/media/stadiums are carried in their own files so this stays logic-first."
+  }
+}

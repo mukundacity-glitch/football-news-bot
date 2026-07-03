@@ -1,0 +1,24 @@
+{
+  "_comment": "Media outlets, broadcasters and agencies that get misread as a person/transfer subject. Detection is STRUCTURAL: 'suffix_tokens' mark outlet-style names (Sport, News, Media, TV, Radio, FC-less brands) and 'context_cues' mark reporting/broadcast framing. 'names' is a seed only. Reputable outlets can still be a SOURCE — this only stops them being the SUBJECT of a transfer.",
+  "names": [
+    "Sky Sports", "Sky Sport", "BBC Sport", "The Athletic", "The Guardian",
+    "The Telegraph", "The Times", "Daily Mail", "Daily Mirror", "The Sun",
+    "TalkSPORT", "TNT Sports", "BT Sport", "Fabrizio Romano Network",
+    "L'Equipe", "Marca", "AS", "Kicker", "Bild", "Gazzetta", "Corriere dello Sport",
+    "Tuttosport", "RMC Sport", "Foot Mercato", "Relevo", "CBS Sports",
+    "ESPN", "Goal", "GiveMeSport", "Football Insider", "TEAMtalk",
+    "Caught Offside", "90min", "Transfer News Live", "Get French Football News"
+  ],
+  "suffix_tokens": [
+    "sport", "sports", "news", "media", "network", "networks", "broadcasting",
+    "broadcast", "tv", "radio", "podcast", "press", "gazette", "chronicle",
+    "bulletin", "journal", "times", "post", "mail", "mirror", "telegraph",
+    "insider", "talk", "talksport", "wire", "report", "reports", "daily", "weekly"
+  ],
+  "context_cues": [
+    "reports", "reporting", "understands", "exclusive", "according to",
+    "sources tell", "has learned", "can reveal", "revealed", "broke the story",
+    "in an interview with", "speaking to", "told", "per ", "via ",
+    "on air", "on the podcast", "live on", "watch:", "full interview"
+  ]
+}
