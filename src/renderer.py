@@ -221,7 +221,7 @@ def _build_card_html(player_name, status, badge_color, club_color,
         .wordmark {{ font-size:52px; font-weight:900; margin-bottom:24px; text-shadow:0 4px 10px rgba(0,0,0,0.5); display:flex; align-items:center; }}
         .wordmark span {{ color:#54e07c; margin-left:10px; }}
         .status-badge {{ display:inline-block; background:{badge_color}; color:#fff; padding:14px 30px; font-size:42px; font-weight:900; border-radius:12px; letter-spacing:3px; margin-bottom:20px; text-transform:uppercase; box-shadow:0 8px 20px rgba(0,0,0,0.4); }}
-        .player-name {{ font-size:88px; font-weight:900; line-height:1.0; text-transform:uppercase; margin-bottom:28px; text-shadow:0 8px 20px rgba(0,0,0,0.6); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:820px; }}
+        .player-name {{ font-size:88px; font-weight:900; line-height:1.0; text-transform:uppercase; margin-bottom:28px; text-shadow:0 8px 20px rgba(0,0,0,0.6); white-space:nowrap; max-width:100%; }}
         .details-grid {{ display:grid; grid-template-columns:max-content 1fr; gap:18px 40px; font-size:44px; align-items:center; }}
         .detail-label {{ font-weight:700; text-transform:uppercase; }}
         .detail-value {{ font-weight:900; text-transform:uppercase; color:white; display:flex; align-items:center; }}
@@ -242,10 +242,21 @@ def _build_card_html(player_name, status, badge_color, club_color,
         </div>
         <div class="footer"><div>Source: {source_text} | @FPLVortex</div><div style="color:#d4af37;">{footer_tag}</div></div>
         <script>
-            document.addEventListener("DOMContentLoaded", function() {{
-                const nameEl = document.querySelector('.player-name'); let fs = 88;
-                while (nameEl.scrollWidth > nameEl.clientWidth && fs > 28) {{ fs--; nameEl.style.fontSize = fs + 'px'; }}
-            }});
+            // Shrink the player name to ALWAYS fit the left column — never clip or
+            // ellipsize. Measure against the real available width (the parent),
+            // and run after full load so font/layout metrics are final.
+            function fitPlayerName() {{
+                const nameEl = document.querySelector('.player-name');
+                if (!nameEl) return;
+                const avail = nameEl.parentElement.clientWidth;
+                let fs = 88;
+                nameEl.style.fontSize = fs + 'px';
+                while (nameEl.scrollWidth > avail && fs > 22) {{
+                    fs -= 1; nameEl.style.fontSize = fs + 'px';
+                }}
+            }}
+            document.addEventListener("DOMContentLoaded", fitPlayerName);
+            window.addEventListener("load", fitPlayerName);
         </script>
     </body></html>"""
 

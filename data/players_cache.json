@@ -1,0 +1,16 @@
+{
+  "_comment": "Player validation is intentionally NOT a static name dump — the authoritative player cache is the LIVE FPL feed (data/fpl_cache.json, refreshed each run by src/fpl_feed.fetch_fpl_data). A frozen list would go stale within a gameweek and cause false rejects of new/foreign signings. This file holds only the STRUCTURAL rules the confidence engine applies to a candidate player name, plus the policy for players not yet in the FPL database.",
+  "authoritative_source": "fpl_cache.json (live FPL bootstrap-static)",
+  "min_name_tokens": 2,
+  "single_token_allowed_when": "the single token is itself an FPL web_name match (e.g. 'Costinha', 'Rodri')",
+  "unverified_player_policy": {
+    "allow_if": "source is tier 1-3 (official club / elite reporter / trusted media) AND a Premier League club is resolved as origin or destination",
+    "reason_if_blocked": "not_verified_pl_player"
+  },
+  "reject_name_patterns": [
+    "^(link|links|reaction|update|why|should|not|our|from|the|a|an)\\b",
+    "\\b(u\\d{1,2}|under)$",
+    "^[a-z]",
+    "\\b(risks|insurance|sports|group|holdings|media|betting|fc|cf)\\b"
+  ]
+}

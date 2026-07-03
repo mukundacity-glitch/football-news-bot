@@ -1,0 +1,24 @@
+{
+  "_comment": "Stadium and training-ground names that get misread as a person. Detection is STRUCTURAL first: 'suffix_tokens' (Stadium, Park, Ground, Arena, Road, Lane, Bridge, Field) mark a venue; 'context_cues' mark venue framing. 'names' seeds the current PL grounds but is NOT the primary mechanism.",
+  "names": [
+    "Old Trafford", "Anfield", "Emirates Stadium", "Stamford Bridge",
+    "Etihad Stadium", "Tottenham Hotspur Stadium", "London Stadium",
+    "Villa Park", "St James' Park", "St James Park", "Goodison Park",
+    "Hill Dickinson Stadium", "Selhurst Park", "Molineux", "Craven Cottage",
+    "Elland Road", "Bramall Lane", "King Power Stadium", "Vitality Stadium",
+    "Gtech Community Stadium", "American Express Stadium", "Amex Stadium",
+    "City Ground", "Turf Moor", "Portman Road", "Kenilworth Road",
+    "Carrow Road", "The Hawthorns", "Riverside Stadium", "Stadium of Light",
+    "Cardiff City Stadium", "Wembley", "Wembley Stadium"
+  ],
+  "suffix_tokens": [
+    "stadium", "arena", "park", "ground", "grounds", "field", "fields",
+    "road", "lane", "bridge", "moor", "hawthorns", "cottage", "molineux",
+    "colosseum", "bowl", "dome", "trafford", "anfield", "riverside", "villa park"
+  ],
+  "context_cues": [
+    "capacity", "all-seater", "redevelopment", "expansion of", "new stand",
+    "matchday at", "sold out at", "naming rights", "training ground",
+    "home of", "renamed", "atmosphere at", "pitch at", "under the lights at"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "_comment": "Shirt sponsors, betting partners and commercial brands that get misread as a transfer subject when they appear next to a club name (e.g. 'West Ham announce partnership with <brand>'). Detection is STRUCTURAL first: 'context_cues' near a candidate name mark it as a sponsorship story, and 'suffix_tokens' mark the name itself as a brand. 'names' is a small seed of well-known partners — NOT the primary mechanism and NOT meant to be exhaustive.",
+  "names": [
+    "Betano", "Bet365", "BoyleSports", "Boyle Sports", "Stake", "Stake.com",
+    "Betway", "Betfred", "William Hill", "Paddy Power", "Kindred",
+    "Emirates", "Fly Emirates", "Etihad", "Etihad Airways", "Qatar Airways",
+    "Standard Chartered", "AIA", "Cinch", "Rakuten", "TeamViewer", "Socios",
+    "Chase", "Riyadh Air", "Sela", "Kingdom of Saudi Arabia", "Visit Rwanda",
+    "American Express", "Amex", "Cazoo", "Fun88", "SBOTOP", "Astropay"
+  ],
+  "suffix_tokens": [
+    "airways", "airlines", "air", "bank", "betting", "bet", "bets", "casino",
+    "sportsbook", "gaming", "wagering", "insurance", "assurance", "financial",
+    "capital", "holdings", "telecom", "mobile", "energy", "motors", "auto",
+    "crypto", "exchange", "chartered", "express", "partners", "sponsor"
+  ],
+  "context_cues": [
+    "shirt sponsor", "front-of-shirt", "front of shirt", "sleeve sponsor",
+    "principal partner", "official partner", "partnership with", "sponsorship deal",
+    "new sponsor", "kit sponsor", "training kit partner", "betting partner",
+    "official betting", "commercial partner", "naming rights", "multi-year deal with",
+    "announce a partnership", "unveil new sponsor", "become the official"
+  ]
+}
