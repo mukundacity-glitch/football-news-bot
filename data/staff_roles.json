@@ -1,0 +1,43 @@
+{
+  "_comment": "Logic for non-player football staff (coaches, directors, physios, executives). Detection is by ROLE CUES near the subject's name in the source text — NOT a per-name list. 'staff' is intentionally empty (no hardcoded names). 'role_cues' identify staff; 'departure_cues'/'appointment_cues' word the news accurately. A staff subject is posted as STAFF/MANAGER news, never as a player transfer.",
+  "staff": [],
+  "role_cues": [
+    "assistant coach",
+    "assistant head coach",
+    "assistant manager",
+    "first team coach",
+    "first-team coach",
+    "head coach",
+    "goalkeeping coach",
+    "goalkeeper coach",
+    "set-piece coach",
+    "set piece coach",
+    "fitness coach",
+    "strength and conditioning coach",
+    "sporting director",
+    "technical director",
+    "director of football",
+    "head of recruitment",
+    "head of football operations",
+    "chief scout",
+    "chief executive",
+    "club president",
+    "vice-president",
+    "physio",
+    "physiotherapist",
+    "club doctor",
+    "performance analyst",
+    "kit man",
+    "backroom staff",
+    "coaching staff"
+  ],
+  "departure_cues": [
+    "departs", "departed", "departure", "leaves", "left", "leaving",
+    "steps down", "step down", "stepped down", "sacked", "dismissed",
+    "parts ways", "part ways", "relieved of", "exits", "exit", "resigns", "resigned"
+  ],
+  "appointment_cues": [
+    "appointed", "appoint", "appointment", "named", "joins as", "joining as",
+    "new", "hires", "hired", "takes over", "unveiled as", "signs as", "confirmed as"
+  ]
+}

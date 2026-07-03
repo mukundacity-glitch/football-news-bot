@@ -19,12 +19,13 @@ from pilmoji import Pilmoji
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key, is_big_player
 from src.renderer import create_transfer_image, create_injury_image, _create_fallback_card
 from src.parser import extract_story_fallback, detect_historical, passes_safety_gate, _clean_source_text
+from src.entity_guard import (is_postable_player, classify_entity,
+                              is_staff_subject, staff_role_of, staff_action_of)
 from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
     ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
-    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP,
-    PROTECTED_ENTITIES, STAFF_ROLE_KW,
+    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP
 )
 
 # Shared Canvas Namespace Initialization
@@ -340,8 +341,20 @@ def has_written_claim(tweet_text: str) -> bool:
     return bool(_CLAIM_MARKERS.search(cleaned)) and len(cleaned.split()) >= 5
 
 # ── STORY BUILDER (COMBINED & CORRECTLY PLACED) ──────────────────────────
+_PLAYER_EVENTS = ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay")
+
 def build_story(tweet_text, fpl_data):
     s = extract_story_fallback(tweet_text, fpl_data)
+
+    # ROLE-CUE ROUTING: if the subject is football staff (coach/director/etc.),
+    # this is NOT a player transfer. Tag the role/action for accurate wording and
+    # re-route any player event to STAFF/MANAGER news so it is classified
+    # correctly and still posts — never as a fake player move.
+    if s.get("player") and is_staff_subject(s.get("player"), tweet_text):
+        s["staff_role"] = staff_role_of(s.get("player"), tweet_text)
+        s["staff_action"] = staff_action_of(tweet_text)
+        if s.get("event") in _PLAYER_EVENTS:
+            s["event"] = "manager"
 
     if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
         el = find_player_in_fpl(s["player"], fpl_data)
@@ -572,22 +585,16 @@ def validate_story(story, fpl_data=None, sources=None):
     player = (story.get("player") or "").strip()
     if not player: return False, "missing_player"
     if sources is None: sources = story.get("sources", [])
+
+    # ENTITY SAFETY GATE (hard reject): the subject must be a real player, never a
+    # journalist, company/sponsor, stadium, or a coach filed as a player transfer.
+    _ent_text = " ".join(str(story.get(k, "") or "") for k in ("raw_text", "body", "headline"))
+    _ent_ok, _ent_reason = is_postable_player(player, _ent_text, ev)
+    if not _ent_ok:
+        return False, _ent_reason
     _ptokens = [t for t in re.split(r"[\s\-']+", player) if t]
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
-    
-    if _plow in PROTECTED_ENTITIES:
-        return False, PROTECTED_ENTITIES[_plow]
-
-    _raw_blob = (story.get("raw_text", "") + " " + story.get("body", "")).lower()
-    if ev != "manager" and any(role in _raw_blob for role in STAFF_ROLE_KW):
-        for role in STAFF_ROLE_KW:
-            idx = _raw_blob.find(role)
-            if idx == -1:
-                continue
-            window = _raw_blob[max(0, idx - 120): idx + 120]
-            if _plow and _plow.split()[0] in window:
-                return False, "staff_entity"
     if ev == "manager" and len(_ptokens) < 2: return False, "manager_name_single_token"
     if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
@@ -638,7 +645,9 @@ def validate_story(story, fpl_data=None, sources=None):
                 return False, "no_destination"
         leak = (story.get("body", "") + " " + story.get("headline", "")).lower()
         if re.search(r'\b(head coach|sacked|appointed as manager|hamstring|ruled out for)\b', leak): return False, "event_data_mismatch"
-    if ev == "manager" and not (story.get("to_key") or story.get("to_club")): return False, "manager_no_club"
+    # Manager/staff news needs a club, but a DEPARTURE only has an origin club.
+    if ev == "manager" and not (story.get("to_key") or story.get("to_club")
+                                or story.get("from_key") or story.get("from_club")): return False, "manager_no_club"
     return True, "ok"
 
 # ── PRE-RENDER ACCURACY DOUBLE-CHECK ─────────────────────────────────────
@@ -859,13 +868,18 @@ def build_tweet_body(story, sources, mode) -> str:
 
     elif ev == "manager":
         club = (to_full or from_full).upper()
-        direction = story.get("direction")
-        if direction == "departing":
-            headline = f"🎩 MANAGER- {player} LEAVES {club or 'THE CLUB'}."
-        elif direction == "arriving":
-            headline = f"🎩 MANAGER- {player} LINKED WITH THE {club or 'CLUB'} JOB."
+        role = story.get("staff_role")
+        if role and role != "staff":
+            role_u = role.upper()
+            action = story.get("staff_action")
+            if action == "departure":
+                headline = f"👔 STAFF- {player} LEAVES {club} AS {role_u}." if club else f"👔 STAFF- {player} LEAVES ROLE AS {role_u}."
+            elif action == "appointment":
+                headline = f"👔 STAFF- {player} APPOINTED {club} {role_u}." if club else f"👔 STAFF- {player} APPOINTED AS {role_u}."
+            else:
+                headline = f"👔 STAFF- {player} — {role_u}" + (f" AT {club}" if club else "") + "."
         else:
-            headline = f"🎩 MANAGER- {player} — MANAGERIAL UPDATE AT {club or 'CLUB'}."
+            headline = f"🎩 MANAGER- {player} LINKED WITH THE {club or 'CLUB'} JOB."
 
     else:
         headline = f"🔵 NEWS- {player}."
@@ -965,7 +979,6 @@ def record_posted(item, data):
     data["stories"][item["key"]] = {
         "stage": item["stage"], "player": item["player"],
         "to_key": item.get("to_key"), "event": item["event"],
-        "direction": item.get("direction"),
         "status": "collapsed" if item.get("collapsed") else "active",
         "sources": item["sources"], "last_updated": datetime.now(timezone.utc).isoformat(),
     }
@@ -1296,8 +1309,7 @@ async def scrape(data, read_client):
             key = reconcile_key(story["player"], anchor, story["event"],
                                 story_map, data.get("stories", {}), data.get("pending", {}))
                                 
-            ok, reason = should_post(data, key, story["stage"], story["collapsed"],
-                                      new_direction=story.get("direction"))
+            ok, reason = should_post(data, key, story["stage"], story["collapsed"])
             if not ok:
                 print(f"   skip ({reason}): {key}")
                 continue
