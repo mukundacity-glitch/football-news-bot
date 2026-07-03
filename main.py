@@ -583,6 +583,16 @@ def classify_post(story, sources):
         if has_official or n_elite >= 1: return "confirmed"
         return None
 
+    # Manager / staff: only an actual appointment or departure is CONFIRMED. A bare
+    # "linked with the job" is speculation -> RUMOUR (never a CONFIRMED card).
+    if story.get("event") == "manager":
+        action = story.get("staff_action")
+        if action in ("appointment", "departure") and (has_official or n_elite >= 1):
+            return "confirmed"
+        if has_official or n_elite >= 1 or has_media:
+            return "rumour"
+        return None
+
     # A transfer/loan can't be OFFICIAL/CONFIRMED without a known destination club.
     if story.get("event") in ("transfer", "loan", "loan_option") and not story.get("to_key"):
         if has_official or n_elite >= 1 or has_media:
@@ -626,9 +636,16 @@ def validate_story(story, fpl_data=None, sources=None):
     if not player: return False, "missing_player"
     if sources is None: sources = story.get("sources", [])
 
+    # RECENCY GATE: never publish news older than 3 days. (Ingestion fail-closes
+    # on an unknown date; here we also reject a story that carries a parseable but
+    # stale timestamp — e.g. a re-surfaced old tweet re-run from cache.)
+    _created = story.get("created_at")
+    if _created and tweet_too_old(_created, unknown_is_old=False):
+        return False, f"older_than_{MAX_TWEET_AGE_DAYS}d"
+
     # ENTITY SAFETY GATE (hard reject): the subject must be a real player, never a
     # journalist, company/sponsor, stadium, or a coach filed as a player transfer.
-    _ent_text = " ".join(str(story.get(k, "") or "") for k in ("raw_text", "body", "headline"))
+    _ent_text = " . ".join(str(story.get(k, "") or "") for k in ("raw_text", "body", "headline"))
     _ent_ok, _ent_reason = is_postable_player(player, _ent_text, ev)
     if not _ent_ok:
         return False, _ent_reason
@@ -666,6 +683,24 @@ def validate_story(story, fpl_data=None, sources=None):
         fc = (story.get("from_club") or "").strip().lower()
         tc = (story.get("to_club") or "").strip().lower()
         if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
+
+        # PLAYER-IDENTITY GATE: a "transfer" of someone NOT in the FPL player
+        # database must carry positive evidence they are actually a PLAYER — a
+        # club-to-club origin (players move between clubs) or a free-agent cue.
+        # Without that, the subject is likely staff/coach/executive announced by
+        # a club (e.g. a goalkeeping coach "joining" Arsenal) and must NOT be
+        # published as a player transfer. Staff with a role cue are already
+        # re-routed to the manager/staff pipeline upstream.
+        _fpl_match = bool(fpl_data and find_player_in_fpl(player, fpl_data) is not None)
+        if not _fpl_match:
+            _has_origin = bool(fk or fc)
+            _idblob = (story.get("raw_text", "") + " " + story.get("body", "") + " "
+                       + (story.get("headline") or "")).lower()
+            _free_cue = any(c in _idblob for c in
+                            ("free agent", "free transfer", "released", "on a free",
+                             "out of contract", "pre-contract", "bosman"))
+            if not (_has_origin or _free_cue):
+                return False, "unconfirmed_player_identity"
         
         # Require at least one RESOLVED real club. build_story sets from_key to the
         # player's real FPL club, so verified players always keep their true origin.
@@ -1211,10 +1246,13 @@ def _parse_tweet_date(raw):
     except (ValueError, TypeError):
         return None
 
-def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS):
+def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS, unknown_is_old=True):
+    """True if the item is older than max_days. FAIL-CLOSED: an unparseable/missing
+    date is treated as too old (unknown_is_old=True) so we never publish news whose
+    recency we cannot verify — the bot must not post anything older than 3 days."""
     dt = _parse_tweet_date(created_at)
     if dt is None:
-        return False
+        return unknown_is_old
     age = datetime.now(timezone.utc) - dt
     return age.total_seconds() > max_days * 86400
 

@@ -277,9 +277,28 @@ def create_transfer_image(story, sources, filename, collapsed=False):
     to_club = story.get("to_club") or (to_key or "").replace("_", " ")
     from_club = story.get("from_club") or (from_key or "").replace("_", " ")
 
+    ev = (story.get("event") or "transfer").lower()
+    is_staff = ev == "manager"
     mode = story.get("mode", "confirmed")
+    # Footer tag ALWAYS states who the subject is: MANAGER / a specific STAFF role
+    # (e.g. "GOALKEEPING COACH") / TRANSFER — so a coach is never shown as a player.
+    role = (story.get("staff_role") or "").strip()
+    if is_staff:
+        footer_tag = (role.upper() if role and role.lower() != "staff"
+                      else "MANAGER" if "manager" in role.lower() or not role else "STAFF")
+    else:
+        footer_tag = "TRANSFER"
+
     if collapsed or story.get("collapsed"):
         status, badge = "DEAL COLLAPSED", "#e31e24"
+    elif is_staff:
+        action = story.get("staff_action")
+        if action == "appointment":
+            status, badge = "APPOINTED", "#54e07c"
+        elif action == "departure":
+            status, badge = "DEPARTURE", "#e31e24"
+        else:
+            status, badge = "LINKED", "#f5c518"      # speculation, not confirmed
     elif mode == "rumour" or not to_key:
         # No verified destination -> never claim CONFIRMED/OFFICIAL.
         status, badge = "TRANSFER RUMOUR", "#e31e24"
@@ -289,19 +308,24 @@ def create_transfer_image(story, sources, filename, collapsed=False):
 
     club_color = get_club_color(to_key or from_key)
     main_crest = _crest_uri(to_key or from_key)
-    fee_value = story.get("fee") or "TBD"   # matches the tweet body; carries its currency symbol
 
     rows = []
     if from_club:
         rows.append(("FROM", "#f5c518", _club_cell(from_club, _crest_uri(from_key)), ""))
     if to_club:
-        rows.append(("TO", "#00d4ff", _club_cell(to_club, _crest_uri(to_key)), ""))
-    rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
+        rows.append(("TO" if not is_staff else "CLUB", "#00d4ff",
+                     _club_cell(to_club, _crest_uri(to_key)), ""))
+    if is_staff:
+        # Staff/manager cards show the ROLE, never a transfer FEE.
+        rows.append(("ROLE", "#f5c518",
+                     (role.upper() if role and role.lower() != "staff" else "MANAGER"), ""))
+    else:
+        fee_value = story.get("fee") or "TBD"   # matches the tweet body
+        rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
 
     source_text = " · ".join(f"@{s}" for s in sources[:2])
     html = _build_card_html(player_name, status, badge, club_color, logo_uri, photo_uri,
-                            main_crest, rows, source_text,
-                            (story.get("event", "TRANSFER") or "TRANSFER").upper())
+                            main_crest, rows, source_text, footer_tag)
 
     if not _render_card(html, filename):
         Image.new('RGB', (1380, 776), color=(11, 18, 32)).save(filename)
