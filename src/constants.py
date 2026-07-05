@@ -25,6 +25,8 @@ JOURNALISTS = [
     "ManUtd", "SpursOfficial", "NUFC", "NFFC", "Everton",
     "WestHam", "CPFC", "OfficialBHAFC", "Wolves", "BrentfordFC",
     "FulhamFC", "AFCBournemouth", "lcfc",
+    "TelegraphDucker", "henrywinter", "lauriewhitwell", "SamLee",
+    "SimonPeach", "OliverKay", "david_conn",
 ]
 
 NITTER_INSTANCES = [
@@ -46,11 +48,13 @@ ELITE_TRUSTED = {
     "fabrizioromano", "david_ornstein", "_pauljoyce", "sistoney67",
     "samimokbel_bbc", "jacobsben", "jamespearcelfc", "sachatavolieri",
     "plettigoal", "matteomoretto", "alfredopedulla", "dimarzio",
+    "telegraphducker", "henrywinter", "lauriewhitwell", "samlee",
+    "simonpeach", "oliverkay", "david_conn",
 }
 TRUSTED_MEDIA = {
     "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
     "guardian_sport", "lequipe", "marca", "diarioas", "as", "kicker",
-    "alex_crook", "alexcrabb31",
+    "alex_crook", "alexcrabb31", "telegraph", "telegraphfootball",
 }
 
 # Parsing Keywords
