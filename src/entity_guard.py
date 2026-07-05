@@ -27,6 +27,7 @@ import json
 import re
 import unicodedata
 from pathlib import Path
+from src.constants import MANAGER_SURNAMES
 
 _DATA = Path(__file__).resolve().parent.parent / "data"
 
@@ -212,10 +213,20 @@ def _role_bound_to_name(name_norm, text, cues):
             return cue
         if re.search(nm + r"\s*(?:,|-|\bas\b|\bthe\b)\s*" + c + r"\b", t):
             return cue
-        # appointment phrasing: "<name> ... as <role>" within the SAME clause
+        # appointment phrasing: "<n> ... as <role>" within the SAME clause
         # (no '.'/';' break) — e.g. "Luis Campos appointed as sporting director".
-        if re.search(nm + r"\b[^.;]{0,40}?\bas\s+" + c + r"\b", t):
-            return cue
+        # Guard: skip if a DIFFERENT known manager surname sits between the name
+        # and the role cue (e.g. "...manager Iraola wants to keep Van Dijk" must
+        # NOT bind "manager" to Van Dijk).
+        m = re.search(nm + r"\b([^.;]{0,40}?)\bas\s+" + c + r"\b", t)
+        if m:
+            between = m.group(1)
+            other_manager_named = any(
+                re.search(r'(?<![a-z])' + re.escape(surname) + r'(?![a-z])', between)
+                for surname in MANAGER_SURNAMES
+            )
+            if not other_manager_named:
+                return cue
     return None
 
 
