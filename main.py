@@ -678,6 +678,19 @@ def validate_story(story, fpl_data=None, sources=None):
     if looks_like_reporter(player): return False, "player_is_reporter_name"
     if re.search(r'\bRT\s+@|@\w+|https?://', story.get("body", "")): return False, "raw_source_text_in_body"
     if player_already_at_club(story, fpl_data): return False, "already_at_destination"
+    if ev in ("renewal", "stay"):
+        _blob = (story.get("raw_text", "") + " " + story.get("body", "") + " "
+                 + (story.get("headline") or "")).lower()
+        _EXIT_CUES = ("leav", "exit", "depart", "release", "for sale", "up for sale",
+                      "wants out", "wants a move", "wants to go", "could go",
+                      "transfer listed", "axed", "let go", "on his way out",
+                      "set to go", "seeking a move", "open to leaving",
+                      "available for transfer", "verbal agreement", "agreed a fee",
+                      "agreed a deal", "reached an agreement", "in talks with",
+                      "interested in", "eyeing a move")
+        if any(c in _blob for c in _EXIT_CUES):
+            return False, "stay_contradicted_by_exit_language"
+
     if ev in ("transfer", "loan", "loan_option"):
         fk = story.get("from_key"); tk = story.get("to_key")
         fc = (story.get("from_club") or "").strip().lower()
