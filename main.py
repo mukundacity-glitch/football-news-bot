@@ -636,11 +636,11 @@ def validate_story(story, fpl_data=None, sources=None):
     if not player: return False, "missing_player"
     if sources is None: sources = story.get("sources", [])
 
-    # RECENCY GATE: never publish news older than 3 days. (Ingestion fail-closes
-    # on an unknown date; here we also reject a story that carries a parseable but
-    # stale timestamp — e.g. a re-surfaced old tweet re-run from cache.)
-    _created = story.get("created_at")
-    if _created and tweet_too_old(_created, unknown_is_old=False):
+    # RECENCY GATE: never publish news older than 3 days. Fail-closed — a
+    # missing/unparseable date is treated as too old, same as at ingestion —
+    # so a story can never dodge this check just by losing its timestamp
+    # (e.g. a re-surfaced old tweet re-run from cache).
+    if tweet_too_old(story.get("created_at")):
         return False, f"older_than_{MAX_TWEET_AGE_DAYS}d"
 
     # ENTITY SAFETY GATE (hard reject): the subject must be a real player, never a

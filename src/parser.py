@@ -115,6 +115,21 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
     fee_match = re.search(r'([£€$]\d+(?:\.\d+)?\s*(?:m|k|million|billion))', cleaned, re.IGNORECASE)
 
+    # Contract terms: duration ("one-year deal"/"3-year contract"/"long-term
+    # deal") and/or an end date ("until June 2027"). Either half alone is
+    # still useful, so they're captured independently and joined below.
+    duration_match = re.search(
+        r'\b((?:one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})[\s-]year\s+'
+        r'(?:contract|deal|extension)s?)\b', cleaned, re.IGNORECASE) or \
+        re.search(r'\b(long[\s-]term\s+(?:contract|deal))\b', cleaned, re.IGNORECASE)
+    until_match = re.search(r'\buntil\s+((?:[A-Z][a-z]+\s+)?20\d{2})\b', cleaned)
+    contract_parts = []
+    if duration_match:
+        contract_parts.append(duration_match.group(1).strip().capitalize())
+    if until_match:
+        contract_parts.append(f"until {until_match.group(1)}")
+    contract_text = ", ".join(contract_parts) if contract_parts else None
+
     return {
         "is_football": True, "event": event,
         "is_real_move": event in ("transfer", "loan", "loan_option"),
@@ -123,6 +138,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         "to_club": to_key.replace("_", " ") if to_key else None,
         "from_key": from_key, "to_key": to_key,
         "fee": fee_match.group(1).upper() if fee_match else None,
+        "contract": contract_text,
         "stage": stage, "collapsed": is_collapsed,
         "headline": name if name else "Transfer update",
         "body": tweet_text,

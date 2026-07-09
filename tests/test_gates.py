@@ -61,6 +61,7 @@ def test_non_player_no_origin_rejected_as_transfer():
     # A coach announced by a club, filed as a player transfer, with no origin
     # club and not in FPL -> must NOT publish as a player transfer.
     s = main.build_story("Pascal De Maesschalck confirmed transfer to Arsenal", None)
+    s["created_at"] = _date(hours=2)
     ok, why = main.validate_story(s, None, sources=["Arsenal"])
     assert ok is False and why == "unconfirmed_player_identity", why
 
@@ -70,6 +71,7 @@ def test_coach_with_role_cue_routes_to_staff():
     s = main.build_story("Arsenal appoint Pascal De Maesschalck as goalkeeping coach", None)
     assert s["event"] == "manager"
     assert s.get("staff_role") == "goalkeeping coach"
+    s["created_at"] = _date(hours=2)
     ok, why = main.validate_story(s, None, sources=["Arsenal"])
     assert ok is True, why
 
