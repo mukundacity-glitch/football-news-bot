@@ -1422,6 +1422,13 @@ async def scrape(data, read_client):
                 ex = story_map[key]
                 if username not in ex["sources"]: ex["sources"].append(username)
                 if story["stage"] > ex["stage"]: ex.update({k: story[k] for k in story})
+                # Backfill detail fields even when this tweet isn't a stage
+                # upgrade — a later tweet often carries the fee/contract terms
+                # a first, thinner report missed. Never overwrite what's
+                # already known, just fill the gaps.
+                for _f in ("fee", "contract", "diagnosis", "expected_return"):
+                    if not ex.get(_f) and story.get(_f):
+                        ex[_f] = story[_f]
                 ex["sources"] = list(dict.fromkeys(ex["sources"]))
             else:
                 prior = data.get("pending", {}).get(key, {}).get("sources", [])
