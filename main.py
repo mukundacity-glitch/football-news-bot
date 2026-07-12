@@ -1370,7 +1370,7 @@ async def scrape(data, read_client):
             tid, text = t["id"], t["text"]
             if tid in data["posted_ids"]: continue
             if not any(k in text.lower() for k in FOOTBALL_KW): continue
-            (leave empty — delete entirely, no replacement text)
+           
             
             if tweet_too_old(t.get("created_at")):
                 skipped += 1
