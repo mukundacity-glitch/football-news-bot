@@ -111,6 +111,7 @@ def _render_html_sync(html_content, filename, error_box=None):
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
             page.set_content(html_content, wait_until="domcontentloaded")
+            page.evaluate("document.fonts.ready.then(() => true)")
             page.wait_for_timeout(500)
             page.screenshot(path=filename)
             browser.close()
