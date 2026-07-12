@@ -104,7 +104,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-06-25-rawtext"
+_LOGIC_VER = "2026-07-12-direction-dedup-fix"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -417,12 +417,31 @@ def _norm_text(s: str) -> str:
     s = re.sub(r"[^a-z0-9 ]+", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
+def _story_club_signature(story: dict) -> str:
+    """Order-independent identity for the club(s) involved in a story: the
+    SET of resolved clubs, not an ordered from->to pair. Two reports of the
+    same transfer that disagree on direction (a real recurring failure mode —
+    different sources, or a misparse, swap which club is "from" and which is
+    "to") still produce the SAME signature here, so they are recognised as
+    the same underlying story instead of minting a second, contradictory one."""
+    keys = sorted({k for k in (story.get("to_key"), story.get("from_key")) if k})
+    if keys:
+        return "_".join(k.lower() for k in keys)
+    names = sorted({n for n in (
+        _norm_text(story.get("to_club")), _norm_text(story.get("from_club"))) if n})
+    if names:
+        return "_".join(n.replace(" ", "_") for n in names)
+    return "unknown"
+
 def content_hash(story: dict) -> str:
+    fam = _event_family(story.get("event"))
+    club_part = (_story_club_signature(story) if fam == "transfer"
+                 else _norm_text(story.get("to_key") or story.get("to_club")
+                                 or story.get("from_key") or story.get("from_club")))
     parts = [
-        _event_family(story.get("event")),
+        fam,
         _norm_text(story.get("player")),
-        _norm_text(story.get("from_key") or story.get("from_club")),
-        _norm_text(story.get("to_key") or story.get("to_club")),
+        club_part,
         _norm_text(story.get("headline")),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
@@ -465,6 +484,16 @@ def build_story_key(player, club_key, event) -> str:
 
 def _event_family(event):
     return "injury" if event == "injury" else "manager" if event == "manager" else "transfer"
+
+def story_anchor(story: dict) -> str:
+    """Identity anchor used to key a story. Transfer/loan events use the
+    UNORDERED club-pair signature (see _story_club_signature) so a direction
+    mix-up between two reports of the same move can't create two separate,
+    contradictory story keys. Injury/manager events keep the single-club
+    anchor, since those don't carry a from/to pair to get reversed."""
+    if _event_family(story.get("event")) == "transfer":
+        return _story_club_signature(story)
+    return story.get("to_key") or story.get("from_key") or "unknown"
 
 def reconcile_key(player, anchor, event, *maps):
     p = (player or "unknown").lower().replace(" ", "_")
@@ -1410,7 +1439,7 @@ async def scrape(data, read_client):
             story["confidence_score"] = _cres["score"]
             story["confidence_decision"] = _cres["decision"]
 
-            anchor = story.get("to_key") or story.get("from_key") or "unknown"
+            anchor = story_anchor(story)
             key = reconcile_key(story["player"], anchor, story["event"],
                                 story_map, data.get("stories", {}), data.get("pending", {}))
                                 
