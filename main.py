@@ -1370,6 +1370,7 @@ async def scrape(data, read_client):
             tid, text = t["id"], t["text"]
             if tid in data["posted_ids"]: continue
             if not any(k in text.lower() for k in FOOTBALL_KW): continue
+            if username.lower() in {"lequipe", "marca", "diarioas", "kicker"} and resolve_club_key(text.lower()) is None and not any(re.search(r'(?<![a-z])' + re.escape(a) + r'(?![a-z])', text.lower()) for a in _SORTED_ALIASES): continue
             
             if tweet_too_old(t.get("created_at")):
                 skipped += 1
