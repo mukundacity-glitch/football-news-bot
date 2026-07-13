@@ -56,6 +56,30 @@ def test_origin_not_a_date_word():
     assert frm is None
 
 
+# ── "agreed ... with <club>" / joint-agreement origin grammar ──────────────
+# Locks the Manzambi false-direction bug: neither tweet used a literal "from
+# <club>", so the origin (a club outside our lexicon) was silently dropped and
+# a THIRD, merely-interested club got promoted into the from/to pair instead.
+
+def test_agreed_fee_with_captures_unknown_origin():
+    frm, fk, to, tk = resolve(
+        "Newcastle agreed terms with Freiburg but waiting on player's green light to proceed.")
+    assert frm == "Freiburg"
+
+
+def test_agreed_fee_with_amount_and_conversion_aside():
+    frm, fk, to, tk = resolve(
+        "The Magpies have agreed a €60million (£51.2million) fee with Freiburg for the midfielder.")
+    assert frm == "Freiburg"
+
+
+def test_joint_agreement_names_buyer_then_seller():
+    frm, fk, to, tk = resolve(
+        "Newcastle and SC Freiburg have reached a full agreement over the transfer of the player.")
+    assert frm == "SC Freiburg"
+    assert to == "Newcastle" and tk == "Newcastle"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

@@ -7,8 +7,9 @@ import re
 from datetime import datetime, timezone
 from src.fpl_feed import find_player_in_fpl, fpl_team_key
 from src.constants import (
-    FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES, CLUB_ALIASES, 
-    POSITION_WORDS, NATIONALITY_ADJECTIVES, OFFICIAL_INJURY_ACCOUNTS
+    FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES, CLUB_ALIASES,
+    POSITION_WORDS, NATIONALITY_ADJECTIVES, OFFICIAL_INJURY_ACCOUNTS,
+    STRONG_OFFICIAL_CUES
 )
 
 # Sort aliases by length descending
@@ -36,6 +37,71 @@ def _clean_source_text(text: str) -> str:
     t = re.sub(r'["""]', '', t)
     return re.sub(r'\s+', ' ', t).strip()
 
+# Phrasing that names a club as merely INTERESTED / a potential hijacker, or
+# as a PAST/REJECTED candidate, not the confirmed party to a move — e.g.
+# "Aston Villa also interested" (still-active rival interest) or "was in the
+# running for the Fulham job" (a candidacy that did NOT happen — the real
+# move went elsewhere, e.g. Hugo Oliveira -> Strasbourg, not Fulham). A club
+# whose only mention(s) sit in this kind of context must not be promoted
+# into the from/to slots by the positional heuristic below.
+_INTEREST_ONLY_CUES = (
+    # still-active interest / hijack risk. Deliberately specific phrases only
+    # — a bare "monitoring"/"tracking" is too generic (a club routinely
+    # "monitors the development" of its OWN player after a loan/exit, which
+    # is not transfer speculation about a third club at all).
+    "also interested", "also interest", "among clubs attentive", "attentive to",
+    "in the race", "keen on", "keen to sign", "admirer",
+    "monitoring the situation", "monitoring developments", "eyeing a move",
+    "eyeing a swoop", "chasing a move", "tracking the situation",
+    "keeping tabs on", "alternative suitor", "rival interest",
+    "hijack", "late move", "credited with interest", "touted as a",
+    "touted as potential", "linked with interest", "also chasing", "also keen",
+    "also monitoring", "also credited", "also tracking", "also linked",
+    "rival to sign", "could rival",
+    # past / rejected candidacy — the subject did NOT end up at this club
+    "was in the running", "in the running for", "in contention for",
+    "were in contention", "was a candidate for", "one of the candidates",
+    "in the frame for", "was considered for", "was interviewed for",
+    "had been linked with", "was among the candidates", "lost out on",
+    "passed over for", "shortlisted for", "missed out on", "was not appointed",
+    "did not get the job", "turned down the",
+)
+# Strong deal-completion language that, if present in the SAME local context,
+# overrides an interest-only cue (the club really is party to the move).
+_STRONG_DEAL_CUES = (
+    "agreed", "agreement", "deal with", "sign", "signs", "signed", "joins",
+    "joined", "here we go", "confirmed", "official", "completed", "medical",
+)
+
+
+def _club_context_is_interest_only(pos: int, text: str) -> bool:
+    """Scope the check to the CLAUSE (sentence) containing this position, not
+    a fixed character window — a fixed window lets an unrelated verb in the
+    previous/next sentence ("...deal signed. Aston Villa also interested...")
+    leak in and wrongly treat the mention as more than just onlooker interest."""
+    lo = pos
+    while lo > 0 and text[lo - 1] not in ".;!?\n":
+        lo -= 1
+    hi = pos
+    while hi < len(text) and text[hi] not in ".;!?\n":
+        hi += 1
+    ctx = text[lo:hi]
+    if not any(c in ctx for c in _INTEREST_ONLY_CUES):
+        return False
+    return not any(c in ctx for c in _STRONG_DEAL_CUES)
+
+
+def _cue_pos(words_list, text):
+    """Earliest character position at which any word/phrase in words_list
+    occurs, or None if none occur."""
+    best = None
+    for w in words_list:
+        m = re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text)
+        if m and (best is None or m.start() < best):
+            best = m.start()
+    return best
+
+
 def _is_bad_name(low: str, event: str) -> bool:
     if event != "manager" and (low in MANAGER_SURNAMES or any(m in low for m in MANAGER_SURNAMES)): 
         return True
@@ -60,18 +126,36 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     def has_word(words_list, text):
         return any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text) for w in words_list)
 
-    loan_signal = ("on loan" in tl) or bool(re.search(r"\bjoine?d?\b.*\bon loan\b", tl))
-    
-    # Priority classification
-    if has_word(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl): event = "suspension"
-    elif loan_signal: event = "loan"
-    elif has_word(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt"], tl): event = "injury"
-    elif has_word(["sack", "appoint", "head coach", "manager"], tl): event = "manager"
-    elif has_word(["new deal", "new contract", "signs new", "extension", "renew"], tl): event = "renewal"
-    elif has_word(["stay", "staying", "no exit", "not for sale", "remain"], tl) and not has_word(["sign for", "joins", "move to"], tl): event = "stay"
-    else: event = "transfer"
+    # Prefer the "joined ... on loan" span (anchored at "joined") over the bare
+    # "on loan" match — "joined" is also a generic transfer cue below, so a
+    # sentence like "Player has joined Club on loan" must anchor the loan cue
+    # at "joined" (its earliest word) to correctly win the position race
+    # against the plain "transfer" classification, not lose to it.
+    _loan_m = re.search(r"\bjoine?d?\b.*\bon loan\b", tl) or re.search(r"\bon loan\b", tl)
 
-    stage = 4 if has_word(["here we go", "official", "confirmed", "completed", "joins"], tl) else \
+    # Classify by which category's cue occurs EARLIEST in the text, not by a
+    # fixed category priority. Journalism tweets lead with the real news and
+    # relegate side notes ("...remains focused on the World Cup despite being
+    # currently injured") to a trailing clause — a fixed "injury beats
+    # transfer" priority misreads that trailing aside as the headline.
+    _event_positions = {
+        "suspension": _cue_pos(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl),
+        "loan": _loan_m.start() if _loan_m else None,
+        "injury": _cue_pos(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt"], tl),
+        "manager": _cue_pos(["sack", "appoint", "head coach", "manager"], tl),
+        "renewal": _cue_pos(["new deal", "new contract", "signs new", "extension", "renew"], tl),
+        "transfer": _cue_pos(["transfer", "sign", "signs", "signed", "joins", "joined",
+                              "deal", "medical", "here we go", "official", "confirmed",
+                              "completed", "agreement", "agreed"], tl),
+    }
+    _stay_pos = _cue_pos(["stay", "staying", "no exit", "not for sale", "remain"], tl)
+    if _stay_pos is not None and not has_word(["sign for", "joins", "move to"], tl):
+        _event_positions["stay"] = _stay_pos
+
+    _found_events = {k: v for k, v in _event_positions.items() if v is not None}
+    event = min(_found_events, key=_found_events.get) if _found_events else "transfer"
+
+    stage = 4 if has_word(STRONG_OFFICIAL_CUES, tl) else \
             2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
 
     name = None
@@ -89,13 +173,21 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
 
     # Resolve clubs and order them by FIRST appearance in the text, so the
     # destination heuristic picks the club the tweet actually leads with.
+    # Mentions that are only ever "also interested" / "monitoring" / "could
+    # hijack" chatter about a THIRD club are excluded from this pool — that
+    # club isn't a party to the move, so it must never be promoted into the
+    # from/to slots just because of where it happens to sit in the text.
     club_pos = {}
     for alias in _SORTED_ALIASES:
-        m = re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl)
-        if m:
-            k = CLUB_ALIASES[alias]
-            if k not in club_pos or m.start() < club_pos[k]:
-                club_pos[k] = m.start()
+        k = CLUB_ALIASES[alias]
+        best = None
+        for m in re.finditer(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', tl):
+            if _club_context_is_interest_only(m.start(), tl):
+                continue
+            if best is None or m.start() < best:
+                best = m.start()
+        if best is not None and (k not in club_pos or best < club_pos[k]):
+            club_pos[k] = best
     clubs = sorted(club_pos, key=lambda k: club_pos[k])
 
     fpl_player_el = find_player_in_fpl(name, fpl_data) if name and fpl_data else None
