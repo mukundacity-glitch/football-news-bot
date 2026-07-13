@@ -57,6 +57,18 @@ TRUSTED_MEDIA = {
     "alex_crook", "alexcrabb31", "telegraph", "telegraphfootball",
 }
 
+# Single source of truth for "this reads as an officially completed deal"
+# language — used both to grade a story's stage (parser.py) and to decide
+# whether a CONFIRMED card is warranted (main.py). Two separate, drifting
+# copies of this list previously disagreed (parser.py's list was missing
+# "joined"/"signed"/"medical"/etc.), which is exactly the kind of consistency
+# gap that lets a genuinely-completed move ("has joined ... on loan") get
+# stuck at a lower confidence stage than the wording actually supports.
+STRONG_OFFICIAL_CUES = [
+    "here we go", "official", "confirmed", "completed", "done deal",
+    "sealed", "unveiled", "joins", "joined", "signs", "signed", "medical",
+]
+
 # Parsing Keywords
 FOOTBALL_KW = [
     "transfer", "sign", "deal", "fee", "bid", "loan", "contract", "agree",

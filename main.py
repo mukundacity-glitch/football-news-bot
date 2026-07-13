@@ -111,7 +111,7 @@ from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
     ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
-    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP
+    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP, STRONG_OFFICIAL_CUES
 )
 
 def source_tier(handle: str) -> int:
@@ -535,8 +535,10 @@ def should_post(data, key, new_stage, collapsed):
     return True, "progression"
 
 # ── SAFETY + ACCURACY GATES ──────────────────────────────────────────────
-STRONG_OFFICIAL = ["here we go", "official", "confirmed", "completed", "done deal",
-                   "sealed", "unveiled", "joins", "joined", "signs", "signed", "medical"]
+# Single source of truth (src.constants.STRONG_OFFICIAL_CUES) shared with
+# parser.py's stage grading — keeps "is this officially completed" language
+# consistent across the extraction and confirmation-gate layers.
+STRONG_OFFICIAL = STRONG_OFFICIAL_CUES
 
 def detect_mixed_story(story, raw_text, fpl_data=None) -> str:
     text = (raw_text or "")
@@ -622,8 +624,15 @@ def classify_post(story, sources):
             return "rumour"
         return None
 
-    # A transfer/loan can't be OFFICIAL/CONFIRMED without a known destination club.
-    if story.get("event") in ("transfer", "loan", "loan_option") and not story.get("to_key"):
+    # A transfer/loan can't be OFFICIAL/CONFIRMED without a known destination
+    # club — but "known" means any resolved club, including a foreign/EFL one
+    # captured only as a raw name (to_club, no PL to_key). Requiring to_key
+    # specifically would mean a PL club's OWN official announcement of a
+    # player going out on loan to a non-PL club (e.g. Chelsea -> Sporting
+    # Lisbon) could never be labelled CONFIRMED no matter how certain the
+    # source — exactly the false-negative failure this checks for.
+    if story.get("event") in ("transfer", "loan", "loan_option") and not (
+            story.get("to_key") or story.get("to_club")):
         if has_official or n_elite >= 1 or has_media:
             return "rumour"
         return None
@@ -744,9 +753,12 @@ def validate_story(story, fpl_data=None, sources=None):
             if not (_has_origin or _free_cue):
                 return False, "unconfirmed_player_identity"
         
-        # Require at least one RESOLVED real club. build_story sets from_key to the
-        # player's real FPL club, so verified players always keep their true origin.
-        if not (tk or fk):
+        # Require at least one RESOLVED real club — a PL key OR a raw foreign/
+        # EFL club name (fc/tc). build_story sets from_key to the player's real
+        # FPL club, so verified players always keep their true origin; a
+        # foreign-to-PL or PL-to-foreign move keeps its origin/destination as
+        # a raw club name instead, which must count here too.
+        if not (tk or fk or tc or fc):
             return False, "no_resolved_club"
 
         # Destination-less transfer: only post if there's a genuine departure cue
@@ -890,7 +902,7 @@ def status_label(story, mode):
     if mode == "rumour": return "RUMOUR"
     ev = story.get("event")
     tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    if ev in ("transfer", "loan", "loan_option") and story.get("to_key") and (
+    if ev in ("transfer", "loan", "loan_option") and (story.get("to_key") or story.get("to_club")) and (
             story.get("stage", 1) >= 4 or any(w in tl for w in ("official", "here we go", "completed", "confirmed"))):
         return "OFFICIAL"
     label = EVENT_PREFIX.get(ev)
@@ -996,7 +1008,12 @@ def build_tweet_body(story, sources, mode) -> str:
             elif action == "appointment":
                 headline = f"👔 STAFF- {player} APPOINTED {club} {role_u}." if club else f"👔 STAFF- {player} APPOINTED AS {role_u}."
             else:
-                headline = f"👔 STAFF- {player} — {role_u}" + (f" AT {club}" if club else "") + "."
+                # A role is known but there's no confirmed appointment/departure
+                # action — e.g. "leading candidate for the job", "was in the
+                # running" — so this can NEVER read as a settled fact. Hedge it
+                # exactly like a transfer rumour, regardless of source tier.
+                headline = (f"👀 STAFF- {player} LINKED WITH A {role_u} ROLE"
+                            + (f" AT {club}" if club else "") + ".")
         else:
             headline = f"🎩 MANAGER- {player} LINKED WITH THE {club or 'CLUB'} JOB."
 
@@ -1450,9 +1467,32 @@ async def scrape(data, read_client):
                 
             if key in story_map:
                 ex = story_map[key]
-                if username not in ex["sources"]: ex["sources"].append(username)
-                if story["stage"] > ex["stage"]: ex.update({k: story[k] for k in story})
-                ex["sources"] = list(dict.fromkeys(ex["sources"]))
+                # CONTRADICTION DETECTION: two reports sharing this story's key
+                # can legitimately disagree on DIRECTION (this key is already an
+                # unordered club-pair — see story_anchor) without it meaning
+                # much; but if they name genuinely DIFFERENT clubs altogether
+                # (not just swapped), that's trusted sources disagreeing on the
+                # underlying facts. Don't silently treat the new report as a
+                # corroborating source in that case — flag it and hold instead
+                # of ever auto-resolving the disagreement ourselves.
+                _new_to = _norm_text(story.get("to_key") or story.get("to_club") or "")
+                _new_from = _norm_text(story.get("from_key") or story.get("from_club") or "")
+                _ex_to = _norm_text(ex.get("to_key") or ex.get("to_club") or "")
+                _ex_from = _norm_text(ex.get("from_key") or ex.get("from_club") or "")
+                _contradicts = (
+                    bool(_new_to and _ex_to and _new_to != _ex_to and _new_to != _ex_from) or
+                    bool(_new_from and _ex_from and _new_from != _ex_from and _new_from != _ex_to)
+                )
+                if _contradicts:
+                    ex["contradicted"] = True
+                    print(f"   [CONTRADICTION] {key}: @{username} names different club(s) "
+                          f"than already-merged sources {ex['sources']!r} — holding for "
+                          f"review, NOT counting as a corroborating source.")
+                else:
+                    if username not in ex["sources"]: ex["sources"].append(username)
+                    if story["stage"] > ex["stage"]:
+                        ex.update({k: story[k] for k in story if k != "contradicted"})
+                    ex["sources"] = list(dict.fromkeys(ex["sources"]))
             else:
                 prior = data.get("pending", {}).get(key, {}).get("sources", [])
                 unk = absorb_unknown_variant(story["player"], story["event"], key,
@@ -1493,11 +1533,15 @@ async def scrape(data, read_client):
     
     ready = []
     for key, st in story_map.items():
-        mode = classify_post(st, st["sources"])
+        # A story with conflicting reports about which clubs are involved is
+        # never auto-published — trusted sources disagreeing on the facts is
+        # exactly the situation that requires a human, not a guess.
+        mode = None if st.get("contradicted") else classify_post(st, st["sources"])
         if mode is None:
             data["pending"][key] = {
                 "sources": st["sources"], "player": st["player"],
                 "to_key": st.get("to_key"), "event": st["event"],
+                "contradicted": bool(st.get("contradicted")),
                 "last_seen": datetime.now(timezone.utc).isoformat(),
             }
             continue
@@ -1793,13 +1837,20 @@ async def main(post: bool = True, allow_rumours: bool = False):
     # Lower-confidence RUMOURs are posted only when explicitly opted in.
     modes_ok = {"confirmed"} | ({"rumour"} if allow_rumours else set())
 
-    # Confidence gate: only AUTO_POST (score >= 90) publishes live. REVIEW-tier
-    # stories (75-89) stay as drafts in the queue for a human to review; they go
-    # live only when rumours are explicitly opted in. Drafts are always saved
-    # either way, so nothing legitimate is lost — it just isn't auto-published.
+    # Confidence gate: only AUTO_POST (score >= 90) publishes live, ALWAYS,
+    # with no flag able to bypass it. "mode" (rumour vs confirmed) and
+    # "confidence_decision" (REVIEW vs AUTO_POST) answer two different
+    # questions — --allow-rumours governs whether an ACCURATELY-extracted but
+    # factually-unconfirmed event (a genuine transfer rumour) may post; it
+    # must never also unlock a story the confidence engine itself could only
+    # score to REVIEW, because REVIEW means the pipeline isn't sure the
+    # extraction (player/club/direction/entity) is even right. That is a
+    # "don't guess" situation, not a rumour-vs-confirmed judgement call, so it
+    # is never bypassable. REVIEW-tier stories always stay as drafts in the
+    # queue for a human to review; nothing legitimate is lost, it just isn't
+    # auto-published.
     def _conf_ok(d):
-        dec = d.get("confidence_decision", "AUTO_POST")
-        return dec == _conf.AUTO_POST or (allow_rumours and dec == _conf.REVIEW)
+        return d.get("confidence_decision", "AUTO_POST") == _conf.AUTO_POST
 
     postable = [d for d in drafts if d.get("mode") in modes_ok and _conf_ok(d)]
     _held = [d for d in drafts if d.get("mode") in modes_ok and not _conf_ok(d)]

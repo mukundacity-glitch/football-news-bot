@@ -7,8 +7,9 @@ import re
 from datetime import datetime, timezone
 from src.fpl_feed import find_player_in_fpl, fpl_team_key
 from src.constants import (
-    FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES, CLUB_ALIASES, 
-    POSITION_WORDS, NATIONALITY_ADJECTIVES, OFFICIAL_INJURY_ACCOUNTS
+    FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES, CLUB_ALIASES,
+    POSITION_WORDS, NATIONALITY_ADJECTIVES, OFFICIAL_INJURY_ACCOUNTS,
+    STRONG_OFFICIAL_CUES
 )
 
 # Sort aliases by length descending
@@ -36,19 +37,34 @@ def _clean_source_text(text: str) -> str:
     t = re.sub(r'["""]', '', t)
     return re.sub(r'\s+', ' ', t).strip()
 
-# Phrasing that names a club as merely INTERESTED / a potential hijacker, not
-# the confirmed party to a move — e.g. "Aston Villa also interested" or
-# "Villa may make a late move" while the real story is Freiburg -> Newcastle.
-# A club whose only mention(s) sit in this kind of context must not be
-# promoted into the from/to slots by the positional heuristic below.
+# Phrasing that names a club as merely INTERESTED / a potential hijacker, or
+# as a PAST/REJECTED candidate, not the confirmed party to a move — e.g.
+# "Aston Villa also interested" (still-active rival interest) or "was in the
+# running for the Fulham job" (a candidacy that did NOT happen — the real
+# move went elsewhere, e.g. Hugo Oliveira -> Strasbourg, not Fulham). A club
+# whose only mention(s) sit in this kind of context must not be promoted
+# into the from/to slots by the positional heuristic below.
 _INTEREST_ONLY_CUES = (
+    # still-active interest / hijack risk. Deliberately specific phrases only
+    # — a bare "monitoring"/"tracking" is too generic (a club routinely
+    # "monitors the development" of its OWN player after a loan/exit, which
+    # is not transfer speculation about a third club at all).
     "also interested", "also interest", "among clubs attentive", "attentive to",
-    "in the race", "keen on", "keen to sign", "admirer", "monitoring",
-    "eyeing", "chasing", "tracking", "alternative suitor", "rival interest",
+    "in the race", "keen on", "keen to sign", "admirer",
+    "monitoring the situation", "monitoring developments", "eyeing a move",
+    "eyeing a swoop", "chasing a move", "tracking the situation",
+    "keeping tabs on", "alternative suitor", "rival interest",
     "hijack", "late move", "credited with interest", "touted as a",
     "touted as potential", "linked with interest", "also chasing", "also keen",
     "also monitoring", "also credited", "also tracking", "also linked",
     "rival to sign", "could rival",
+    # past / rejected candidacy — the subject did NOT end up at this club
+    "was in the running", "in the running for", "in contention for",
+    "were in contention", "was a candidate for", "one of the candidates",
+    "in the frame for", "was considered for", "was interviewed for",
+    "had been linked with", "was among the candidates", "lost out on",
+    "passed over for", "shortlisted for", "missed out on", "was not appointed",
+    "did not get the job", "turned down the",
 )
 # Strong deal-completion language that, if present in the SAME local context,
 # overrides an interest-only cue (the club really is party to the move).
@@ -110,7 +126,12 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     def has_word(words_list, text):
         return any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text) for w in words_list)
 
-    _loan_m = re.search(r"\bon loan\b", tl) or re.search(r"\bjoine?d?\b.*\bon loan\b", tl)
+    # Prefer the "joined ... on loan" span (anchored at "joined") over the bare
+    # "on loan" match — "joined" is also a generic transfer cue below, so a
+    # sentence like "Player has joined Club on loan" must anchor the loan cue
+    # at "joined" (its earliest word) to correctly win the position race
+    # against the plain "transfer" classification, not lose to it.
+    _loan_m = re.search(r"\bjoine?d?\b.*\bon loan\b", tl) or re.search(r"\bon loan\b", tl)
 
     # Classify by which category's cue occurs EARLIEST in the text, not by a
     # fixed category priority. Journalism tweets lead with the real news and
@@ -134,7 +155,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     _found_events = {k: v for k, v in _event_positions.items() if v is not None}
     event = min(_found_events, key=_found_events.get) if _found_events else "transfer"
 
-    stage = 4 if has_word(["here we go", "official", "confirmed", "completed", "joins"], tl) else \
+    stage = 4 if has_word(STRONG_OFFICIAL_CUES, tl) else \
             2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
 
     name = None

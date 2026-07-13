@@ -89,6 +89,29 @@ def test_second_flipped_report_blocked_as_duplicate_after_first_posts():
         f"(should_post={ok2}/{reason2}, duplicate={dup2}/{dreason2})")
 
 
+def test_genuinely_conflicting_clubs_flagged_as_contradiction_not_corroboration():
+    # Two sources naming DIFFERENT destination clubs for the same player is a
+    # real disagreement about the facts (not a direction flip about the same
+    # pair) — must be held for review, never silently merged as if the
+    # sources agree.
+    s1 = main.build_story("Brighton sign Pascal Struijk from Leeds United.", None)
+    s2 = main.build_story("Arsenal sign Pascal Struijk from Leeds United.", None)
+    key1 = main.reconcile_key(s1["player"], main.story_anchor(s1), s1["event"], {}, {}, {})
+    key2 = main.reconcile_key(s2["player"], main.story_anchor(s2), s2["event"], {}, {}, {})
+    # These two do NOT share a key today (different club pairs) — the
+    # contradiction path only triggers when they land under the SAME key.
+    # Simulate that directly via the merge predicate used in scrape().
+    new_to = main._norm_text(s2.get("to_key") or s2.get("to_club") or "")
+    ex_to = main._norm_text(s1.get("to_key") or s1.get("to_club") or "")
+    new_from = main._norm_text(s2.get("from_key") or s2.get("from_club") or "")
+    ex_from = main._norm_text(s1.get("from_key") or s1.get("from_club") or "")
+    contradicts = (
+        bool(new_to and ex_to and new_to != ex_to and new_to != ex_from) or
+        bool(new_from and ex_from and new_from != ex_from and new_from != ex_to)
+    )
+    assert contradicts is True
+
+
 def test_different_players_keep_distinct_keys():
     s1 = main.build_story("Brighton sign Pascal Struijk from Leeds United.", None)
     s2 = main.build_story("Arsenal complete signing of Michael Svoboda from Rapid Vienna.", None)
