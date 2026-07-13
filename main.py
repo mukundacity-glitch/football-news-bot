@@ -1007,6 +1007,8 @@ def build_tweet_body(story, sources, mode) -> str:
                 headline = f"👔 STAFF- {player} LEAVES {club} AS {role_u}." if club else f"👔 STAFF- {player} LEAVES ROLE AS {role_u}."
             elif action == "appointment":
                 headline = f"👔 STAFF- {player} APPOINTED {club} {role_u}." if club else f"👔 STAFF- {player} APPOINTED AS {role_u}."
+                if story.get("contract"):
+                    details.append(f"📝 CONTRACT — {story['contract']}")
             else:
                 # A role is known but there's no confirmed appointment/departure
                 # action — e.g. "leading candidate for the job", "was in the
