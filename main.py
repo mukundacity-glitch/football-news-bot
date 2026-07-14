@@ -104,7 +104,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-12-direction-dedup-fix"
+_LOGIC_VER = "2026-07-14-elite-source-signal"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -662,6 +662,7 @@ def score_confidence(story, fpl_data=None, sources=None):
         story,
         player_verified=player_verified,
         official_source=(1 in tiers),
+        elite_source=(2 in tiers),
         n_sources=len(set(s.lower() for s in sources if s)),
     )
     print("  " + _conf.decision_log_line(story, result))
@@ -1324,7 +1325,7 @@ def get_nitter_tweets(username):
                 continue
             root = ET.fromstring(r.content)
             out = []
-            for it in root.findall(".//item")[:8]:
+            for it in root.findall(".//item")[:20]:
                 link, desc, pubdate = it.find("link"), it.find("description"), it.find("pubDate")
                 if link is None: 
                     continue
