@@ -91,6 +91,50 @@ def _club_context_is_interest_only(pos: int, text: str) -> bool:
     return not any(c in ctx for c in _STRONG_DEAL_CUES)
 
 
+# Fee extraction: a RANGE ("a potential fee between €25-30 million",
+# "£20m-£25m") is extremely common in real reporting (add-ons, performance-
+# based obligations to buy) and was previously invisible — only a single
+# amount matched, so any range-quoted fee silently fell back to "TBD" even
+# though the number was right there in the text. Range pattern is tried
+# first (more specific); the single-amount pattern is the fallback.
+_FEE_RANGE_RE = re.compile(
+    r'([£€$]\s?\d+(?:\.\d+)?\s*(?:m|k|million|billion)?\s*(?:-|–|—|to|and)\s*'
+    r'(?:[£€$]\s?)?\d+(?:\.\d+)?\s*(?:m|k|million|billion))', re.IGNORECASE)
+_FEE_SINGLE_RE = re.compile(r'([£€$]\s?\d+(?:\.\d+)?\s*(?:m|k|million|billion))', re.IGNORECASE)
+
+
+def _extract_fee(text):
+    m = _FEE_RANGE_RE.search(text) or _FEE_SINGLE_RE.search(text)
+    return m.group(1).upper() if m else None
+
+
+# Contract-duration extraction. Nothing previously populated this field at
+# all — "signs a three-year contract", "new deal until 2029" always fell
+# back to "TBD" on the card even though the tweet stated it outright.
+_CONTRACT_WORD_NUM = {"one": "1", "two": "2", "three": "3", "four": "4",
+                      "five": "5", "six": "6", "seven": "7", "eight": "8"}
+_CONTRACT_YEARS_RE = re.compile(
+    r'\b(one|two|three|four|five|six|seven|eight|\d)[\s-]year\s*(?:contract|deal)\b',
+    re.IGNORECASE)
+_CONTRACT_UNTIL_RE = re.compile(
+    r'\b(?:contract|deal)\s+(?:runs?\s+)?(?:until|through|to)\s+'
+    r'((?:[A-Za-z]+\s+)?20\d{2})', re.IGNORECASE)
+_CONTRACT_LONGTERM_RE = re.compile(r'\blong[\s-]term\s+(?:contract|deal)\b', re.IGNORECASE)
+
+
+def _extract_contract(text):
+    m = _CONTRACT_YEARS_RE.search(text)
+    if m:
+        n = _CONTRACT_WORD_NUM.get(m.group(1).lower(), m.group(1))
+        return f"{n}-Year Deal"
+    m = _CONTRACT_UNTIL_RE.search(text)
+    if m:
+        return f"Until {m.group(1).title()}"
+    if _CONTRACT_LONGTERM_RE.search(text):
+        return "Long-Term Deal"
+    return None
+
+
 def _cue_pos(words_list, text):
     """Earliest character position at which any word/phrase in words_list
     occurs, or None if none occur."""
@@ -126,12 +170,20 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     def has_word(words_list, text):
         return any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text) for w in words_list)
 
-    # Prefer the "joined ... on loan" span (anchored at "joined") over the bare
-    # "on loan" match — "joined" is also a generic transfer cue below, so a
-    # sentence like "Player has joined Club on loan" must anchor the loan cue
-    # at "joined" (its earliest word) to correctly win the position race
-    # against the plain "transfer" classification, not lose to it.
-    _loan_m = re.search(r"\bjoine?d?\b.*\bon loan\b", tl) or re.search(r"\bon loan\b", tl)
+    # LOAN is a sub-type of "transfer", not a competing headline category —
+    # journalism almost always signals it with the bare word "loan"/"loans"
+    # ("loan move", "loan deal", "on loan", "loan spell", "recalled from
+    # loan"), which can sit anywhere in the sentence relative to a generic
+    # completion word like "confirmed" ("has officially confirmed his loan
+    # move..." — "confirmed" comes first). Requiring "loan" to WIN the
+    # earliest-position race against those generic words previously meant
+    # a plainly-stated loan lost to plain "transfer" whenever the sentence
+    # led with "confirmed"/"official"/etc. Loan words are folded into the
+    # same position bucket as transfer words instead (so the bucket wins at
+    # whichever point either signal appears first), then re-labelled "loan"
+    # afterward if the word appears anywhere at all in the text.
+    _LOAN_WORDS = ["loan", "loans"]
+    _loan_anywhere = has_word(_LOAN_WORDS, tl)
 
     # Classify by which category's cue occurs EARLIEST in the text, not by a
     # fixed category priority. Journalism tweets lead with the real news and
@@ -140,13 +192,12 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     # transfer" priority misreads that trailing aside as the headline.
     _event_positions = {
         "suspension": _cue_pos(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl),
-        "loan": _loan_m.start() if _loan_m else None,
         "injury": _cue_pos(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt"], tl),
         "manager": _cue_pos(["sack", "appoint", "head coach", "manager"], tl),
         "renewal": _cue_pos(["new deal", "new contract", "signs new", "extension", "renew"], tl),
         "transfer": _cue_pos(["transfer", "sign", "signs", "signed", "joins", "joined",
                               "deal", "medical", "here we go", "official", "confirmed",
-                              "completed", "agreement", "agreed"], tl),
+                              "completed", "agreement", "agreed"] + _LOAN_WORDS, tl),
     }
     _stay_pos = _cue_pos(["stay", "staying", "no exit", "not for sale", "remain"], tl)
     if _stay_pos is not None and not has_word(["sign for", "joins", "move to"], tl):
@@ -154,6 +205,8 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
 
     _found_events = {k: v for k, v in _event_positions.items() if v is not None}
     event = min(_found_events, key=_found_events.get) if _found_events else "transfer"
+    if event == "transfer" and _loan_anywhere:
+        event = "loan"
 
     stage = 4 if has_word(STRONG_OFFICIAL_CUES, tl) else \
             2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
@@ -205,7 +258,6 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         if len(clubs) > 1: from_key = clubs[1]
 
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
-    fee_match = re.search(r'([£€$]\d+(?:\.\d+)?\s*(?:m|k|million|billion))', cleaned, re.IGNORECASE)
 
     return {
         "is_football": True, "event": event,
@@ -214,7 +266,8 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         "from_club": from_key.replace("_", " ") if from_key else None,
         "to_club": to_key.replace("_", " ") if to_key else None,
         "from_key": from_key, "to_key": to_key,
-        "fee": fee_match.group(1).upper() if fee_match else None,
+        "fee": _extract_fee(cleaned),
+        "contract": _extract_contract(cleaned),
         "stage": stage, "collapsed": is_collapsed,
         "headline": name if name else "Transfer update",
         "body": tweet_text,

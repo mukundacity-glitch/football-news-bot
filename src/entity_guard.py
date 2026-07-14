@@ -215,10 +215,21 @@ def _role_bound_to_name(name_norm, text, cues):
             return cue
         # appointment phrasing: "<n> ... as <role>" within the SAME clause
         # (no '.'/';' break) — e.g. "Luis Campos appointed as sporting director".
+        # "as" is followed by up to 4 filler words ("the", "new", "the club's",
+        # "their next", ...) before the cue — "confirmed as THE NEW head coach"
+        # / "unveiled as THEIR NEW manager" is the standard appointment
+        # phrasing, not the exception, and matching only a bare "as <cue>"
+        # missed it entirely.
         # Guard: skip if a DIFFERENT known manager surname sits between the name
         # and the role cue (e.g. "...manager Iraola wants to keep Van Dijk" must
         # NOT bind "manager" to Van Dijk).
-        m = re.search(nm + r"\b([^.;]{0,40}?)\bas\s+" + c + r"\b", t)
+        m = re.search(nm + r"\b([^.;]{0,40}?)\bas\s+(?:\w+\s+){0,4}?" + c + r"\b", t)
+        # "as a free agent" is an employment STATUS ("out of contract"), never
+        # the AGENT role ("Jorge Mendes, agent of ...") — the filler-word
+        # tolerance above would otherwise match "agent" through "as a free
+        # agent" and misclassify a normal out-of-contract signing.
+        if m and cue == "agent" and re.search(r"\bfree\s+agent\b", m.group(0)):
+            m = None
         if m:
             between = m.group(1)
             other_manager_named = any(
