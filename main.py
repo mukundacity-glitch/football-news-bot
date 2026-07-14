@@ -1535,6 +1535,25 @@ async def scrape(data, read_client):
     
     ready = []
     for key, st in story_map.items():
+        # Re-score confidence against the FINAL, merged source list. Each
+        # candidate was first scored per-tweet (sources=[single username]) —
+        # purely a precision net to decide whether to keep scanning it at
+        # all — at which point "official_source" (needs a tier-1 account)
+        # and "multiple_sources" (needs 2+) can structurally never be earned,
+        # since corroborating sources for the same story are still being
+        # collected one tweet at a time. Left uncorrected, EVERY journalist-
+        # sourced story permanently caps at 85 (REVIEW) even after 3 elite
+        # reporters independently confirm it — REVIEW never auto-publishes,
+        # so nothing not posted directly by an official club/league account
+        # would ever go out. Re-scoring here with the true, final source
+        # list is what lets genuine multi-source corroboration actually
+        # reach AUTO_POST; these signals are purely additive, so this can
+        # only raise the score, never lower it below what already cleared
+        # the earlier SKIP-tier precision net.
+        _final_cres = score_confidence(st, fpl, sources=st["sources"])
+        st["confidence_score"] = _final_cres["score"]
+        st["confidence_decision"] = _final_cres["decision"]
+
         # A story with conflicting reports about which clubs are involved is
         # never auto-published — trusted sources disagreeing on the facts is
         # exactly the situation that requires a human, not a guess.
