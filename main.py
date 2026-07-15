@@ -887,7 +887,7 @@ def verify_card_data(item: dict, fpl_data=None):
 
 # ── LABELS ───────────────────────────────────────────────────────────────
 APPROVED_LABELS = {
-    "TRANSFER", "RUMOUR", "INJURY", "SUSPENSION", "CONTRACT EXTENSION",
+    "TRANSFER", "RUMOUR", "AGREED", "INJURY", "SUSPENSION", "CONTRACT EXTENSION",
     "LOAN", "MANAGER NEWS", "OFFICIAL", "HISTORICAL",
 }
 EVENT_PREFIX = {
@@ -903,9 +903,13 @@ def status_label(story, mode):
     if mode == "rumour": return "RUMOUR"
     ev = story.get("event")
     tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    if ev in ("transfer", "loan", "loan_option") and (story.get("to_key") or story.get("to_club")) and (
-            story.get("stage", 1) >= 4 or any(w in tl for w in ("official", "here we go", "completed", "confirmed"))):
-        return "OFFICIAL"
+    if ev in ("transfer", "loan", "loan_option") and (story.get("to_key") or story.get("to_club")):
+        stage = story.get("stage", 1)
+        if stage >= 4 or any(w in tl for w in ("official", "here we go", "completed", "confirmed")):
+            return "OFFICIAL"
+        # Stage 2-3: verbal agreement reached, medical/paperwork pending → AGREED
+        if stage >= 2 or any(w in tl for w in ("agreement", "agreed", "personal terms", "medical", "deal agreed")):
+            return "AGREED"
     label = EVENT_PREFIX.get(ev)
     return label if label in APPROVED_LABELS else None
 
@@ -955,12 +959,14 @@ def build_tweet_body(story, sources, mode) -> str:
     details = []   # each entry is one "EMOJI LABEL — VALUE" line
 
     if ev in ("transfer", "loan", "loan_option"):
-        move = "LOAN MOVE" if ev in ("loan", "loan_option") else "TRANSFER"
+        move = "LOAN MOVE" if ev in ("loan", "loan_option") else "PERMANENT TRANSFER"
         if story.get("collapsed"):
-            headline = f"❌ TRANSFER- {player} {move} TO {to_full or 'NEW CLUB'} HAS COLLAPSED."
+            headline = f"❌ TRANSFER- {player} MOVE TO {to_full or 'NEW CLUB'} HAS COLLAPSED."
         else:
             if label == "OFFICIAL":
                 emoji, status = "✅", "CONFIRMED"
+            elif label == "AGREED":
+                emoji, status = "🤝", "AGREEMENT REACHED —"
             elif label == "RUMOUR":
                 emoji, status = "👀", "LINKED WITH A"
             else:
@@ -975,8 +981,8 @@ def build_tweet_body(story, sources, mode) -> str:
                 route = ""
             prefix = "LOAN" if move == "LOAN MOVE" else "TRANSFER"
             headline = f"{emoji} {prefix}- {player} {status} {move}{route}."
-        details.append(f"💰 PRICE — {story.get('fee') or 'TBD'}")
-        details.append(f"📝 CONTRACT — {story.get('contract') or 'TBD'}")
+        details.append(f"💰 FEE — {story.get('fee') or 'Undisclosed fee'}")
+        details.append(f"📝 CONTRACT — {story.get('contract') or 'Contract length undisclosed'}")
 
     elif ev in ("injury", "suspension"):
         club = (to_full or from_full).upper()
@@ -990,7 +996,7 @@ def build_tweet_body(story, sources, mode) -> str:
             headline = f"🚑 INJURY- {player}{club_part} {_avail_text(story.get('stage', 1))}."
             if story.get("diagnosis"):
                 details.append(f"🏥 DIAGNOSIS — {story['diagnosis']}")
-            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'TBC'}")
+            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'Not yet reported'}")
 
     elif ev in ("renewal", "stay"):
         club = (from_full or to_full).upper()

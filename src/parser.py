@@ -126,12 +126,20 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     def has_word(words_list, text):
         return any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text) for w in words_list)
 
+    # "permanent" keyword is an explicit override: a tweet that says "permanent
+    # transfer" or "permanent deal" must never be classified as a loan even if
+    # the word "loan" appears elsewhere in the same text (e.g. "bought out of
+    # his loan contract on a permanent deal").
+    _is_permanent = bool(re.search(r'\b(permanent\s+(?:transfer|deal|signing|move)|on\s+a\s+permanent\s+basis)\b', tl))
+
     # Prefer the "joined ... on loan" span (anchored at "joined") over the bare
     # "on loan" match — "joined" is also a generic transfer cue below, so a
     # sentence like "Player has joined Club on loan" must anchor the loan cue
     # at "joined" (its earliest word) to correctly win the position race
     # against the plain "transfer" classification, not lose to it.
-    _loan_m = re.search(r"\bjoine?d?\b.*\bon loan\b", tl) or re.search(r"\bon loan\b", tl)
+    _loan_m = None if _is_permanent else (
+        re.search(r"\bjoine?d?\b.*\bon loan\b", tl) or re.search(r"\bon loan\b", tl)
+    )
 
     # Classify by which category's cue occurs EARLIEST in the text, not by a
     # fixed category priority. Journalism tweets lead with the real news and
@@ -205,7 +213,35 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         if len(clubs) > 1: from_key = clubs[1]
 
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
-    fee_match = re.search(r'([£€$]\d+(?:\.\d+)?\s*(?:m|k|million|billion))', cleaned, re.IGNORECASE)
+
+    # Fee: capture currency + amount, including "around/approaching/~" qualifiers
+    # and optional add-ons suffix (e.g. "€60m + add-ons", "~£9m", "approaching €100m").
+    fee_match = re.search(
+        r'(?:around|approximately|approaching|~|circa)?\s*'
+        r'([£€$]\s*\d+(?:[.,]\d+)?\s*(?:m|k|million|billion))'
+        r'(?:\s*\+\s*(?:add[\s-]?ons?|bonuses?|variables?|incentives?))?',
+        cleaned, re.IGNORECASE
+    )
+    fee_raw = None
+    if fee_match:
+        # Include the add-ons suffix if present in the full match
+        full_fee = cleaned[fee_match.start():fee_match.end()].strip()
+        fee_raw = full_fee.upper()
+
+    # Contract length: "4-year deal", "3 year contract", "until 2029", etc.
+    contract_match = (
+        re.search(r'(\d+)[\s-]+year(?:\s+(?:deal|contract|extension))?', cleaned, re.IGNORECASE)
+        or re.search(r'until\s+(20\d{2})', cleaned, re.IGNORECASE)
+    )
+    contract_raw = None
+    if contract_match:
+        if contract_match.lastindex == 1:
+            grp = contract_match.group(1)
+            # "until 2029" → convert to years from a rough baseline
+            if len(grp) == 4:
+                contract_raw = f"Contract until {grp}"
+            else:
+                contract_raw = f"{grp}-year deal"
 
     return {
         "is_football": True, "event": event,
@@ -214,7 +250,8 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         "from_club": from_key.replace("_", " ") if from_key else None,
         "to_club": to_key.replace("_", " ") if to_key else None,
         "from_key": from_key, "to_key": to_key,
-        "fee": fee_match.group(1).upper() if fee_match else None,
+        "fee": fee_raw,
+        "contract": contract_raw,
         "stage": stage, "collapsed": is_collapsed,
         "headline": name if name else "Transfer update",
         "body": tweet_text,
