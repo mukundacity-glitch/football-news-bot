@@ -170,20 +170,15 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     def has_word(words_list, text):
         return any(re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text) for w in words_list)
 
-    # LOAN is a sub-type of "transfer", not a competing headline category —
-    # journalism almost always signals it with the bare word "loan"/"loans"
-    # ("loan move", "loan deal", "on loan", "loan spell", "recalled from
-    # loan"), which can sit anywhere in the sentence relative to a generic
-    # completion word like "confirmed" ("has officially confirmed his loan
-    # move..." — "confirmed" comes first). Requiring "loan" to WIN the
-    # earliest-position race against those generic words previously meant
-    # a plainly-stated loan lost to plain "transfer" whenever the sentence
-    # led with "confirmed"/"official"/etc. Loan words are folded into the
-    # same position bucket as transfer words instead (so the bucket wins at
-    # whichever point either signal appears first), then re-labelled "loan"
-    # afterward if the word appears anywhere at all in the text.
-    _LOAN_WORDS = ["loan", "loans"]
-    _loan_anywhere = has_word(_LOAN_WORDS, tl)
+    # "permanent" keyword is an explicit override: a tweet that says "permanent
+    # transfer" or "permanent deal" must never be classified as a loan even if
+    # the word "loan" appears elsewhere in the same text.
+    _is_permanent = bool(re.search(r'\b(permanent\s+(?:transfer|deal|signing|move)|on\s+a\s+permanent\s+basis)\b', tl))
+    # LOAN is a sub-type of "transfer" — loan words are folded into the transfer
+    # position bucket, then the event is re-labelled "loan" afterward. When
+    # "permanent" is explicitly stated, suppress the loan words entirely.
+    _LOAN_WORDS = [] if _is_permanent else ["loan", "loans"]
+    _loan_anywhere = not _is_permanent and has_word(["loan", "loans"], tl)
 
     # Classify by which category's cue occurs EARLIEST in the text, not by a
     # fixed category priority. Journalism tweets lead with the real news and

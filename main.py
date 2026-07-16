@@ -104,7 +104,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-12-direction-dedup-fix"
+_LOGIC_VER = "2026-07-14-elite-source-signal"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -662,6 +662,7 @@ def score_confidence(story, fpl_data=None, sources=None):
         story,
         player_verified=player_verified,
         official_source=(1 in tiers),
+        elite_source=(2 in tiers),
         n_sources=len(set(s.lower() for s in sources if s)),
     )
     print("  " + _conf.decision_log_line(story, result))
@@ -886,7 +887,7 @@ def verify_card_data(item: dict, fpl_data=None):
 
 # ── LABELS ───────────────────────────────────────────────────────────────
 APPROVED_LABELS = {
-    "TRANSFER", "RUMOUR", "INJURY", "SUSPENSION", "CONTRACT EXTENSION",
+    "TRANSFER", "RUMOUR", "AGREED", "INJURY", "SUSPENSION", "CONTRACT EXTENSION",
     "LOAN", "MANAGER NEWS", "OFFICIAL", "HISTORICAL",
 }
 EVENT_PREFIX = {
@@ -902,9 +903,13 @@ def status_label(story, mode):
     if mode == "rumour": return "RUMOUR"
     ev = story.get("event")
     tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    if ev in ("transfer", "loan", "loan_option") and (story.get("to_key") or story.get("to_club")) and (
-            story.get("stage", 1) >= 4 or any(w in tl for w in ("official", "here we go", "completed", "confirmed"))):
-        return "OFFICIAL"
+    if ev in ("transfer", "loan", "loan_option") and (story.get("to_key") or story.get("to_club")):
+        stage = story.get("stage", 1)
+        if stage >= 4 or any(w in tl for w in ("official", "here we go", "completed", "confirmed")):
+            return "OFFICIAL"
+        # Stage 2-3: verbal agreement reached, medical/paperwork pending → AGREED
+        if stage >= 2 or any(w in tl for w in ("agreement", "agreed", "personal terms", "medical", "deal agreed")):
+            return "AGREED"
     label = EVENT_PREFIX.get(ev)
     return label if label in APPROVED_LABELS else None
 
@@ -954,12 +959,14 @@ def build_tweet_body(story, sources, mode) -> str:
     details = []   # each entry is one "EMOJI LABEL — VALUE" line
 
     if ev in ("transfer", "loan", "loan_option"):
-        move = "LOAN MOVE" if ev in ("loan", "loan_option") else "TRANSFER"
+        move = "LOAN MOVE" if ev in ("loan", "loan_option") else "PERMANENT TRANSFER"
         if story.get("collapsed"):
-            headline = f"❌ TRANSFER- {player} {move} TO {to_full or 'NEW CLUB'} HAS COLLAPSED."
+            headline = f"❌ TRANSFER- {player} MOVE TO {to_full or 'NEW CLUB'} HAS COLLAPSED."
         else:
             if label == "OFFICIAL":
                 emoji, status = "✅", "CONFIRMED"
+            elif label == "AGREED":
+                emoji, status = "🤝", "AGREEMENT REACHED —"
             elif label == "RUMOUR":
                 emoji, status = "👀", "LINKED WITH A"
             else:
@@ -974,8 +981,8 @@ def build_tweet_body(story, sources, mode) -> str:
                 route = ""
             prefix = "LOAN" if move == "LOAN MOVE" else "TRANSFER"
             headline = f"{emoji} {prefix}- {player} {status} {move}{route}."
-        details.append(f"💰 PRICE — {story.get('fee') or 'TBD'}")
-        details.append(f"📝 CONTRACT — {story.get('contract') or 'TBD'}")
+        details.append(f"💰 FEE — {story.get('fee') or 'Undisclosed fee'}")
+        details.append(f"📝 CONTRACT — {story.get('contract') or 'Contract length undisclosed'}")
 
     elif ev in ("injury", "suspension"):
         club = (to_full or from_full).upper()
@@ -989,7 +996,7 @@ def build_tweet_body(story, sources, mode) -> str:
             headline = f"🚑 INJURY- {player}{club_part} {_avail_text(story.get('stage', 1))}."
             if story.get("diagnosis"):
                 details.append(f"🏥 DIAGNOSIS — {story['diagnosis']}")
-            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'TBC'}")
+            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'Not yet reported'}")
 
     elif ev in ("renewal", "stay"):
         club = (from_full or to_full).upper()
@@ -1326,7 +1333,7 @@ def get_nitter_tweets(username):
                 continue
             root = ET.fromstring(r.content)
             out = []
-            for it in root.findall(".//item")[:8]:
+            for it in root.findall(".//item")[:20]:
                 link, desc, pubdate = it.find("link"), it.find("description"), it.find("pubDate")
                 if link is None: 
                     continue
