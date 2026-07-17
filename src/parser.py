@@ -102,10 +102,35 @@ _FEE_RANGE_RE = re.compile(
     r'(?:[£€$]\s?)?\d+(?:\.\d+)?\s*(?:m|k|million|billion))', re.IGNORECASE)
 _FEE_SINGLE_RE = re.compile(r'([£€$]\s?\d+(?:\.\d+)?\s*(?:m|k|million|billion))', re.IGNORECASE)
 
+# A monetary figure that is preceded within 70 chars by these phrases is a
+# market valuation / price tag, NOT an actual transfer fee payment. This is the
+# root cause of "€100M-rated Bouaddi" being shown as a £100M fee.
+_MARKET_VALUE_CUES_RE = re.compile(
+    r'\b(valued?\s+at|worth|market\s+value|rated|price\s+tag|estimated\s+at|'
+    r'tagged\s+at|put\s+a\s+(?:price|value)|release\s+clause|buyout\s+clause|'
+    r'reportedly\s+worth|reportedly\s+valued?)\b',
+    re.IGNORECASE)
+
+# Fee context: phrases that CONFIRM a sum IS a real transfer fee (overrides the
+# market-value check when both appear in the same window).
+_FEE_CONFIRM_RE = re.compile(
+    r'\b(transfer\s+fee|fee\s+of|for\s+(?:a\s+fee\s+of\s+)?[£€$]|'
+    r'pay(?:ing|s|ment)|activat(?:e|es|ing)\s+(?:a\s+)?(?:release|buyout|option)|'
+    r'for\s+around|agreed\s+(?:a\s+)?fee|deal\s+worth)\b',
+    re.IGNORECASE)
+
 
 def _extract_fee(text):
     m = _FEE_RANGE_RE.search(text) or _FEE_SINGLE_RE.search(text)
-    return m.group(1).upper() if m else None
+    if not m:
+        return None
+    # Examine the 70-char window before the matched figure for market-value
+    # language. If found AND no explicit fee-confirmation language is nearby,
+    # this number is a valuation, not a real transfer fee.
+    pre = text[max(0, m.start() - 70):m.start()]
+    if _MARKET_VALUE_CUES_RE.search(pre) and not _FEE_CONFIRM_RE.search(pre):
+        return None
+    return m.group(1).upper()
 
 
 # Contract-duration extraction. Nothing previously populated this field at

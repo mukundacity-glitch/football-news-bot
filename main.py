@@ -104,7 +104,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-14-elite-source-signal"
+_LOGIC_VER = "2026-07-17-accuracy-audit"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -394,6 +394,16 @@ def build_story(tweet_text, fpl_data):
         if not any(p in _raw_lower for p in ("loan fee", "loan payment", "season fee")):
             s["fee"] = None
 
+    # Free-transfer detection: when the tweet says "free transfer"/"on a free"/
+    # "out of contract" etc. the move has ZERO fee — display it as "Free Transfer"
+    # so the card never says the misleading "Undisclosed fee" for a known free move.
+    if s.get("event") in ("transfer", "loan", "loan_option") and not s.get("fee"):
+        _raw_lower = (tweet_text or "").lower()
+        _FREE_CUES = ("free transfer", "on a free", "out of contract",
+                      "pre-contract", "bosman", "as a free agent", "free signing")
+        if any(c in _raw_lower for c in _FREE_CUES):
+            s["fee"] = "Free Transfer"
+
     try: 
         s["stage"] = max(1, min(4, int(s.get("stage", 1))))
     except Exception: 
@@ -451,10 +461,14 @@ def content_hash(story: dict) -> str:
     club_part = (_story_club_signature(story) if fam == "transfer"
                  else _norm_text(story.get("to_key") or story.get("to_club")
                                  or story.get("from_key") or story.get("from_club")))
+    # Stage is included so a stage-4 "OFFICIAL" confirmation can be posted
+    # after a stage-2 "AGREED" card — they represent meaningfully different
+    # news events (agreement vs. completion) and must not share a dedup hash.
     parts = [
         fam,
         _norm_text(story.get("player")),
         club_part,
+        str(story.get("stage", 1)),
         _norm_text(story.get("headline")),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
@@ -637,19 +651,24 @@ def classify_post(story, sources):
         return None
 
     if story.get("event") in ("transfer", "loan", "loan_option"):
-        # No known destination → skip (no rumour cards).
+        # No known destination → skip.
         if not (story.get("to_key") or story.get("to_club")):
             return None
-        # Require at least stage 2 (agreed/agreement/personal terms). Stage 1
-        # = "linked with / interested in / monitoring" speculation — never post.
+        # Require at least stage 2 (agreement/personal terms/medical). Stage 1
+        # = "linked with / interested / monitoring" speculation — never post.
         if story.get("stage", 1) < 2:
             return None
+        # Stage 4 (here we go / confirmed / official / signed): one elite source
+        # is definitive for these events. `trusted_strong` already covers this
+        # (stage>=4 → strong_words=True → trusted_strong=True with any elite/official).
+        # Stage 2-3 (agreement / personal terms): require TWO independent elite
+        # reporters OR one official club/league account. A single journalist
+        # claiming "agreement reached" is more likely to be premature or wrong
+        # than a stage-4 "here we go" — both Gomes→Spurs and Fatawu→Ipswich
+        # were stage-2 single-reporter errors.
         trusted_strong = strong_words and (has_official or n_elite >= 1)
         video_only = story.get("from_video") and not has_official
         if (has_official or trusted_strong or n_elite >= 2) and not video_only:
-            return "confirmed"
-        # Single elite reporter at stage 2+ is reliable enough to post.
-        if n_elite >= 1 and story.get("stage", 1) >= 2:
             return "confirmed"
         return None
 
