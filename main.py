@@ -369,17 +369,30 @@ def build_story(tweet_text, fpl_data):
                 s["to_club"], s["to_key"] = rt, rtk
             elif not (s.get("to_key") or s.get("to_club")):
                 s["to_club"], s["to_key"] = rt, rtk
-        if rf and not (s.get("from_key") or s.get("from_club")):
-            s["from_club"], s["from_key"] = rf, rfk
+        if rf:
+            # Direction module found explicit "from [club]" grammar — more
+            # reliable than the parser's "2nd club in tweet" positional guess.
+            s["from_club"] = rf
+            s["from_key"] = rfk  # None for clubs not in the PL alias list
 
     if fpl_data and s.get("player") and s.get("event") in ("transfer", "loan", "loan_option"):
         el = find_player_in_fpl(s["player"], fpl_data)
         is_free_agent = bool(el and el.get("team", 0) == 0)
         actual_club = fpl_team_key(el, fpl_data) if el else None
 
-        if actual_club and not is_free_agent and not s.get("from_key"):
+        if actual_club and not is_free_agent:
+            # FPL ground truth always wins over parser/direction guesses.
             s["from_key"] = actual_club
             s["from_club"] = actual_club.replace("_", " ")
+
+    # Loan fee guard: the fee regex often captures a player's market value
+    # mentioned in the same tweet (e.g. "€100M-rated Bouaddi on loan"), not an
+    # actual loan fee payment. Clear it unless the tweet explicitly names a fee
+    # for the loan itself — loan fees exist but are almost always < £20M.
+    if s.get("event") in ("loan", "loan_option") and s.get("fee"):
+        _raw_lower = (tweet_text or "").lower()
+        if not any(p in _raw_lower for p in ("loan fee", "loan payment", "season fee")):
+            s["fee"] = None
 
     try: 
         s["stage"] = max(1, min(4, int(s.get("stage", 1))))
@@ -1560,6 +1573,27 @@ async def scrape(data, read_client):
         _final_cres = score_confidence(st, fpl, sources=st["sources"])
         st["confidence_score"] = _final_cres["score"]
         st["confidence_decision"] = _final_cres["decision"]
+
+        # Cross-player destination check: if this player already has a confirmed
+        # move to a DIFFERENT destination in the historical ledger (stage >= 4),
+        # block this story — the earlier, confirmed deal supersedes any new rumour
+        # linking them to a third club (e.g. Gomes → Aston Villa confirmed, then
+        # a stale tweet says Gomes → Spurs).
+        if not st.get("contradicted") and st.get("event") in ("transfer", "loan", "loan_option"):
+            _pnorm = (st.get("player") or "").lower().strip()
+            _new_dest = _norm_text(st.get("to_key") or st.get("to_club") or "")
+            if _pnorm and _new_dest:
+                for _prev in data.get("stories", {}).values():
+                    if ((_prev.get("player") or "").lower().strip() == _pnorm
+                            and _prev.get("event") in ("transfer", "loan", "loan_option")
+                            and _prev.get("stage", 0) >= 4):
+                        _prev_dest = _norm_text(_prev.get("to_key") or _prev.get("to_club") or "")
+                        if _prev_dest and _prev_dest != _new_dest:
+                            print(f"   [BLOCK] {st.get('player')!r}: already confirmed "
+                                  f"(stage {_prev['stage']}) to {_prev_dest!r}; "
+                                  f"new story says {_new_dest!r} — marking contradicted")
+                            st["contradicted"] = True
+                            break
 
         # A story with conflicting reports about which clubs are involved is
         # never auto-published — trusted sources disagreeing on the facts is
