@@ -23,6 +23,7 @@ from src.entity_guard import (is_postable_player, classify_entity,
                               is_staff_subject, staff_role_of, staff_action_of)
 from src import confidence as _conf
 from src import direction as _direction
+from src.fotmob import fetch_fotmob_transfers as _fetch_fotmob, match_story as _fotmob_match
 from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
@@ -104,7 +105,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-17-accuracy-audit"
+_LOGIC_VER = "2026-07-17-no-rumours-v2"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -634,9 +635,6 @@ def classify_post(story, sources):
     tiers = [source_tier(s) for s in sources]
     has_official = 1 in tiers
     n_elite = sum(1 for t in tiers if t == 2)
-    tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    strong_words = story["stage"] >= 4 or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
-
     if story["event"] in ("injury", "suspension"):
         if has_official or n_elite >= 1: return "confirmed"
         return None
@@ -659,16 +657,19 @@ def classify_post(story, sources):
         if story.get("stage", 1) < 2:
             return None
         # Stage 4 (here we go / confirmed / official / signed): one elite source
-        # is definitive for these events. `trusted_strong` already covers this
-        # (stage>=4 → strong_words=True → trusted_strong=True with any elite/official).
-        # Stage 2-3 (agreement / personal terms): require TWO independent elite
-        # reporters OR one official club/league account. A single journalist
-        # claiming "agreement reached" is more likely to be premature or wrong
-        # than a stage-4 "here we go" — both Gomes→Spurs and Fatawu→Ipswich
-        # were stage-2 single-reporter errors.
-        trusted_strong = strong_words and (has_official or n_elite >= 1)
+        # is definitive. Stage 2-3 (agreement/personal terms): require TWO
+        # independent elite reporters OR one official club/league account.
+        # NOTE: we rely on story["stage"] as the single signal, NOT on individual
+        # words like "medical"/"joins" matching STRONG_OFFICIAL. Those words can
+        # appear in stage-2 context ("medical booked for Monday") and using them
+        # here would let a single Romano tweet at stage 2 pass — exactly the
+        # bug that caused Gomes→Spurs and Fatawu→Ipswich false posts.
+        # FotMob-confirmed deals are completed by definition (ground-truth API),
+        # so they are treated the same as an official club account.
+        fotmob_ok = story.get("fotmob_confirmed", False)
+        trusted_strong = story["stage"] >= 4 and (has_official or n_elite >= 1)
         video_only = story.get("from_video") and not has_official
-        if (has_official or trusted_strong or n_elite >= 2) and not video_only:
+        if (has_official or fotmob_ok or trusted_strong or n_elite >= 2) and not video_only:
             return "confirmed"
         return None
 
@@ -691,7 +692,9 @@ def score_confidence(story, fpl_data=None, sources=None):
     result = _conf.evaluate(
         story,
         player_verified=player_verified,
-        official_source=(1 in tiers),
+        # FotMob is a ground-truth completed-deal API — treat it as an official
+        # source so the +15 official_source bonus applies to confirmed moves.
+        official_source=(1 in tiers) or bool(story.get("fotmob_confirmed")),
         elite_source=(2 in tiers),
         n_sources=len(set(s.lower() for s in sources if s)),
     )
@@ -1454,6 +1457,10 @@ async def fetch_tweets(read_client, username):
 
 async def scrape(data, read_client):
     fpl = fetch_fpl_data()
+    # FotMob confirmed-transfer list — fetched once per run and used as a
+    # ground-truth check after journalist stories are validated. Returns []
+    # on any failure so the rest of the pipeline is unaffected.
+    fotmob_list = _fetch_fotmob()
     story_map = {}
     seen = skipped = 0
     accounts_total = len(JOURNALISTS)
@@ -1504,6 +1511,24 @@ async def scrape(data, read_client):
                 skipped += 1
                 print(f"   invalid ({vwhy}): {text[:70]!r}")
                 continue
+
+            # FOTMOB GROUND-TRUTH CHECK: if FotMob's confirmed-transfer list
+            # contains this player+clubs combination, the deal is officially
+            # done. Promote to stage 4 (OFFICIAL) and record the match so
+            # classify_post and the confidence engine treat it as authoritative.
+            # We also absorb FotMob's fee string if our parser didn't find one.
+            if fotmob_list and story.get("event") in ("transfer", "loan", "loan_option"):
+                _fm = _fotmob_match(story, fotmob_list)
+                if _fm:
+                    _prev_stage = story.get("stage", 1)
+                    story["stage"] = max(_prev_stage, 4)
+                    story["fotmob_confirmed"] = True
+                    if not story.get("fee") and _fm.get("fee"):
+                        story["fee"] = _fm["fee"]
+                    if _prev_stage < 4:
+                        print(f"   [FOTMOB] ✅ {story['player']!r} confirmed "
+                              f"({_fm.get('from_club')} → {_fm.get('to_club')}) "
+                              f"— stage {_prev_stage}→4")
 
             # CONFIDENCE ENGINE: score the validated story and log the decision.
             # SKIP is dropped here (extra precision net — junk, retired/no-origin,
@@ -1950,7 +1975,10 @@ async def main(post: bool = True, allow_rumours: bool = False):
     # queue for a human to review; nothing legitimate is lost, it just isn't
     # auto-published.
     def _conf_ok(d):
-        return d.get("confidence_decision", "AUTO_POST") == _conf.AUTO_POST
+        # No default: a missing confidence_decision means the story was never
+        # scored (e.g. a stale cached draft) — treat it as NOT postable rather
+        # than letting it slip through with a bogus AUTO_POST default.
+        return d.get("confidence_decision") == _conf.AUTO_POST
 
     postable = [d for d in drafts if d.get("mode") in modes_ok and _conf_ok(d)]
     _held = [d for d in drafts if d.get("mode") in modes_ok and not _conf_ok(d)]
