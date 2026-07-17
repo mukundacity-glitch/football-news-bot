@@ -615,46 +615,44 @@ def player_already_at_club(story, fpl_data) -> bool:
     return bool(cur and to_key and cur == to_key)
 
 def classify_post(story, sources):
-    if story.get("collapsed"): return "rumour"
+    # Collapsed deals — deal fell through, no card.
+    if story.get("collapsed"): return None
     tiers = [source_tier(s) for s in sources]
     has_official = 1 in tiers
     n_elite = sum(1 for t in tiers if t == 2)
-    has_media = 3 in tiers
     tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
     strong_words = story["stage"] >= 4 or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
 
-    if story["event"] == "injury":
+    if story["event"] in ("injury", "suspension"):
         if has_official or n_elite >= 1: return "confirmed"
         return None
 
-    # Manager / staff: only an actual appointment or departure is CONFIRMED. A bare
-    # "linked with the job" is speculation -> RUMOUR (never a CONFIRMED card).
+    # Manager / staff: ONLY a confirmed appointment or departure is posted.
+    # "Linked with the job", "shortlisted", "in the running" etc. are pure
+    # speculation — never post them.
     if story.get("event") == "manager":
         action = story.get("staff_action")
         if action in ("appointment", "departure") and (has_official or n_elite >= 1):
             return "confirmed"
-        if has_official or n_elite >= 1 or has_media:
-            return "rumour"
         return None
 
-    # A transfer/loan can't be OFFICIAL/CONFIRMED without a known destination
-    # club — but "known" means any resolved club, including a foreign/EFL one
-    # captured only as a raw name (to_club, no PL to_key). Requiring to_key
-    # specifically would mean a PL club's OWN official announcement of a
-    # player going out on loan to a non-PL club (e.g. Chelsea -> Sporting
-    # Lisbon) could never be labelled CONFIRMED no matter how certain the
-    # source — exactly the false-negative failure this checks for.
-    if story.get("event") in ("transfer", "loan", "loan_option") and not (
-            story.get("to_key") or story.get("to_club")):
-        if has_official or n_elite >= 1 or has_media:
-            return "rumour"
+    if story.get("event") in ("transfer", "loan", "loan_option"):
+        # No known destination → skip (no rumour cards).
+        if not (story.get("to_key") or story.get("to_club")):
+            return None
+        # Require at least stage 2 (agreed/agreement/personal terms). Stage 1
+        # = "linked with / interested in / monitoring" speculation — never post.
+        if story.get("stage", 1) < 2:
+            return None
+        trusted_strong = strong_words and (has_official or n_elite >= 1)
+        video_only = story.get("from_video") and not has_official
+        if (has_official or trusted_strong or n_elite >= 2) and not video_only:
+            return "confirmed"
+        # Single elite reporter at stage 2+ is reliable enough to post.
+        if n_elite >= 1 and story.get("stage", 1) >= 2:
+            return "confirmed"
         return None
 
-    trusted_strong = strong_words and (has_official or n_elite >= 1)
-    video_only = story.get("from_video") and not has_official
-    if (has_official or trusted_strong or n_elite >= 2) and not video_only: return "confirmed"
-    if n_elite >= 1: return "rumour"
-    if has_media: return "rumour"
     return None
 
 def score_confidence(story, fpl_data=None, sources=None):
@@ -705,6 +703,11 @@ def validate_story(story, fpl_data=None, sources=None):
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
     if ev == "manager" and len(_ptokens) < 2: return False, "manager_name_single_token"
+    # Block stories that misfire the manager classifier onto an active FPL player
+    # (e.g. "Szoboszlai linked with the Liverpool job") — a footballer is not a
+    # manager candidate.
+    if ev == "manager" and fpl_data and find_player_in_fpl(player, fpl_data) is not None:
+        return False, "fpl_player_not_manager"
     if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
 
@@ -748,6 +751,22 @@ def validate_story(story, fpl_data=None, sources=None):
         fc = (story.get("from_club") or "").strip().lower()
         tc = (story.get("to_club") or "").strip().lower()
         if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
+
+        # SPECULATION GATE: stage-1 stories that contain pure rumour/interest
+        # language are blocked here regardless of source tier. Stage 2+ stories
+        # have agreement/personal-terms language and are allowed through.
+        _SPEC_PHRASES = (
+            "linked with", "interested in", "considering a move", "monitoring",
+            "targeting", "could sign", "could join", "might join",
+            "possible move", "potential move", "talks have started",
+            "negotiations ongoing", "shortlist", "expected to make a bid",
+            "could leave", "eyeing", "keen on", "weighing up a move",
+        )
+        if story.get("stage", 1) < 2:
+            _specblob = (story.get("raw_text", "") + " " + story.get("body", "") + " "
+                         + (story.get("headline") or "")).lower()
+            if any(ph in _specblob for ph in _SPEC_PHRASES):
+                return False, "speculation_language"
 
         # PLAYER-IDENTITY GATE: a "transfer" of someone NOT in the FPL player
         # database must carry positive evidence they are actually a PLAYER — a
