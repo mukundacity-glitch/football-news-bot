@@ -15,18 +15,7 @@ DRAFTS_DIR = Path("fpl_drafts")
 
 # Target Scrape Accounts
 JOURNALISTS = [
-    "FabrizioRomano", "David_Ornstein", "_pauljoyce", "sistoney67",
-    "SamiMokbel_BBC", "JacobsBen", "JamesPearceLFC", "SachaTavolieri",
-    "Plettigoal", "MatteoMoretto", "AlfredoPedulla", "DiMarzio",
-    "SkySportsNews", "BBCSport", "TheAthleticFC", "guardian_sport",
-    "lequipe", "marca", "diarioas", "kicker", "alex_crook", "AlexCrabb31",
-    "Transferzone00", "premierleague", "OfficialFPL", "PremierInjuries",
-    "Arsenal", "AVFCOfficial", "ManCity", "LFC", "ChelseaFC",
-    "ManUtd", "SpursOfficial", "NUFC", "NFFC", "Everton",
-    "WestHam", "CPFC", "OfficialBHAFC", "Wolves", "BrentfordFC",
-    "FulhamFC", "AFCBournemouth", "lcfc",
-    "TelegraphDucker", "henrywinter", "lauriewhitwell", "SamLee",
-    "SimonPeach", "OliverKay", "david_conn",
+    "FabrizioRomano", "David_Ornstein", 
 ]
 
 NITTER_INSTANCES = [
@@ -45,11 +34,7 @@ OFFICIAL_ACCOUNTS = {
 }
 OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {"officialfpl", "fpl", "premierleague", "premierinjuries"}
 ELITE_TRUSTED = {
-    "fabrizioromano", "david_ornstein", "_pauljoyce", "sistoney67",
-    "samimokbel_bbc", "jacobsben", "jamespearcelfc", "sachatavolieri",
-    "plettigoal", "matteomoretto", "alfredopedulla", "dimarzio",
-    "telegraphducker", "henrywinter", "lauriewhitwell", "samlee",
-    "simonpeach", "oliverkay", "david_conn",
+    "fabrizioromano", "david_ornstein", 
 }
 TRUSTED_MEDIA = {
     "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
