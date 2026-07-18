@@ -23,6 +23,7 @@ from src.entity_guard import (is_postable_player, classify_entity,
                               is_staff_subject, staff_role_of, staff_action_of)
 from src import confidence as _conf
 from src import direction as _direction
+from src.fotmob import fetch_fotmob_transfers as _fetch_fotmob, match_story as _fotmob_match
 from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
@@ -104,7 +105,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-14-elite-source-signal"
+_LOGIC_VER = "2026-07-18-fpl-injuries-v5"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -394,6 +395,16 @@ def build_story(tweet_text, fpl_data):
         if not any(p in _raw_lower for p in ("loan fee", "loan payment", "season fee")):
             s["fee"] = None
 
+    # Free-transfer detection: when the tweet says "free transfer"/"on a free"/
+    # "out of contract" etc. the move has ZERO fee — display it as "Free Transfer"
+    # so the card never says the misleading "Undisclosed fee" for a known free move.
+    if s.get("event") in ("transfer", "loan", "loan_option") and not s.get("fee"):
+        _raw_lower = (tweet_text or "").lower()
+        _FREE_CUES = ("free transfer", "on a free", "out of contract",
+                      "pre-contract", "bosman", "as a free agent", "free signing")
+        if any(c in _raw_lower for c in _FREE_CUES):
+            s["fee"] = "Free Transfer"
+
     try: 
         s["stage"] = max(1, min(4, int(s.get("stage", 1))))
     except Exception: 
@@ -451,10 +462,14 @@ def content_hash(story: dict) -> str:
     club_part = (_story_club_signature(story) if fam == "transfer"
                  else _norm_text(story.get("to_key") or story.get("to_club")
                                  or story.get("from_key") or story.get("from_club")))
+    # Stage is included so a stage-4 "OFFICIAL" confirmation can be posted
+    # after a stage-2 "AGREED" card — they represent meaningfully different
+    # news events (agreement vs. completion) and must not share a dedup hash.
     parts = [
         fam,
         _norm_text(story.get("player")),
         club_part,
+        str(story.get("stage", 1)),
         _norm_text(story.get("headline")),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
@@ -615,46 +630,58 @@ def player_already_at_club(story, fpl_data) -> bool:
     return bool(cur and to_key and cur == to_key)
 
 def classify_post(story, sources):
-    if story.get("collapsed"): return "rumour"
+    # Collapsed deals — deal fell through, no card.
+    if story.get("collapsed"): return None
     tiers = [source_tier(s) for s in sources]
     has_official = 1 in tiers
     n_elite = sum(1 for t in tiers if t == 2)
-    has_media = 3 in tiers
-    tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    strong_words = story["stage"] >= 4 or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
-
-    if story["event"] == "injury":
-        if has_official or n_elite >= 1: return "confirmed"
+    if story["event"] in ("injury", "suspension"):
+        # OFFICIAL_INJURY_ACCOUNTS (e.g. PremierInjuries) are authoritative for
+        # injury/suspension news even though they aren't in the general OFFICIAL_ACCOUNTS
+        # tier-1 set used for transfers. Check them explicitly here so their reports
+        # are never silently dropped.
+        has_injury_official = any(
+            (s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS
+            for s in sources
+        )
+        if has_official or has_injury_official or n_elite >= 1:
+            return "confirmed"
         return None
 
-    # Manager / staff: only an actual appointment or departure is CONFIRMED. A bare
-    # "linked with the job" is speculation -> RUMOUR (never a CONFIRMED card).
+    # Manager / staff: ONLY a confirmed appointment or departure is posted.
+    # "Linked with the job", "shortlisted", "in the running" etc. are pure
+    # speculation — never post them.
     if story.get("event") == "manager":
         action = story.get("staff_action")
         if action in ("appointment", "departure") and (has_official or n_elite >= 1):
             return "confirmed"
-        if has_official or n_elite >= 1 or has_media:
-            return "rumour"
         return None
 
-    # A transfer/loan can't be OFFICIAL/CONFIRMED without a known destination
-    # club — but "known" means any resolved club, including a foreign/EFL one
-    # captured only as a raw name (to_club, no PL to_key). Requiring to_key
-    # specifically would mean a PL club's OWN official announcement of a
-    # player going out on loan to a non-PL club (e.g. Chelsea -> Sporting
-    # Lisbon) could never be labelled CONFIRMED no matter how certain the
-    # source — exactly the false-negative failure this checks for.
-    if story.get("event") in ("transfer", "loan", "loan_option") and not (
-            story.get("to_key") or story.get("to_club")):
-        if has_official or n_elite >= 1 or has_media:
-            return "rumour"
+    if story.get("event") in ("transfer", "loan", "loan_option"):
+        # No known destination → skip.
+        if not (story.get("to_key") or story.get("to_club")):
+            return None
+        # Require at least stage 2 (agreement/personal terms/medical). Stage 1
+        # = "linked with / interested / monitoring" speculation — never post.
+        if story.get("stage", 1) < 2:
+            return None
+        # Stage 4 (here we go / confirmed / official / signed): one elite source
+        # is definitive. Stage 2-3 (agreement/personal terms): require TWO
+        # independent elite reporters OR one official club/league account.
+        # NOTE: we rely on story["stage"] as the single signal, NOT on individual
+        # words like "medical"/"joins" matching STRONG_OFFICIAL. Those words can
+        # appear in stage-2 context ("medical booked for Monday") and using them
+        # here would let a single Romano tweet at stage 2 pass — exactly the
+        # bug that caused Gomes→Spurs and Fatawu→Ipswich false posts.
+        # FotMob-confirmed deals are completed by definition (ground-truth API),
+        # so they are treated the same as an official club account.
+        fotmob_ok = story.get("fotmob_confirmed", False)
+        trusted_strong = story["stage"] >= 4 and (has_official or n_elite >= 1)
+        video_only = story.get("from_video") and not has_official
+        if (has_official or fotmob_ok or trusted_strong or n_elite >= 2) and not video_only:
+            return "confirmed"
         return None
 
-    trusted_strong = strong_words and (has_official or n_elite >= 1)
-    video_only = story.get("from_video") and not has_official
-    if (has_official or trusted_strong or n_elite >= 2) and not video_only: return "confirmed"
-    if n_elite >= 1: return "rumour"
-    if has_media: return "rumour"
     return None
 
 def score_confidence(story, fpl_data=None, sources=None):
@@ -674,7 +701,9 @@ def score_confidence(story, fpl_data=None, sources=None):
     result = _conf.evaluate(
         story,
         player_verified=player_verified,
-        official_source=(1 in tiers),
+        # FotMob is a ground-truth completed-deal API — treat it as an official
+        # source so the +15 official_source bonus applies to confirmed moves.
+        official_source=(1 in tiers) or bool(story.get("fotmob_confirmed")),
         elite_source=(2 in tiers),
         n_sources=len(set(s.lower() for s in sources if s)),
     )
@@ -705,14 +734,26 @@ def validate_story(story, fpl_data=None, sources=None):
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
     if ev == "manager" and len(_ptokens) < 2: return False, "manager_name_single_token"
-    if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
+    # Block stories that misfire the manager classifier onto an active FPL player
+    # (e.g. "Szoboszlai linked with the Liverpool job") — a footballer is not a
+    # manager candidate.
+    if ev == "manager" and fpl_data and find_player_in_fpl(player, fpl_data) is not None:
+        return False, "fpl_player_not_manager"
+    # Single-token name check. FotMob uses full player names from its own database
+    # so single-token names there are authentic (e.g. "Rodrygo") — bypass for those.
+    if (ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay")
+            and len(_ptokens) < 2
+            and not story.get("fotmob_confirmed")):
+        return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
 
     # ACCURACY GATE: post about FPL-verified players, OR — when the source is a
-    # reliable reporter/website (tiers 1-3) — players not yet in the FPL dataset.
+    # reliable reporter/website (tiers 1-3) OR a FotMob-confirmed deal — players
+    # not yet in the FPL dataset. FotMob only lists completed deals, so its player
+    # names are authoritative; they must still have a resolved PL club to be relevant.
     PERSON_EVENTS = ("transfer", "loan", "loan_option", "renewal", "stay", "injury", "suspension", "manager")
     if fpl_data and ev in PERSON_EVENTS and find_player_in_fpl(player, fpl_data) is None:
-        if not is_reliable_source(sources):
+        if not is_reliable_source(sources) and not story.get("fotmob_confirmed"):
             return False, "not_verified_pl_player"
         # Reliable source but unverified player still needs a PL-club anchor so we
         # only post genuinely Premier-League-related news.
@@ -748,6 +789,22 @@ def validate_story(story, fpl_data=None, sources=None):
         fc = (story.get("from_club") or "").strip().lower()
         tc = (story.get("to_club") or "").strip().lower()
         if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
+
+        # SPECULATION GATE: stage-1 stories that contain pure rumour/interest
+        # language are blocked here regardless of source tier. Stage 2+ stories
+        # have agreement/personal-terms language and are allowed through.
+        _SPEC_PHRASES = (
+            "linked with", "interested in", "considering a move", "monitoring",
+            "targeting", "could sign", "could join", "might join",
+            "possible move", "potential move", "talks have started",
+            "negotiations ongoing", "shortlist", "expected to make a bid",
+            "could leave", "eyeing", "keen on", "weighing up a move",
+        )
+        if story.get("stage", 1) < 2:
+            _specblob = (story.get("raw_text", "") + " " + story.get("body", "") + " "
+                         + (story.get("headline") or "")).lower()
+            if any(ph in _specblob for ph in _SPEC_PHRASES):
+                return False, "speculation_language"
 
         # PLAYER-IDENTITY GATE: a "transfer" of someone NOT in the FPL player
         # database must carry positive evidence they are actually a PLAYER — a
@@ -815,7 +872,9 @@ def verify_card_data(item: dict, fpl_data=None):
     """
     report = []
     ev = item.get("event")
-    reliable = is_reliable_source(item.get("sources"))
+    # FotMob-confirmed deals are authoritative completed transfers — treat them
+    # the same as a reliable journalist source for identity + club verification.
+    reliable = is_reliable_source(item.get("sources")) or bool(item.get("fotmob_confirmed"))
     PERSON_EVENTS = ("transfer", "loan", "loan_option", "renewal", "stay",
                      "injury", "suspension", "manager")
 
@@ -1414,8 +1473,254 @@ async def fetch_tweets(read_client, username):
     nit = get_nitter_tweets(username)
     return nit, ("nitter" if nit else "none")
 
+
+def _ingest_fotmob_direct(fotmob_list, story_map, data, fpl):
+    """
+    Build stories directly from FotMob confirmed deals that weren't picked up
+    through the journalist tweet pipeline. FotMob only lists COMPLETED deals
+    (stage 4 / OFFICIAL), so every entry here is ground-truth confirmed.
+
+    Guards:
+    - At least one club must resolve to a known PL key (FPL relevance).
+    - Player must be found in the FPL database (ensures confidence score
+      reaches AUTO_POST without needing journalist corroboration).
+    - Story must not already exist in story_map or in the historical ledger
+      (posted_news.json) to prevent duplicates.
+    """
+    added = 0
+    for entry in fotmob_list:
+        player = (entry.get("player") or "").strip()
+        from_club_raw = (entry.get("from_club") or "").strip()
+        to_club_raw = (entry.get("to_club") or "").strip()
+        fee = entry.get("fee")
+
+        if not player or not to_club_raw:
+            continue
+
+        # Resolve clubs to PL canonical keys
+        from_key = resolve_club_key(from_club_raw)
+        to_key = resolve_club_key(to_club_raw)
+
+        # FPL relevance: at least one end of the transfer must be a PL club
+        if not (from_key or to_key):
+            continue
+
+        # FPL player verification: we require a database match so the confidence
+        # score can reach AUTO_POST (player_verified +25 is the difference between
+        # REVIEW=75 and AUTO_POST=100 for a FotMob deal with no journalist source).
+        el = find_player_in_fpl(player, fpl) if fpl else None
+        if not el:
+            continue  # let journalist pipeline handle players not yet in FPL
+
+        # Use the player's real FPL club as the true origin (never a stale parse)
+        if el.get("team", 0) != 0:
+            true_from = fpl_team_key(el, fpl)
+            if true_from:
+                from_key = true_from
+                from_club_raw = true_from.replace("_", " ")
+
+        # Build a canonical story key (same unordered-club-pair format as main pipeline)
+        anchor_clubs = sorted({k for k in (to_key, from_key) if k})
+        anchor = "_".join(k.lower() for k in anchor_clubs) if anchor_clubs else (to_key or from_key or "unknown").lower()
+        p_slug = player.lower().replace(" ", "_")
+        story_key = f"{p_slug}_{anchor}_transfer"
+
+        # Skip if the journalist pipeline already built this story this run
+        if story_key in story_map:
+            continue
+
+        # Skip if a confirmed (stage 4) story for this player already exists in
+        # the historical ledger — we already posted it in a previous run
+        p_norm = player.lower().strip()
+        already_done = any(
+            (s.get("player") or "").lower().strip() == p_norm
+            and s.get("event") in ("transfer", "loan", "loan_option")
+            and s.get("stage", 0) >= 4
+            for s in data.get("stories", {}).values()
+        )
+        if already_done:
+            continue
+
+        # Synthetic raw_text used for entity/placeholder checks
+        raw = (f"{player} joins {to_club_raw}"
+               + (f" from {from_club_raw}" if from_club_raw else "")
+               + (f" for {fee}" if fee else "")
+               + ". Transfer confirmed.")
+
+        story = {
+            "is_football": True,
+            "event": "transfer",
+            "is_real_move": True,
+            "player": player,
+            "from_club": from_club_raw or (from_key.replace("_", " ") if from_key else None),
+            "to_club": to_club_raw or (to_key.replace("_", " ") if to_key else None),
+            "from_key": from_key,
+            "to_key": to_key,
+            "fee": fee,
+            "contract": None,
+            "stage": 4,
+            "collapsed": False,
+            "historical": False,
+            "fotmob_confirmed": True,
+            "from_video": False,
+            "has_written_claim": True,
+            "raw_text": raw,
+            "body": raw,
+            "headline": f"{player} joins {to_club_raw}",
+            "id": f"fotmob_{(entry.get('player_id') or p_slug)}_{(to_key or to_club_raw).lower().replace(' ', '_')}",
+            "key": story_key,
+            "text": raw,
+            "sources": [],
+            "reason": "new",
+        }
+
+        valid, vwhy = validate_story(story, fpl, sources=[])
+        if not valid:
+            print(f"   [FOTMOB-DIRECT] skip ({vwhy}): {player!r} → {to_club_raw!r}")
+            continue
+
+        cres = score_confidence(story, fpl, sources=[])
+        story["confidence_score"] = cres["score"]
+        story["confidence_decision"] = cres["decision"]
+
+        if cres["decision"] == _conf.SKIP:
+            print(f"   [FOTMOB-DIRECT] low-conf ({cres['score']}): {player!r} → {to_club_raw!r}")
+            continue
+
+        story_map[story_key] = story
+        added += 1
+        print(f"   [FOTMOB-DIRECT] queued: {player!r} → {to_club_raw!r}"
+              + (f" ({fee})" if fee else ""))
+
+    if added:
+        print(f"  [FOTMOB-DIRECT] {added} confirmed deal(s) added from FotMob")
+    return added
+
+
+def _ingest_fpl_injuries(story_map, data, fpl):
+    """Create injury/suspension stories from FPL bootstrap player fitness data.
+
+    The FPL API is the official Premier League injury record — the same data
+    shown on premierleague.com/latest-player-injuries, updated directly by
+    clubs. Since we already fetch this every run, querying it here costs
+    nothing extra and fills the gap when no journalist has tweeted an update.
+
+    Eligible players: status 'i' (injured), 'd' (doubtful), 's' (suspended),
+    'u' (unavailable) with a non-empty news field whose hash hasn't been seen
+    before (so re-runs don't re-post unchanged statuses).
+
+    Source is tagged as 'OfficialFPL' — tier 1 — so it sails through every
+    pipeline gate that requires an official account.
+    """
+    if not fpl:
+        return 0
+    added = 0
+    elements = fpl.get("elements", [])
+    teams = {t["id"]: t for t in fpl.get("teams", [])}
+    seen_hashes = {
+        s.get("fpl_news_hash")
+        for s in data.get("stories", {}).values()
+        if s.get("fpl_news_hash")
+    }
+
+    for el in elements:
+        status = el.get("status", "a")
+        news = (el.get("news") or "").strip()
+        if status not in ("i", "d", "s", "u") or not news:
+            continue
+
+        news_hash = hashlib.md5(news.encode()).hexdigest()[:16]
+        if news_hash in seen_hashes:
+            continue  # already posted this exact status message
+
+        player = f"{el.get('first_name', '')} {el.get('second_name', '')}".strip()
+        if not player:
+            continue
+
+        team_id = el.get("team", 0)
+        team = teams.get(team_id, {})
+        club_name = team.get("name", "")
+        club_short = team.get("short_name", "")
+        club_key = resolve_club_key(club_name) or resolve_club_key(club_short)
+        if not club_key:
+            continue
+
+        ev = "suspension" if status == "s" else "injury"
+        p_slug = player.lower().replace(" ", "_")
+        story_key = f"{p_slug}_{club_key.lower()}_fpl_{ev}_{news_hash}"
+
+        if story_key in story_map:
+            continue
+
+        # Simple diagnosis extraction from the FPL news string
+        news_lower = news.lower()
+        diagnosis = next(
+            (w.title() for w in (
+                "hamstring", "knee", "ankle", "thigh", "calf", "back",
+                "shoulder", "groin", "achilles", "foot", "hip", "muscle",
+                "suspended", "ban",
+            ) if w in news_lower),
+            None,
+        )
+        ret_m = re.search(
+            r'(?:return|back|available|fit)\s+(?:in\s+)?'
+            r'(\d+\s+weeks?|mid-\w+|\w+\s+\d{4}|next\s+\w+)',
+            news_lower,
+        )
+        expected_return = ret_m.group(0).title() if ret_m else None
+
+        stage = {"i": 3, "d": 2, "s": 3, "u": 3}.get(status, 2)
+        raw = news
+        story = {
+            "is_football": True, "event": ev,
+            "player": player,
+            "to_key": club_key, "to_club": club_name,
+            "from_key": None, "from_club": None,
+            "fee": None, "contract": None,
+            "diagnosis": diagnosis, "expected_return": expected_return,
+            "stage": stage, "collapsed": False, "historical": False,
+            "fotmob_confirmed": False, "fpl_injury": True,
+            "from_video": False, "has_written_claim": True,
+            "raw_text": raw, "body": raw,
+            "headline": f"{player} — {ev} update",
+            "id": f"fpl_{ev}_{el.get('code', p_slug)}_{news_hash}",
+            "key": story_key, "text": raw,
+            "sources": ["OfficialFPL"],
+            "fpl_news_hash": news_hash,
+            "reason": "fpl_injury_feed",
+        }
+        news_added = el.get("news_added")
+        if news_added:
+            story["created_at"] = news_added
+
+        valid, vwhy = validate_story(story, fpl, sources=["OfficialFPL"])
+        if not valid:
+            print(f"   [FPL-INJURY] skip ({vwhy}): {player!r} @ {club_key!r}")
+            continue
+
+        cres = score_confidence(story, fpl, sources=["OfficialFPL"])
+        story["confidence_score"] = cres["score"]
+        story["confidence_decision"] = cres["decision"]
+        if cres["decision"] == _conf.SKIP:
+            print(f"   [FPL-INJURY] low-conf ({cres['score']}): {player!r}")
+            continue
+
+        story_map[story_key] = story
+        added += 1
+        print(f"   [FPL-INJURY] queued: {player!r} @ {club_key!r} "
+              f"status={status!r} — {news[:60]!r}")
+
+    if added:
+        print(f"  [FPL-INJURY] {added} injury/suspension update(s) from FPL feed")
+    return added
+
+
 async def scrape(data, read_client):
     fpl = fetch_fpl_data()
+    # FotMob confirmed-transfer list — fetched once per run and used as a
+    # ground-truth check after journalist stories are validated. Returns []
+    # on any failure so the rest of the pipeline is unaffected.
+    fotmob_list = _fetch_fotmob()
     story_map = {}
     seen = skipped = 0
     accounts_total = len(JOURNALISTS)
@@ -1467,6 +1772,24 @@ async def scrape(data, read_client):
                 print(f"   invalid ({vwhy}): {text[:70]!r}")
                 continue
 
+            # FOTMOB GROUND-TRUTH CHECK: if FotMob's confirmed-transfer list
+            # contains this player+clubs combination, the deal is officially
+            # done. Promote to stage 4 (OFFICIAL) and record the match so
+            # classify_post and the confidence engine treat it as authoritative.
+            # We also absorb FotMob's fee string if our parser didn't find one.
+            if fotmob_list and story.get("event") in ("transfer", "loan", "loan_option"):
+                _fm = _fotmob_match(story, fotmob_list)
+                if _fm:
+                    _prev_stage = story.get("stage", 1)
+                    story["stage"] = max(_prev_stage, 4)
+                    story["fotmob_confirmed"] = True
+                    if not story.get("fee") and _fm.get("fee"):
+                        story["fee"] = _fm["fee"]
+                    if _prev_stage < 4:
+                        print(f"   [FOTMOB] ✅ {story['player']!r} confirmed "
+                              f"({_fm.get('from_club')} → {_fm.get('to_club')}) "
+                              f"— stage {_prev_stage}→4")
+
             # CONFIDENCE ENGINE: score the validated story and log the decision.
             # SKIP is dropped here (extra precision net — junk, retired/no-origin,
             # etc.); AUTO_POST / REVIEW carry their score forward for the live gate.
@@ -1514,6 +1837,18 @@ async def scrape(data, read_client):
                     if username not in ex["sources"]: ex["sources"].append(username)
                     if story["stage"] > ex["stage"]:
                         ex.update({k: story[k] for k in story if k != "contradicted"})
+                    else:
+                        # Same or lower stage: enrich the existing story with any
+                        # detail fields this tweet provides but the earlier tweet
+                        # missed. Example: Romano's first tweet confirmed the deal
+                        # (stage 4) but didn't mention the contract length; Ornstein's
+                        # follow-up tweet also at stage 4 says "6-year deal" — the
+                        # contract field should be patched in, not silently ignored.
+                        for _field in ("fee", "contract", "diagnosis", "expected_return"):
+                            if not ex.get(_field) and story.get(_field):
+                                ex[_field] = story[_field]
+                                print(f"   [ENRICH] {key}: patched {_field!r} "
+                                      f"from @{username}: {story[_field]!r}")
                     ex["sources"] = list(dict.fromkeys(ex["sources"]))
             else:
                 prior = data.get("pending", {}).get(key, {}).get("sources", [])
@@ -1545,14 +1880,26 @@ async def scrape(data, read_client):
               "likely expired — update X_AUTH_TOKEN and X_CT0_TOKEN secrets.")
               
     print(f"  [SCRAPE] {seen} football tweets seen, {skipped} skipped, {len(story_map)} candidate stories")
-    
+
+    # FotMob DIRECT INGESTION: add confirmed deals from FotMob that the journalist
+    # pipeline missed (no one we follow tweeted about them, or the tweet was too old).
+    # Runs after the full journalist loop so we don't duplicate anything already caught.
+    if fotmob_list:
+        _ingest_fotmob_direct(fotmob_list, story_map, data, fpl)
+
+    # FPL INJURY FEED: official PL injury/suspension data from the FPL bootstrap
+    # (same source as premierleague.com/latest-player-injuries). Runs after the
+    # journalist loop so journalist-sourced injury stories take priority and FPL
+    # entries only fill gaps where no tweet was found.
+    _ingest_fpl_injuries(story_map, data, fpl)
+
     data["last_read_health"] = {
         "accounts_total": accounts_total,
         "accounts_failed": accounts_failed,
         "fail_ratio": round(fail_ratio, 3),
         "at": datetime.now(timezone.utc).isoformat(),
     }
-    
+
     ready = []
     for key, st in story_map.items():
         # Re-score confidence against the FINAL, merged source list. Each
@@ -1912,7 +2259,10 @@ async def main(post: bool = True, allow_rumours: bool = False):
     # queue for a human to review; nothing legitimate is lost, it just isn't
     # auto-published.
     def _conf_ok(d):
-        return d.get("confidence_decision", "AUTO_POST") == _conf.AUTO_POST
+        # No default: a missing confidence_decision means the story was never
+        # scored (e.g. a stale cached draft) — treat it as NOT postable rather
+        # than letting it slip through with a bogus AUTO_POST default.
+        return d.get("confidence_decision") == _conf.AUTO_POST
 
     postable = [d for d in drafts if d.get("mode") in modes_ok and _conf_ok(d)]
     _held = [d for d in drafts if d.get("mode") in modes_ok and not _conf_ok(d)]

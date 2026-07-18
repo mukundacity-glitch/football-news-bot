@@ -102,34 +102,107 @@ _FEE_RANGE_RE = re.compile(
     r'(?:[£€$]\s?)?\d+(?:\.\d+)?\s*(?:m|k|million|billion))', re.IGNORECASE)
 _FEE_SINGLE_RE = re.compile(r'([£€$]\s?\d+(?:\.\d+)?\s*(?:m|k|million|billion))', re.IGNORECASE)
 
+# A monetary figure that is preceded within 70 chars by these phrases is a
+# market valuation / price tag, NOT an actual transfer fee payment. This is the
+# root cause of "€100M-rated Bouaddi" being shown as a £100M fee.
+_MARKET_VALUE_CUES_RE = re.compile(
+    r'\b(valued?\s+at|worth|market\s+value|rated|price\s+tag|estimated\s+at|'
+    r'tagged\s+at|put\s+a\s+(?:price|value)|release\s+clause|buyout\s+clause|'
+    r'reportedly\s+worth|reportedly\s+valued?)\b',
+    re.IGNORECASE)
+
+# Fee context: phrases that CONFIRM a sum IS a real transfer fee (overrides the
+# market-value check when both appear in the same window).
+_FEE_CONFIRM_RE = re.compile(
+    r'\b(transfer\s+fee|fee\s+of|for\s+(?:a\s+fee\s+of\s+)?[£€$]|'
+    r'pay(?:ing|s|ment)|activat(?:e|es|ing)\s+(?:a\s+)?(?:release|buyout|option)|'
+    r'for\s+around|agreed\s+(?:a\s+)?fee|deal\s+worth)\b',
+    re.IGNORECASE)
+
 
 def _extract_fee(text):
     m = _FEE_RANGE_RE.search(text) or _FEE_SINGLE_RE.search(text)
-    return m.group(1).upper() if m else None
+    if not m:
+        return None
+    # Examine the 70-char window before the matched figure for market-value
+    # language. If found AND no explicit fee-confirmation language is nearby,
+    # this number is a valuation, not a real transfer fee.
+    pre = text[max(0, m.start() - 70):m.start()]
+    if _MARKET_VALUE_CUES_RE.search(pre) and not _FEE_CONFIRM_RE.search(pre):
+        return None
+    return m.group(1).upper()
 
 
-# Contract-duration extraction. Nothing previously populated this field at
-# all — "signs a three-year contract", "new deal until 2029" always fell
-# back to "TBD" on the card even though the tweet stated it outright.
+# Contract-duration extraction.
 _CONTRACT_WORD_NUM = {"one": "1", "two": "2", "three": "3", "four": "4",
                       "five": "5", "six": "6", "seven": "7", "eight": "8"}
+
+# "six-year contract/deal/signing/extension" OR "6 year deal" (incl. plural "years")
 _CONTRACT_YEARS_RE = re.compile(
-    r'\b(one|two|three|four|five|six|seven|eight|\d)[\s-]year\s*(?:contract|deal)\b',
+    r'\b(one|two|three|four|five|six|seven|eight|\d+)'
+    r'[\s-]years?\s*(?:contract|deal|signing|extension)\b',
     re.IGNORECASE)
+
+# "signs/signed/agreed a six-year" (no "contract" suffix — e.g. "signs a 6-year")
+_CONTRACT_SIGNS_RE = re.compile(
+    r'\b(?:sign(?:s|ed|ing)?|agreed?)\s+(?:a\s+)?(?:new\s+)?'
+    r'(one|two|three|four|five|six|seven|eight|\d+)[\s-]years?\b',
+    re.IGNORECASE)
+
+# "6+1 year contract" — European add-on-year format
+_CONTRACT_PLUS_RE = re.compile(
+    r'\b(\d+)\s*\+\s*(\d+)\s*years?\s*(?:contract|deal|option|extension)?\b',
+    re.IGNORECASE)
+
+# "contract/deal until/through June 2031" OR bare "until 2031" near a deal cue
 _CONTRACT_UNTIL_RE = re.compile(
-    r'\b(?:contract|deal)\s+(?:runs?\s+)?(?:until|through|to)\s+'
-    r'((?:[A-Za-z]+\s+)?20\d{2})', re.IGNORECASE)
+    r'\b(?:contract|deal|signing|signed?|extension)\s*'
+    r'(?:runs?\s+)?(?:until|through|to)\s+'
+    r'((?:[A-Za-z]+\s+)?20\d{2})\b',
+    re.IGNORECASE)
+
+# "until June 2031" / "until summer 2032" with no preceding noun
+_CONTRACT_UNTIL_BARE_RE = re.compile(
+    r'\buntil\s+((?:June|July|Aug(?:ust)?|Sep(?:tember)?|'
+    r'Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|Jan(?:uary)?|'
+    r'Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|'
+    r'summer|winter|spring|autumn|end\s+of\s+(?:the\s+)?season)\s+)?'
+    r'(20\d{2})\b',
+    re.IGNORECASE)
+
 _CONTRACT_LONGTERM_RE = re.compile(r'\blong[\s-]term\s+(?:contract|deal)\b', re.IGNORECASE)
 
 
 def _extract_contract(text):
+    # 1. "6+1 year deal" — most specific, try first
+    m = _CONTRACT_PLUS_RE.search(text)
+    if m:
+        return f"{m.group(1)}+{m.group(2)} Year Deal"
+
+    # 2. "six-year contract/deal" / "6 years deal"
     m = _CONTRACT_YEARS_RE.search(text)
     if m:
         n = _CONTRACT_WORD_NUM.get(m.group(1).lower(), m.group(1))
         return f"{n}-Year Deal"
+
+    # 3. "signs/signed/agreed a six-year" (no trailing noun)
+    m = _CONTRACT_SIGNS_RE.search(text)
+    if m:
+        n = _CONTRACT_WORD_NUM.get(m.group(1).lower(), m.group(1))
+        return f"{n}-Year Deal"
+
+    # 4. "contract until June 2031"
     m = _CONTRACT_UNTIL_RE.search(text)
     if m:
         return f"Until {m.group(1).title()}"
+
+    # 5. Bare "until 2031" / "until June 2031" (follow-up tweets)
+    m = _CONTRACT_UNTIL_BARE_RE.search(text)
+    if m:
+        month = m.group(1).strip().title() if m.group(1) else ""
+        year = m.group(2)
+        return f"Until {(month + ' ' + year).strip()}"
+
     if _CONTRACT_LONGTERM_RE.search(text):
         return "Long-Term Deal"
     return None

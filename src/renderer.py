@@ -5,9 +5,11 @@ Handles generation of cinematic transfer and injury cards via PIL and Playwright
 
 import os
 import re
+import json
 import base64
 import hashlib
 import urllib.request
+import urllib.parse
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -95,10 +97,15 @@ def _load_crest(club_key, box=120):
 
 def _draw_wordmark(draw, xy):
     x, y = xy
-    f = get_premium_font(46, "Black")
+    f = get_premium_font(48, "Black")
+    # FPL in white with glow
+    _draw_text_shadow(draw, (x, y), "FPL", f, (255, 255, 255),
+                      shadow=(255, 255, 255), offset=0)
     _draw_text_shadow(draw, (x, y), "FPL", f, (255, 255, 255), offset=2)
     fpl_w = draw.textlength("FPL ", font=f)
-    _draw_text_shadow(draw, (x + fpl_w, y), "VORTEX", f, (84, 224, 124), offset=2)
+    # VORTEX in bright green
+    _draw_text_shadow(draw, (x + fpl_w, y), "VORTEX", f, (84, 224, 124),
+                      shadow=(0, 120, 80), offset=2)
 
 def get_club_color(club_key):
     color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
@@ -143,6 +150,66 @@ def _crest_uri(club_key) -> str:
     return _data_uri(cp)
 
 
+def _pl_logo_uri() -> str:
+    """Download and cache the Premier League logo as a data-URI."""
+    pl_path = Path("logos/PremierLeague.png")
+    if not pl_path.exists():
+        _download_asset(
+            "https://resources.premierleague.com/premierleague/photos/pl-main-logo.png",
+            pl_path
+        )
+    return _data_uri(pl_path)
+
+
+def _wikimedia_photo_uri(player_name: str) -> str:
+    """Fetch a Creative Commons player photo from Wikimedia Commons.
+
+    Used as a fallback when the FPL API has no photo (e.g. brand-new signings).
+    Images are cached locally so we only hit Wikipedia once per player.
+    Returns '' on any failure — callers are never blocked.
+    """
+    if not player_name:
+        return ""
+    cache_key = hashlib.md5(player_name.lower().encode()).hexdigest()[:12]
+    cache_path = Path(f"players/wiki_{cache_key}.png")
+    # Negative-cache sentinel: a tiny file means we tried and found nothing
+    if cache_path.exists():
+        return _data_uri(cache_path) if cache_path.stat().st_size >= 500 else ""
+
+    try:
+        params = urllib.parse.urlencode({
+            "action": "query",
+            "titles": player_name,
+            "prop": "pageimages",
+            "pithumbsize": 300,
+            "format": "json",
+            "redirects": 1,
+        })
+        url = f"https://en.wikipedia.org/w/api.php?{params}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "FPLVortexBot/1.0 (football automation; non-commercial)"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        pages = data.get("query", {}).get("pages", {})
+        img_url = next(
+            (p.get("thumbnail", {}).get("source", "")
+             for p in pages.values()
+             if p.get("thumbnail")),
+            "",
+        )
+        if img_url and _download_asset(img_url, cache_path):
+            print(f"[WIKI] photo found for {player_name!r}")
+            return _data_uri(cache_path)
+    except Exception as exc:
+        print(f"[WIKI] photo lookup failed for {player_name!r}: {exc}")
+
+    # Write a tiny sentinel so we don't retry on every run
+    cache_path.write_bytes(b"x")
+    return ""
+
+
 def _img_assets(story):
     """Shared: resolve the verified player, display name, brand logo and player photo."""
     fpl = fetch_fpl_data()
@@ -168,6 +235,10 @@ def _img_assets(story):
         if not mp.exists():
             _download_asset(murl, mp)
         photo_uri = _data_uri(mp)
+    # Wikimedia Commons fallback: used for players not yet in the FPL photo DB
+    # (brand-new signings, foreign arrivals). CC-licensed images only.
+    if not photo_uri:
+        photo_uri = _wikimedia_photo_uri(player_name)
 
     return player_el, player_name, logo_uri, photo_uri
 
@@ -196,9 +267,14 @@ def _build_card_html(player_name, status, badge_color, club_color,
 
     rows: list of (label, label_color, value_html, value_style).
     """
-    logo_html = (f'<img src="{logo_uri}" style="width:64px;height:64px;object-fit:contain;'
-                 f'margin-right:16px;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.6));" />') if logo_uri else ''
+    logo_html = (f'<img src="{logo_uri}" style="width:100px;height:100px;object-fit:contain;'
+                 f'margin-right:20px;flex-shrink:0;filter:drop-shadow(0 3px 10px rgba(0,0,0,0.7));" />') if logo_uri else ''
     crest_badge_html = f'<img class="crest-badge" src="{crest_uri}" />' if crest_uri else ''
+
+    # Premier League logo in top-left of photo panel (replaces national team flag)
+    pl_uri = _pl_logo_uri()
+    pl_badge_html = f'<img class="pl-badge" src="{pl_uri}" />' if pl_uri else ''
+
     if photo_uri:
         photo_img_html = f'<img src="{photo_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />'
     elif crest_uri:
@@ -212,40 +288,65 @@ def _build_card_html(player_name, status, badge_color, club_color,
         for (label, color, value, vstyle) in rows)
 
     return f"""<!DOCTYPE html><html><head><style>
-        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@700;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,700;0,900;1,900&display=swap');
         body {{ margin:0; padding:0; width:1380px; height:776px; background:linear-gradient(135deg,#0b1220 0%,#1c2846 100%); font-family:'Montserrat',sans-serif; color:white; display:flex; overflow:hidden; position:relative; }}
         .accent-slash {{ position:absolute; width:200%; height:100px; background:{club_color}; opacity:0.15; transform:rotate(-35deg) translateY(-200px); z-index:0; }}
         .accent-slash:nth-child(2) {{ transform:rotate(-35deg) translateY(200px); opacity:0.05; }}
         .container {{ width:100%; height:100%; display:flex; flex-direction:row; padding:40px 60px 80px 60px; box-sizing:border-box; z-index:1; }}
         .left-column {{ flex:1; min-width:0; display:flex; flex-direction:column; justify-content:flex-start; padding-top:30px; }}
         .right-column {{ width:420px; flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; }}
-        .wordmark {{ font-size:52px; font-weight:900; margin-bottom:24px; text-shadow:0 4px 10px rgba(0,0,0,0.5); display:flex; align-items:center; }}
-        .wordmark span {{ color:#54e07c; margin-left:10px; }}
+
+        /* ── Artistic FPL VORTEX wordmark ── */
+        .wordmark {{ display:flex; align-items:center; margin-bottom:20px; min-height:108px; }}
+        .brand-text {{ display:flex; align-items:baseline; gap:0; line-height:1; }}
+        .brand-fpl {{
+            font-size:56px; font-weight:900; letter-spacing:5px;
+            color:#ffffff;
+            text-shadow:0 0 30px rgba(255,255,255,0.45), 0 0 60px rgba(255,255,255,0.15), 0 4px 14px rgba(0,0,0,0.7);
+        }}
+        .brand-vortex {{
+            font-size:56px; font-weight:900; letter-spacing:5px; margin-left:10px;
+            background:linear-gradient(90deg,#54e07c 0%,#00ffb3 45%,#00d4ff 100%);
+            -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
+            filter:drop-shadow(0 0 14px rgba(84,224,124,0.65)) drop-shadow(0 0 28px rgba(0,212,255,0.35));
+        }}
+
         .status-badge {{ display:inline-block; background:{badge_color}; color:#fff; padding:14px 30px; font-size:42px; font-weight:900; border-radius:12px; letter-spacing:3px; margin-bottom:20px; text-transform:uppercase; box-shadow:0 8px 20px rgba(0,0,0,0.4); }}
         .player-name {{ font-size:88px; font-weight:900; line-height:1.0; text-transform:uppercase; margin-bottom:28px; text-shadow:0 8px 20px rgba(0,0,0,0.6); white-space:nowrap; max-width:100%; }}
         .details-grid {{ display:grid; grid-template-columns:max-content 1fr; gap:18px 40px; font-size:44px; align-items:center; }}
         .detail-label {{ font-weight:700; text-transform:uppercase; }}
         .detail-value {{ font-weight:900; text-transform:uppercase; color:white; display:flex; align-items:center; }}
         .photo-panel {{ width:370px; height:560px; background:rgba(255,255,255,0.03); border:2px solid rgba(255,255,255,0.1); border-radius:24px; display:flex; align-items:center; justify-content:center; box-shadow:0 20px 50px rgba(0,0,0,0.5); position:relative; overflow:hidden; }}
-        .crest-badge {{ position:absolute; top:18px; right:18px; width:120px; height:120px; object-fit:contain; z-index:2; filter:drop-shadow(0 4px 8px rgba(0,0,0,0.6)); }}
         .photo-panel::before {{ content:''; position:absolute; top:0; left:0; right:0; bottom:0; background:radial-gradient(circle at center,{club_color} 0%,transparent 70%); opacity:0.2; z-index:0; }}
+        /* Club crest — top-right of photo panel */
+        .crest-badge {{ position:absolute; top:18px; right:18px; width:110px; height:110px; object-fit:contain; z-index:2; filter:drop-shadow(0 4px 8px rgba(0,0,0,0.6)); }}
+        /* Premier League logo — top-left of photo panel (replaces national team flag) */
+        .pl-badge {{ position:absolute; top:18px; left:18px; width:72px; height:72px; object-fit:contain; z-index:2; filter:drop-shadow(0 4px 8px rgba(0,0,0,0.8)); }}
         .footer {{ position:absolute; bottom:0; left:0; width:100%; height:65px; background:#141821; display:flex; align-items:center; justify-content:space-between; padding:0 60px; box-sizing:border-box; font-size:24px; font-weight:700; color:#bec8dc; border-top:4px solid {club_color}; }}
     </style></head><body>
         <div class="accent-slash"></div><div class="accent-slash"></div>
         <div class="container">
             <div class="left-column">
-                <div class="wordmark">{logo_html}FPL<span>VORTEX</span></div>
+                <div class="wordmark">
+                    {logo_html}
+                    <div class="brand-text">
+                        <span class="brand-fpl">FPL</span><span class="brand-vortex">VORTEX</span>
+                    </div>
+                </div>
                 <div><div class="status-badge">{status}</div></div>
                 <div class="player-name">{player_name}</div>
                 <div class="details-grid">{rows_html}</div>
             </div>
-            <div class="right-column"><div class="photo-panel">{crest_badge_html}{photo_img_html}</div></div>
+            <div class="right-column">
+                <div class="photo-panel">
+                    {pl_badge_html}
+                    {crest_badge_html}
+                    {photo_img_html}
+                </div>
+            </div>
         </div>
         <div class="footer"><div>Source: {source_text} | @FPLVortex</div><div style="color:#d4af37;">{footer_tag}</div></div>
         <script>
-            // Shrink the player name to ALWAYS fit the left column — never clip or
-            // ellipsize. Measure against the real available width (the parent),
-            // and run after full load so font/layout metrics are final.
             function fitPlayerName() {{
                 const nameEl = document.querySelector('.player-name');
                 if (!nameEl) return;
