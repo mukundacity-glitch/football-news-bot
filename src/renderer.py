@@ -95,10 +95,15 @@ def _load_crest(club_key, box=120):
 
 def _draw_wordmark(draw, xy):
     x, y = xy
-    f = get_premium_font(46, "Black")
+    f = get_premium_font(48, "Black")
+    # FPL in white with glow
+    _draw_text_shadow(draw, (x, y), "FPL", f, (255, 255, 255),
+                      shadow=(255, 255, 255), offset=0)
     _draw_text_shadow(draw, (x, y), "FPL", f, (255, 255, 255), offset=2)
     fpl_w = draw.textlength("FPL ", font=f)
-    _draw_text_shadow(draw, (x + fpl_w, y), "VORTEX", f, (84, 224, 124), offset=2)
+    # VORTEX in bright green
+    _draw_text_shadow(draw, (x + fpl_w, y), "VORTEX", f, (84, 224, 124),
+                      shadow=(0, 120, 80), offset=2)
 
 def get_club_color(club_key):
     color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
@@ -141,6 +146,17 @@ def _crest_uri(club_key) -> str:
     if not cp.exists() and FPL_LOGO_IDS.get(safe):
         _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS[safe]}.png", cp)
     return _data_uri(cp)
+
+
+def _pl_logo_uri() -> str:
+    """Download and cache the Premier League logo as a data-URI."""
+    pl_path = Path("logos/PremierLeague.png")
+    if not pl_path.exists():
+        _download_asset(
+            "https://resources.premierleague.com/premierleague/photos/pl-main-logo.png",
+            pl_path
+        )
+    return _data_uri(pl_path)
 
 
 def _img_assets(story):
@@ -196,9 +212,14 @@ def _build_card_html(player_name, status, badge_color, club_color,
 
     rows: list of (label, label_color, value_html, value_style).
     """
-    logo_html = (f'<img src="{logo_uri}" style="width:64px;height:64px;object-fit:contain;'
-                 f'margin-right:16px;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.6));" />') if logo_uri else ''
+    logo_html = (f'<img src="{logo_uri}" style="width:68px;height:68px;object-fit:contain;'
+                 f'margin-right:16px;filter:drop-shadow(0 2px 8px rgba(0,0,0,0.7));" />') if logo_uri else ''
     crest_badge_html = f'<img class="crest-badge" src="{crest_uri}" />' if crest_uri else ''
+
+    # Premier League logo in top-left of photo panel (replaces national team flag)
+    pl_uri = _pl_logo_uri()
+    pl_badge_html = f'<img class="pl-badge" src="{pl_uri}" />' if pl_uri else ''
+
     if photo_uri:
         photo_img_html = f'<img src="{photo_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />'
     elif crest_uri:
@@ -212,40 +233,65 @@ def _build_card_html(player_name, status, badge_color, club_color,
         for (label, color, value, vstyle) in rows)
 
     return f"""<!DOCTYPE html><html><head><style>
-        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@700;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,700;0,900;1,900&display=swap');
         body {{ margin:0; padding:0; width:1380px; height:776px; background:linear-gradient(135deg,#0b1220 0%,#1c2846 100%); font-family:'Montserrat',sans-serif; color:white; display:flex; overflow:hidden; position:relative; }}
         .accent-slash {{ position:absolute; width:200%; height:100px; background:{club_color}; opacity:0.15; transform:rotate(-35deg) translateY(-200px); z-index:0; }}
         .accent-slash:nth-child(2) {{ transform:rotate(-35deg) translateY(200px); opacity:0.05; }}
         .container {{ width:100%; height:100%; display:flex; flex-direction:row; padding:40px 60px 80px 60px; box-sizing:border-box; z-index:1; }}
         .left-column {{ flex:1; min-width:0; display:flex; flex-direction:column; justify-content:flex-start; padding-top:30px; }}
         .right-column {{ width:420px; flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; }}
-        .wordmark {{ font-size:52px; font-weight:900; margin-bottom:24px; text-shadow:0 4px 10px rgba(0,0,0,0.5); display:flex; align-items:center; }}
-        .wordmark span {{ color:#54e07c; margin-left:10px; }}
+
+        /* ── Artistic FPL VORTEX wordmark ── */
+        .wordmark {{ display:flex; align-items:center; margin-bottom:24px; }}
+        .brand-text {{ display:flex; align-items:baseline; gap:0; line-height:1; }}
+        .brand-fpl {{
+            font-size:56px; font-weight:900; letter-spacing:5px;
+            color:#ffffff;
+            text-shadow:0 0 30px rgba(255,255,255,0.45), 0 0 60px rgba(255,255,255,0.15), 0 4px 14px rgba(0,0,0,0.7);
+        }}
+        .brand-vortex {{
+            font-size:56px; font-weight:900; letter-spacing:5px; margin-left:10px;
+            background:linear-gradient(90deg,#54e07c 0%,#00ffb3 45%,#00d4ff 100%);
+            -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
+            filter:drop-shadow(0 0 14px rgba(84,224,124,0.65)) drop-shadow(0 0 28px rgba(0,212,255,0.35));
+        }}
+
         .status-badge {{ display:inline-block; background:{badge_color}; color:#fff; padding:14px 30px; font-size:42px; font-weight:900; border-radius:12px; letter-spacing:3px; margin-bottom:20px; text-transform:uppercase; box-shadow:0 8px 20px rgba(0,0,0,0.4); }}
         .player-name {{ font-size:88px; font-weight:900; line-height:1.0; text-transform:uppercase; margin-bottom:28px; text-shadow:0 8px 20px rgba(0,0,0,0.6); white-space:nowrap; max-width:100%; }}
         .details-grid {{ display:grid; grid-template-columns:max-content 1fr; gap:18px 40px; font-size:44px; align-items:center; }}
         .detail-label {{ font-weight:700; text-transform:uppercase; }}
         .detail-value {{ font-weight:900; text-transform:uppercase; color:white; display:flex; align-items:center; }}
         .photo-panel {{ width:370px; height:560px; background:rgba(255,255,255,0.03); border:2px solid rgba(255,255,255,0.1); border-radius:24px; display:flex; align-items:center; justify-content:center; box-shadow:0 20px 50px rgba(0,0,0,0.5); position:relative; overflow:hidden; }}
-        .crest-badge {{ position:absolute; top:18px; right:18px; width:120px; height:120px; object-fit:contain; z-index:2; filter:drop-shadow(0 4px 8px rgba(0,0,0,0.6)); }}
         .photo-panel::before {{ content:''; position:absolute; top:0; left:0; right:0; bottom:0; background:radial-gradient(circle at center,{club_color} 0%,transparent 70%); opacity:0.2; z-index:0; }}
+        /* Club crest — top-right of photo panel */
+        .crest-badge {{ position:absolute; top:18px; right:18px; width:110px; height:110px; object-fit:contain; z-index:2; filter:drop-shadow(0 4px 8px rgba(0,0,0,0.6)); }}
+        /* Premier League logo — top-left of photo panel (replaces national team flag) */
+        .pl-badge {{ position:absolute; top:18px; left:18px; width:72px; height:72px; object-fit:contain; z-index:2; filter:drop-shadow(0 4px 8px rgba(0,0,0,0.8)); }}
         .footer {{ position:absolute; bottom:0; left:0; width:100%; height:65px; background:#141821; display:flex; align-items:center; justify-content:space-between; padding:0 60px; box-sizing:border-box; font-size:24px; font-weight:700; color:#bec8dc; border-top:4px solid {club_color}; }}
     </style></head><body>
         <div class="accent-slash"></div><div class="accent-slash"></div>
         <div class="container">
             <div class="left-column">
-                <div class="wordmark">{logo_html}FPL<span>VORTEX</span></div>
+                <div class="wordmark">
+                    {logo_html}
+                    <div class="brand-text">
+                        <span class="brand-fpl">FPL</span><span class="brand-vortex">VORTEX</span>
+                    </div>
+                </div>
                 <div><div class="status-badge">{status}</div></div>
                 <div class="player-name">{player_name}</div>
                 <div class="details-grid">{rows_html}</div>
             </div>
-            <div class="right-column"><div class="photo-panel">{crest_badge_html}{photo_img_html}</div></div>
+            <div class="right-column">
+                <div class="photo-panel">
+                    {pl_badge_html}
+                    {crest_badge_html}
+                    {photo_img_html}
+                </div>
+            </div>
         </div>
         <div class="footer"><div>Source: {source_text} | @FPLVortex</div><div style="color:#d4af37;">{footer_tag}</div></div>
         <script>
-            // Shrink the player name to ALWAYS fit the left column — never clip or
-            // ellipsize. Measure against the real available width (the parent),
-            // and run after full load so font/layout metrics are final.
             function fitPlayerName() {{
                 const nameEl = document.querySelector('.player-name');
                 if (!nameEl) return;
