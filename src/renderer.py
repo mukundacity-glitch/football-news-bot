@@ -212,8 +212,8 @@ def _build_card_html(player_name, status, badge_color, club_color,
 
     rows: list of (label, label_color, value_html, value_style).
     """
-    logo_html = (f'<img src="{logo_uri}" style="width:68px;height:68px;object-fit:contain;'
-                 f'margin-right:16px;filter:drop-shadow(0 2px 8px rgba(0,0,0,0.7));" />') if logo_uri else ''
+    logo_html = (f'<img src="{logo_uri}" style="width:100px;height:100px;object-fit:contain;'
+                 f'margin-right:20px;flex-shrink:0;filter:drop-shadow(0 3px 10px rgba(0,0,0,0.7));" />') if logo_uri else ''
     crest_badge_html = f'<img class="crest-badge" src="{crest_uri}" />' if crest_uri else ''
 
     # Premier League logo in top-left of photo panel (replaces national team flag)
@@ -242,7 +242,7 @@ def _build_card_html(player_name, status, badge_color, club_color,
         .right-column {{ width:420px; flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; }}
 
         /* ── Artistic FPL VORTEX wordmark ── */
-        .wordmark {{ display:flex; align-items:center; margin-bottom:24px; }}
+        .wordmark {{ display:flex; align-items:center; margin-bottom:20px; min-height:108px; }}
         .brand-text {{ display:flex; align-items:baseline; gap:0; line-height:1; }}
         .brand-fpl {{
             font-size:56px; font-weight:900; letter-spacing:5px;
