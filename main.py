@@ -105,7 +105,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-17-fotmob-direct-v4"
+_LOGIC_VER = "2026-07-18-fpl-injuries-v5"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -636,7 +636,16 @@ def classify_post(story, sources):
     has_official = 1 in tiers
     n_elite = sum(1 for t in tiers if t == 2)
     if story["event"] in ("injury", "suspension"):
-        if has_official or n_elite >= 1: return "confirmed"
+        # OFFICIAL_INJURY_ACCOUNTS (e.g. PremierInjuries) are authoritative for
+        # injury/suspension news even though they aren't in the general OFFICIAL_ACCOUNTS
+        # tier-1 set used for transfers. Check them explicitly here so their reports
+        # are never silently dropped.
+        has_injury_official = any(
+            (s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS
+            for s in sources
+        )
+        if has_official or has_injury_official or n_elite >= 1:
+            return "confirmed"
         return None
 
     # Manager / staff: ONLY a confirmed appointment or departure is posted.
@@ -1588,6 +1597,124 @@ def _ingest_fotmob_direct(fotmob_list, story_map, data, fpl):
     return added
 
 
+def _ingest_fpl_injuries(story_map, data, fpl):
+    """Create injury/suspension stories from FPL bootstrap player fitness data.
+
+    The FPL API is the official Premier League injury record — the same data
+    shown on premierleague.com/latest-player-injuries, updated directly by
+    clubs. Since we already fetch this every run, querying it here costs
+    nothing extra and fills the gap when no journalist has tweeted an update.
+
+    Eligible players: status 'i' (injured), 'd' (doubtful), 's' (suspended),
+    'u' (unavailable) with a non-empty news field whose hash hasn't been seen
+    before (so re-runs don't re-post unchanged statuses).
+
+    Source is tagged as 'OfficialFPL' — tier 1 — so it sails through every
+    pipeline gate that requires an official account.
+    """
+    if not fpl:
+        return 0
+    added = 0
+    elements = fpl.get("elements", [])
+    teams = {t["id"]: t for t in fpl.get("teams", [])}
+    seen_hashes = {
+        s.get("fpl_news_hash")
+        for s in data.get("stories", {}).values()
+        if s.get("fpl_news_hash")
+    }
+
+    for el in elements:
+        status = el.get("status", "a")
+        news = (el.get("news") or "").strip()
+        if status not in ("i", "d", "s", "u") or not news:
+            continue
+
+        news_hash = hashlib.md5(news.encode()).hexdigest()[:16]
+        if news_hash in seen_hashes:
+            continue  # already posted this exact status message
+
+        player = f"{el.get('first_name', '')} {el.get('second_name', '')}".strip()
+        if not player:
+            continue
+
+        team_id = el.get("team", 0)
+        team = teams.get(team_id, {})
+        club_name = team.get("name", "")
+        club_short = team.get("short_name", "")
+        club_key = resolve_club_key(club_name) or resolve_club_key(club_short)
+        if not club_key:
+            continue
+
+        ev = "suspension" if status == "s" else "injury"
+        p_slug = player.lower().replace(" ", "_")
+        story_key = f"{p_slug}_{club_key.lower()}_fpl_{ev}_{news_hash}"
+
+        if story_key in story_map:
+            continue
+
+        # Simple diagnosis extraction from the FPL news string
+        news_lower = news.lower()
+        diagnosis = next(
+            (w.title() for w in (
+                "hamstring", "knee", "ankle", "thigh", "calf", "back",
+                "shoulder", "groin", "achilles", "foot", "hip", "muscle",
+                "suspended", "ban",
+            ) if w in news_lower),
+            None,
+        )
+        ret_m = re.search(
+            r'(?:return|back|available|fit)\s+(?:in\s+)?'
+            r'(\d+\s+weeks?|mid-\w+|\w+\s+\d{4}|next\s+\w+)',
+            news_lower,
+        )
+        expected_return = ret_m.group(0).title() if ret_m else None
+
+        stage = {"i": 3, "d": 2, "s": 3, "u": 3}.get(status, 2)
+        raw = news
+        story = {
+            "is_football": True, "event": ev,
+            "player": player,
+            "to_key": club_key, "to_club": club_name,
+            "from_key": None, "from_club": None,
+            "fee": None, "contract": None,
+            "diagnosis": diagnosis, "expected_return": expected_return,
+            "stage": stage, "collapsed": False, "historical": False,
+            "fotmob_confirmed": False, "fpl_injury": True,
+            "from_video": False, "has_written_claim": True,
+            "raw_text": raw, "body": raw,
+            "headline": f"{player} — {ev} update",
+            "id": f"fpl_{ev}_{el.get('code', p_slug)}_{news_hash}",
+            "key": story_key, "text": raw,
+            "sources": ["OfficialFPL"],
+            "fpl_news_hash": news_hash,
+            "reason": "fpl_injury_feed",
+        }
+        news_added = el.get("news_added")
+        if news_added:
+            story["created_at"] = news_added
+
+        valid, vwhy = validate_story(story, fpl, sources=["OfficialFPL"])
+        if not valid:
+            print(f"   [FPL-INJURY] skip ({vwhy}): {player!r} @ {club_key!r}")
+            continue
+
+        cres = score_confidence(story, fpl, sources=["OfficialFPL"])
+        story["confidence_score"] = cres["score"]
+        story["confidence_decision"] = cres["decision"]
+        if cres["decision"] == _conf.SKIP:
+            print(f"   [FPL-INJURY] low-conf ({cres['score']}): {player!r}")
+            continue
+
+        story_map[story_key] = story
+        added += 1
+        print(f"   [FPL-INJURY] queued: {player!r} @ {club_key!r} "
+              f"status={status!r} — {news[:60]!r}")
+
+    if added:
+        print(f"  [FPL-INJURY] {added} injury/suspension update(s) from FPL feed")
+    return added
+
+
 async def scrape(data, read_client):
     fpl = fetch_fpl_data()
     # FotMob confirmed-transfer list — fetched once per run and used as a
@@ -1759,6 +1886,12 @@ async def scrape(data, read_client):
     # Runs after the full journalist loop so we don't duplicate anything already caught.
     if fotmob_list:
         _ingest_fotmob_direct(fotmob_list, story_map, data, fpl)
+
+    # FPL INJURY FEED: official PL injury/suspension data from the FPL bootstrap
+    # (same source as premierleague.com/latest-player-injuries). Runs after the
+    # journalist loop so journalist-sourced injury stories take priority and FPL
+    # entries only fill gaps where no tweet was found.
+    _ingest_fpl_injuries(story_map, data, fpl)
 
     data["last_read_health"] = {
         "accounts_total": accounts_total,

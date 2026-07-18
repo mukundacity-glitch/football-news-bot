@@ -5,9 +5,11 @@ Handles generation of cinematic transfer and injury cards via PIL and Playwright
 
 import os
 import re
+import json
 import base64
 import hashlib
 import urllib.request
+import urllib.parse
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -159,6 +161,55 @@ def _pl_logo_uri() -> str:
     return _data_uri(pl_path)
 
 
+def _wikimedia_photo_uri(player_name: str) -> str:
+    """Fetch a Creative Commons player photo from Wikimedia Commons.
+
+    Used as a fallback when the FPL API has no photo (e.g. brand-new signings).
+    Images are cached locally so we only hit Wikipedia once per player.
+    Returns '' on any failure — callers are never blocked.
+    """
+    if not player_name:
+        return ""
+    cache_key = hashlib.md5(player_name.lower().encode()).hexdigest()[:12]
+    cache_path = Path(f"players/wiki_{cache_key}.png")
+    # Negative-cache sentinel: a tiny file means we tried and found nothing
+    if cache_path.exists():
+        return _data_uri(cache_path) if cache_path.stat().st_size >= 500 else ""
+
+    try:
+        params = urllib.parse.urlencode({
+            "action": "query",
+            "titles": player_name,
+            "prop": "pageimages",
+            "pithumbsize": 300,
+            "format": "json",
+            "redirects": 1,
+        })
+        url = f"https://en.wikipedia.org/w/api.php?{params}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "FPLVortexBot/1.0 (football automation; non-commercial)"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        pages = data.get("query", {}).get("pages", {})
+        img_url = next(
+            (p.get("thumbnail", {}).get("source", "")
+             for p in pages.values()
+             if p.get("thumbnail")),
+            "",
+        )
+        if img_url and _download_asset(img_url, cache_path):
+            print(f"[WIKI] photo found for {player_name!r}")
+            return _data_uri(cache_path)
+    except Exception as exc:
+        print(f"[WIKI] photo lookup failed for {player_name!r}: {exc}")
+
+    # Write a tiny sentinel so we don't retry on every run
+    cache_path.write_bytes(b"x")
+    return ""
+
+
 def _img_assets(story):
     """Shared: resolve the verified player, display name, brand logo and player photo."""
     fpl = fetch_fpl_data()
@@ -184,6 +235,10 @@ def _img_assets(story):
         if not mp.exists():
             _download_asset(murl, mp)
         photo_uri = _data_uri(mp)
+    # Wikimedia Commons fallback: used for players not yet in the FPL photo DB
+    # (brand-new signings, foreign arrivals). CC-licensed images only.
+    if not photo_uri:
+        photo_uri = _wikimedia_photo_uri(player_name)
 
     return player_el, player_name, logo_uri, photo_uri
 
