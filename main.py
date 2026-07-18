@@ -105,7 +105,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-17-contract-enrich-v3"
+_LOGIC_VER = "2026-07-17-fotmob-direct-v4"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -730,14 +730,21 @@ def validate_story(story, fpl_data=None, sources=None):
     # manager candidate.
     if ev == "manager" and fpl_data and find_player_in_fpl(player, fpl_data) is not None:
         return False, "fpl_player_not_manager"
-    if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
+    # Single-token name check. FotMob uses full player names from its own database
+    # so single-token names there are authentic (e.g. "Rodrygo") — bypass for those.
+    if (ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay")
+            and len(_ptokens) < 2
+            and not story.get("fotmob_confirmed")):
+        return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
 
     # ACCURACY GATE: post about FPL-verified players, OR — when the source is a
-    # reliable reporter/website (tiers 1-3) — players not yet in the FPL dataset.
+    # reliable reporter/website (tiers 1-3) OR a FotMob-confirmed deal — players
+    # not yet in the FPL dataset. FotMob only lists completed deals, so its player
+    # names are authoritative; they must still have a resolved PL club to be relevant.
     PERSON_EVENTS = ("transfer", "loan", "loan_option", "renewal", "stay", "injury", "suspension", "manager")
     if fpl_data and ev in PERSON_EVENTS and find_player_in_fpl(player, fpl_data) is None:
-        if not is_reliable_source(sources):
+        if not is_reliable_source(sources) and not story.get("fotmob_confirmed"):
             return False, "not_verified_pl_player"
         # Reliable source but unverified player still needs a PL-club anchor so we
         # only post genuinely Premier-League-related news.
@@ -856,7 +863,9 @@ def verify_card_data(item: dict, fpl_data=None):
     """
     report = []
     ev = item.get("event")
-    reliable = is_reliable_source(item.get("sources"))
+    # FotMob-confirmed deals are authoritative completed transfers — treat them
+    # the same as a reliable journalist source for identity + club verification.
+    reliable = is_reliable_source(item.get("sources")) or bool(item.get("fotmob_confirmed"))
     PERSON_EVENTS = ("transfer", "loan", "loan_option", "renewal", "stay",
                      "injury", "suspension", "manager")
 
@@ -1455,6 +1464,130 @@ async def fetch_tweets(read_client, username):
     nit = get_nitter_tweets(username)
     return nit, ("nitter" if nit else "none")
 
+
+def _ingest_fotmob_direct(fotmob_list, story_map, data, fpl):
+    """
+    Build stories directly from FotMob confirmed deals that weren't picked up
+    through the journalist tweet pipeline. FotMob only lists COMPLETED deals
+    (stage 4 / OFFICIAL), so every entry here is ground-truth confirmed.
+
+    Guards:
+    - At least one club must resolve to a known PL key (FPL relevance).
+    - Player must be found in the FPL database (ensures confidence score
+      reaches AUTO_POST without needing journalist corroboration).
+    - Story must not already exist in story_map or in the historical ledger
+      (posted_news.json) to prevent duplicates.
+    """
+    added = 0
+    for entry in fotmob_list:
+        player = (entry.get("player") or "").strip()
+        from_club_raw = (entry.get("from_club") or "").strip()
+        to_club_raw = (entry.get("to_club") or "").strip()
+        fee = entry.get("fee")
+
+        if not player or not to_club_raw:
+            continue
+
+        # Resolve clubs to PL canonical keys
+        from_key = resolve_club_key(from_club_raw)
+        to_key = resolve_club_key(to_club_raw)
+
+        # FPL relevance: at least one end of the transfer must be a PL club
+        if not (from_key or to_key):
+            continue
+
+        # FPL player verification: we require a database match so the confidence
+        # score can reach AUTO_POST (player_verified +25 is the difference between
+        # REVIEW=75 and AUTO_POST=100 for a FotMob deal with no journalist source).
+        el = find_player_in_fpl(player, fpl) if fpl else None
+        if not el:
+            continue  # let journalist pipeline handle players not yet in FPL
+
+        # Use the player's real FPL club as the true origin (never a stale parse)
+        if el.get("team", 0) != 0:
+            true_from = fpl_team_key(el, fpl)
+            if true_from:
+                from_key = true_from
+                from_club_raw = true_from.replace("_", " ")
+
+        # Build a canonical story key (same unordered-club-pair format as main pipeline)
+        anchor_clubs = sorted({k for k in (to_key, from_key) if k})
+        anchor = "_".join(k.lower() for k in anchor_clubs) if anchor_clubs else (to_key or from_key or "unknown").lower()
+        p_slug = player.lower().replace(" ", "_")
+        story_key = f"{p_slug}_{anchor}_transfer"
+
+        # Skip if the journalist pipeline already built this story this run
+        if story_key in story_map:
+            continue
+
+        # Skip if a confirmed (stage 4) story for this player already exists in
+        # the historical ledger — we already posted it in a previous run
+        p_norm = player.lower().strip()
+        already_done = any(
+            (s.get("player") or "").lower().strip() == p_norm
+            and s.get("event") in ("transfer", "loan", "loan_option")
+            and s.get("stage", 0) >= 4
+            for s in data.get("stories", {}).values()
+        )
+        if already_done:
+            continue
+
+        # Synthetic raw_text used for entity/placeholder checks
+        raw = (f"{player} joins {to_club_raw}"
+               + (f" from {from_club_raw}" if from_club_raw else "")
+               + (f" for {fee}" if fee else "")
+               + ". Transfer confirmed.")
+
+        story = {
+            "is_football": True,
+            "event": "transfer",
+            "is_real_move": True,
+            "player": player,
+            "from_club": from_club_raw or (from_key.replace("_", " ") if from_key else None),
+            "to_club": to_club_raw or (to_key.replace("_", " ") if to_key else None),
+            "from_key": from_key,
+            "to_key": to_key,
+            "fee": fee,
+            "contract": None,
+            "stage": 4,
+            "collapsed": False,
+            "historical": False,
+            "fotmob_confirmed": True,
+            "from_video": False,
+            "has_written_claim": True,
+            "raw_text": raw,
+            "body": raw,
+            "headline": f"{player} joins {to_club_raw}",
+            "id": f"fotmob_{(entry.get('player_id') or p_slug)}_{(to_key or to_club_raw).lower().replace(' ', '_')}",
+            "key": story_key,
+            "text": raw,
+            "sources": [],
+            "reason": "new",
+        }
+
+        valid, vwhy = validate_story(story, fpl, sources=[])
+        if not valid:
+            print(f"   [FOTMOB-DIRECT] skip ({vwhy}): {player!r} → {to_club_raw!r}")
+            continue
+
+        cres = score_confidence(story, fpl, sources=[])
+        story["confidence_score"] = cres["score"]
+        story["confidence_decision"] = cres["decision"]
+
+        if cres["decision"] == _conf.SKIP:
+            print(f"   [FOTMOB-DIRECT] low-conf ({cres['score']}): {player!r} → {to_club_raw!r}")
+            continue
+
+        story_map[story_key] = story
+        added += 1
+        print(f"   [FOTMOB-DIRECT] queued: {player!r} → {to_club_raw!r}"
+              + (f" ({fee})" if fee else ""))
+
+    if added:
+        print(f"  [FOTMOB-DIRECT] {added} confirmed deal(s) added from FotMob")
+    return added
+
+
 async def scrape(data, read_client):
     fpl = fetch_fpl_data()
     # FotMob confirmed-transfer list — fetched once per run and used as a
@@ -1620,14 +1753,20 @@ async def scrape(data, read_client):
               "likely expired — update X_AUTH_TOKEN and X_CT0_TOKEN secrets.")
               
     print(f"  [SCRAPE] {seen} football tweets seen, {skipped} skipped, {len(story_map)} candidate stories")
-    
+
+    # FotMob DIRECT INGESTION: add confirmed deals from FotMob that the journalist
+    # pipeline missed (no one we follow tweeted about them, or the tweet was too old).
+    # Runs after the full journalist loop so we don't duplicate anything already caught.
+    if fotmob_list:
+        _ingest_fotmob_direct(fotmob_list, story_map, data, fpl)
+
     data["last_read_health"] = {
         "accounts_total": accounts_total,
         "accounts_failed": accounts_failed,
         "fail_ratio": round(fail_ratio, 3),
         "at": datetime.now(timezone.utc).isoformat(),
     }
-    
+
     ready = []
     for key, st in story_map.items():
         # Re-score confidence against the FINAL, merged source list. Each
