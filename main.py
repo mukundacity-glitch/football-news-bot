@@ -105,7 +105,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-17-no-rumours-v2"
+_LOGIC_VER = "2026-07-17-contract-enrich-v3"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -1577,6 +1577,18 @@ async def scrape(data, read_client):
                     if username not in ex["sources"]: ex["sources"].append(username)
                     if story["stage"] > ex["stage"]:
                         ex.update({k: story[k] for k in story if k != "contradicted"})
+                    else:
+                        # Same or lower stage: enrich the existing story with any
+                        # detail fields this tweet provides but the earlier tweet
+                        # missed. Example: Romano's first tweet confirmed the deal
+                        # (stage 4) but didn't mention the contract length; Ornstein's
+                        # follow-up tweet also at stage 4 says "6-year deal" — the
+                        # contract field should be patched in, not silently ignored.
+                        for _field in ("fee", "contract", "diagnosis", "expected_return"):
+                            if not ex.get(_field) and story.get(_field):
+                                ex[_field] = story[_field]
+                                print(f"   [ENRICH] {key}: patched {_field!r} "
+                                      f"from @{username}: {story[_field]!r}")
                     ex["sources"] = list(dict.fromkeys(ex["sources"]))
             else:
                 prior = data.get("pending", {}).get(key, {}).get("sources", [])
