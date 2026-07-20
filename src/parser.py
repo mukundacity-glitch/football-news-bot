@@ -146,6 +146,41 @@ def _cue_pos(words_list, text):
     return best
 
 
+# A "new deal"/"new contract"/"extension" cue that is NEGATED or actively
+# DECLINED is NOT a renewal — it is an EXIT signal: the player is refusing to
+# extend and is on his way out ("will not sign a new deal", "rejected a new
+# contract", "no intention of extending", "running down his contract"). Reading
+# it as a renewal produces the exact inversion this bot must never post — a
+# "SIGNS A NEW DEAL AT <club>" headline for a player who is actually leaving
+# (the real Maxence Lacroix case: declined a Palace extension, moving to
+# Chelsea). The patterns bind the negation TO the act of signing/extending, so
+# an unrelated negation elsewhere in the tweet ("will not leave, has signed a
+# new deal") does not trip them.
+_RENEWAL_DECLINED_RE = re.compile(
+    r"(?:"
+    # negated FUTURE signing/extension: the negation directly governs the verb
+    r"(?:will\s+not|won'?t|would\s+not|is\s+not\s+(?:going|willing|planning)\s+to|"
+    r"does(?:\s+not|n'?t)\s+want\s+to|has\s+no\s+intention\s+of|no\s+intention\s+of|"
+    r"no\s+plans\s+to|not\s+(?:going|planning|willing)\s+to|reluctant\s+to|"
+    r"unwilling\s+to|decided\s+not\s+to|refus\w+\s+to|set\s+against\b[\w\s]{0,20}?)"
+    r"\s*(?:sign|pen|agree|extend|commit|put\s+pen\s+to\s+paper)\w*"
+    r"|"
+    # explicitly rejected / turned down an offered deal
+    r"(?:reject\w*|turn\w*\s+down|turned\s+down|snub\w*|declin\w*|knock\w*\s+back|"
+    r"rebuff\w*)\s+(?:a\s+|the\s+|any\s+|palace'?s?\s+|club'?s?\s+)*"
+    r"(?:new\s+|fresh\s+|improved\s+|contract\s+|proposed\s+)*"
+    r"(?:deal|contract|extension|terms|offer|renewal)"
+    r"|"
+    # running the current contract down / letting it expire = declining to renew
+    r"(?:run(?:ning|s)?\s+down\s+(?:his|her|their|the)\s+(?:deal|contract)|"
+    r"let\s+\w+\s+(?:deal|contract)\s+(?:run\s+down|expire|lapse))"
+    r")", re.IGNORECASE)
+
+
+def _renewal_declined(text) -> bool:
+    return bool(_RENEWAL_DECLINED_RE.search(text or ""))
+
+
 def _is_bad_name(low: str, event: str) -> bool:
     if event != "manager" and (low in MANAGER_SURNAMES or any(m in low for m in MANAGER_SURNAMES)): 
         return True
@@ -185,21 +220,56 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     # relegate side notes ("...remains focused on the World Cup despite being
     # currently injured") to a trailing clause — a fixed "injury beats
     # transfer" priority misreads that trailing aside as the headline.
+    # A DECLINED renewal ("won't sign a new deal", "rejected a new contract",
+    # "running down his contract") is an EXIT signal, not a contract extension —
+    # suppress the renewal cue so the story is classified as the transfer/exit
+    # it really is, and never headlined as "SIGNS A NEW DEAL AT <club>".
+    _declined = _renewal_declined(tl)
+    _renewal_pos = None if _declined else _cue_pos(
+        ["new deal", "new contract", "signs new", "extension", "renew"], tl)
+
     _event_positions = {
         "suspension": _cue_pos(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl),
         "injury": _cue_pos(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt"], tl),
         "manager": _cue_pos(["sack", "appoint", "head coach", "manager"], tl),
-        "renewal": _cue_pos(["new deal", "new contract", "signs new", "extension", "renew"], tl),
+        "renewal": _renewal_pos,
         "transfer": _cue_pos(["transfer", "sign", "signs", "signed", "joins", "joined",
                               "deal", "medical", "here we go", "official", "confirmed",
-                              "completed", "agreement", "agreed"] + _LOAN_WORDS, tl),
+                              "completed", "agreement", "agreed", "wants to leave",
+                              "seeking a move", "wants out", "move away", "exit",
+                              "wants a move", "transfer request", "up for sale"] + _LOAN_WORDS, tl),
     }
+    # A declined renewal is itself the leaving news: make sure the transfer
+    # bucket registers it (its own text position) so, with the renewal cue now
+    # gone, "transfer" wins and the direction resolver can set the real move.
+    if _declined:
+        dm = _RENEWAL_DECLINED_RE.search(tl)
+        if dm is not None:
+            tp = _event_positions["transfer"]
+            _event_positions["transfer"] = dm.start() if tp is None else min(tp, dm.start())
+
     _stay_pos = _cue_pos(["stay", "staying", "no exit", "not for sale", "remain"], tl)
     if _stay_pos is not None and not has_word(["sign for", "joins", "move to"], tl):
         _event_positions["stay"] = _stay_pos
 
     _found_events = {k: v for k, v in _event_positions.items() if v is not None}
     event = min(_found_events, key=_found_events.get) if _found_events else "transfer"
+
+    # RENEWAL vs TRANSFER disambiguation. A same-club contract extension ("signs
+    # a new deal", "agrees fresh terms", "extends until 2027") also trips the
+    # generic "sign"/"deal" transfer cues, so earliest-cue alone mislabels it a
+    # transfer and then renders a bogus "FROM <club>" transfer card. When a
+    # genuine (non-declined) renewal phrase is present and there is NO signal of
+    # a move to another club, it is a renewal. A DECLINED renewal never reaches
+    # here (its renewal cue was suppressed above), so it stays a transfer/exit.
+    _move_signal = has_word(
+        ["joins", "joined", "joining", "join", "move to", "moves to", "moving to",
+         "sign for", "signs for", "signed for", "signing for", "switch to",
+         "transfer to", "loan", "loans", "here we go", "completed move",
+         "complete move", "set to join", "wants to leave", "seeking a move",
+         "wants out", "move away"], tl)
+    if event == "transfer" and _renewal_pos is not None and not _move_signal:
+        event = "renewal"
     if event == "transfer" and _loan_anywhere:
         event = "loan"
 
@@ -249,8 +319,17 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         if other_clubs:
             to_key = other_clubs[0]
     elif clubs:
-        to_key = clubs[0]
-        if len(clubs) > 1: from_key = clubs[1]
+        if _declined and len(clubs) > 1:
+            # A declined-renewal headline names the player's CURRENT club first
+            # ("won't sign a new deal at <ORIGIN>") and the pursuing club after
+            # — the REVERSE of a normal transfer headline ("<DEST> sign X from
+            # <ORIGIN>"). Applying the normal first-club-is-destination default
+            # here inverts the move (the real Lacroix case: it wrongly made
+            # Crystal Palace the destination). Flip it for declined renewals.
+            from_key, to_key = clubs[0], clubs[1]
+        else:
+            to_key = clubs[0]
+            if len(clubs) > 1: from_key = clubs[1]
 
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
 

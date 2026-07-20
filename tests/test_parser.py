@@ -74,6 +74,47 @@ def test_leading_injury_news_still_classified_as_injury():
     assert s["event"] == "injury", s["event"]
 
 
+# ── declined renewal is an EXIT, not a contract extension ────────────────
+# A "new deal"/"new contract" cue that is NEGATED or rejected must never be
+# read as a renewal — the player is leaving. Reading it as a renewal produces
+# the real Maxence Lacroix failure: a "SIGNS A NEW DEAL AT CRYSTAL PALACE"
+# headline for a player who actually declined that deal to force a move.
+
+def test_declined_new_contract_is_transfer_not_renewal():
+    text = ("Maxence Lacroix has decided not to sign a new contract with Crystal "
+            "Palace and is pushing to join Chelsea. Personal terms are agreed.")
+    s = extract_story_fallback(text, None)
+    assert s["event"] != "renewal", s["event"]
+    assert s["event"] == "transfer", s["event"]
+
+
+def test_rejected_new_deal_is_not_renewal():
+    text = "Player has rejected a new deal at his club and wants to leave this summer."
+    s = extract_story_fallback(text, None)
+    assert s["event"] != "renewal", s["event"]
+
+
+def test_wont_sign_new_deal_is_not_renewal():
+    text = "The forward will not sign a new deal and is seeking a move away from the club."
+    s = extract_story_fallback(text, None)
+    assert s["event"] != "renewal", s["event"]
+
+
+def test_genuine_renewal_still_classified_as_renewal():
+    # Sanity: an ACTUAL contract extension must still be a renewal — the
+    # decline detector must not swallow real "signs a new deal" news.
+    text = "Bukayo Saka signs a new deal at Arsenal, committing his future until 2027."
+    s = extract_story_fallback(text, None)
+    assert s["event"] == "renewal", s["event"]
+
+
+def test_negation_of_unrelated_verb_does_not_break_renewal():
+    # "will not leave" negates leaving, not signing — this IS a renewal.
+    text = "Saka will not leave and has signed a new contract at Arsenal."
+    s = extract_story_fallback(text, None)
+    assert s["event"] == "renewal", s["event"]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

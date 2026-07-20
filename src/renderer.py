@@ -280,13 +280,18 @@ def create_transfer_image(story, sources, filename, collapsed=False):
 
     ev = (story.get("event") or "transfer").lower()
     is_staff = ev == "manager"
+    is_renewal = ev in ("renewal", "stay")
     mode = story.get("mode", "confirmed")
     # Footer tag ALWAYS states who the subject is: MANAGER / a specific STAFF role
-    # (e.g. "GOALKEEPING COACH") / TRANSFER — so a coach is never shown as a player.
+    # (e.g. "GOALKEEPING COACH") / CONTRACT (a renewal, NOT a move) / TRANSFER —
+    # so a coach is never shown as a player and a contract extension is never
+    # dressed up as a transfer.
     role = (story.get("staff_role") or "").strip()
     if is_staff:
         footer_tag = (role.upper() if role and role.lower() != "staff"
                       else "MANAGER" if "manager" in role.lower() or not role else "STAFF")
+    elif is_renewal:
+        footer_tag = "CONTRACT"
     else:
         footer_tag = "TRANSFER"
 
@@ -300,6 +305,11 @@ def create_transfer_image(story, sources, filename, collapsed=False):
             status, badge = "DEPARTURE", "#e31e24"
         else:
             status, badge = "LINKED", "#f5c518"      # speculation, not confirmed
+    elif is_renewal:
+        # A contract extension is NOT a transfer — no route, no fee, no
+        # "TRANSFER RUMOUR" label. It stays at the player's own club.
+        status = "STAYING" if ev == "stay" else "NEW CONTRACT"
+        badge = "#54e07c"
     elif mode == "rumour" or not to_key:
         # No verified destination -> never claim CONFIRMED/OFFICIAL.
         status, badge = "TRANSFER RUMOUR", "#e31e24"
@@ -307,22 +317,32 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         status = "OFFICIAL" if story.get("stage", 1) >= 4 else "CONFIRMED"
         badge = "#54e07c"
 
-    club_color = get_club_color(to_key or from_key)
-    main_crest = _crest_uri(to_key or from_key)
+    # A renewal has a single club (the player's current side): prefer whichever
+    # of from/to is set, and never draw a FROM->TO route for it.
+    renewal_key = from_key or to_key
+    renewal_club = from_club or to_club
+    club_color = get_club_color(renewal_key if is_renewal else (to_key or from_key))
+    main_crest = _crest_uri(renewal_key if is_renewal else (to_key or from_key))
 
     rows = []
-    if from_club:
-        rows.append(("FROM", "#f5c518", _club_cell(from_club, _crest_uri(from_key)), ""))
-    if to_club:
-        rows.append(("TO" if not is_staff else "CLUB", "#00d4ff",
-                     _club_cell(to_club, _crest_uri(to_key)), ""))
-    if is_staff:
-        # Staff/manager cards show the ROLE, never a transfer FEE.
-        rows.append(("ROLE", "#f5c518",
-                     (role.upper() if role and role.lower() != "staff" else "MANAGER"), ""))
+    if is_renewal:
+        if renewal_club:
+            rows.append(("CLUB", "#00d4ff",
+                         _club_cell(renewal_club, _crest_uri(renewal_key)), ""))
+        rows.append(("TERMS", "#f5c518", story.get("contract") or "New deal", ""))
     else:
-        fee_value = story.get("fee") or "TBD"   # matches the tweet body
-        rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
+        if from_club:
+            rows.append(("FROM", "#f5c518", _club_cell(from_club, _crest_uri(from_key)), ""))
+        if to_club:
+            rows.append(("TO" if not is_staff else "CLUB", "#00d4ff",
+                         _club_cell(to_club, _crest_uri(to_key)), ""))
+        if is_staff:
+            # Staff/manager cards show the ROLE, never a transfer FEE.
+            rows.append(("ROLE", "#f5c518",
+                         (role.upper() if role and role.lower() != "staff" else "MANAGER"), ""))
+        else:
+            fee_value = story.get("fee") or "TBD"   # matches the tweet body
+            rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
 
     source_text = " · ".join(f"@{s}" for s in sources[:2])
     html = _build_card_html(player_name, status, badge, club_color, logo_uri, photo_uri,
