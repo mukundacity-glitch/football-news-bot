@@ -105,7 +105,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-14-elite-source-signal"
+_LOGIC_VER = "2026-07-22-rss-fee-manager-shield"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -392,7 +392,12 @@ def build_story(tweet_text, fpl_data):
     # for the loan itself — loan fees exist but are almost always < £20M.
     if s.get("event") in ("loan", "loan_option") and s.get("fee"):
         _raw_lower = (tweet_text or "").lower()
-        if not any(p in _raw_lower for p in ("loan fee", "loan payment", "season fee")):
+        if not any(p in _raw_lower for p in (
+                "loan fee", "loan payment", "season fee",
+                # A fee attached to a buy clause IS the deal's real headline
+                # number ("obligation to buy for €25-30m") — keep it.
+                "obligation to buy", "option to buy", "buy option",
+                "buy clause", "obligation to sign")):
             s["fee"] = None
 
     # 🛡️ FREE AGENT DETECTOR (100% Dynamic, No Hardcoding)
@@ -722,6 +727,14 @@ def validate_story(story, fpl_data=None, sources=None):
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
     if ev == "manager" and len(_ptokens) < 2: return False, "manager_name_single_token"
+    # 🛡️ MANAGER MISCLASSIFICATION SHIELD: if the subject of a "manager" story
+    # resolves to a verified, ACTIVE player in the live FPL database (e.g.
+    # Garnacho mentioned inside a managerial story), the classification is
+    # wrong — an active player can never be newly appointed staff. Hard reject.
+    if ev == "manager" and fpl_data:
+        _el = find_player_in_fpl(player, fpl_data)
+        if _el and _el.get("team", 0) != 0:
+            return False, "active_player_misclassified_as_manager"
     if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
 
@@ -1369,14 +1382,19 @@ async def fetch_rss_news():
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:20]:
-                tid = hashlib.md5(entry.link.encode('utf-8')).hexdigest()[:15]
-                
+                # A malformed entry (no link/title) must not kill the whole feed.
+                link = entry.get('link')
+                title = entry.get('title', '')
+                if not link or not title:
+                    continue
+                tid = hashlib.md5(link.encode('utf-8')).hexdigest()[:15]
+
                 # Combine Title + Summary to mimic a tweet's text structure
                 summary = clean_html(entry.get('summary', ''))
-                text = f"{entry.title}. {summary}"
-                
+                text = f"{title}. {summary}"
+
                 media_url = None
-                if 'media_content' in entry and len(entry.media_content) > 0:
+                if entry.get('media_content'):
                     media_url = entry.media_content[0].get('url')
                 
                 created_at = entry.get('published', None)
@@ -1783,9 +1801,9 @@ async def main(post: bool = True, allow_rumours: bool = False):
     if not queue:
         rh = data.get("last_read_health", {})
         if rh.get("fail_ratio", 0) >= 0.15:
-            print("[BOT] No drafts — but over half of sources failed to read. "
-                  "Likely a READ/access problem, not a quiet news day. "
-                  "Verify X cookies and Nitter, then re-run.")
+            print("[BOT] No drafts — but the RSS feeds failed to read. "
+                  "Likely a network/feed problem, not a quiet news day. "
+                  "Verify the RSS feed URLs are reachable, then re-run.")
         else:
             print("[BOT] Quiet run. No new stories found (sources read OK).")
         save_data(data)

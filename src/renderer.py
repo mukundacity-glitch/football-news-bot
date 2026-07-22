@@ -3,11 +3,14 @@ from datetime import datetime, timezone
 from PIL import Image, ImageDraw, ImageFont
 
 # --- THEME STYLING CONFIGURATION ---
+# Label/pill glyphs are limited to characters covered by standard system fonts
+# (DejaVu etc.) — colour emoji like ✅/🔥/❌ render as blank "tofu" boxes on the
+# card, so font-safe equivalents (✓ ▲ ✗ ▮) are used instead.
 THEMES = {
-    "official": {"color": (0, 168, 93), "label": "✅ CONFIRMED TRANSFER", "pill": "✓ OFFICIAL"},
-    "agreed": {"color": (0, 168, 93), "label": "✅ CONFIRMED TRANSFER", "pill": "✓ AGREED"},
-    "rumour": {"color": (238, 118, 0), "label": "🔥 STRONG RUMOUR", "pill": "🔥 DEVELOPING"},
-    "collapsed": {"color": (218, 37, 29), "label": "❌ DEAL COLLAPSED", "pill": "❌ MOVE OFF"},
+    "official": {"color": (0, 168, 93), "label": "✓ CONFIRMED TRANSFER", "pill": "✓ OFFICIAL"},
+    "agreed": {"color": (0, 168, 93), "label": "✓ CONFIRMED TRANSFER", "pill": "✓ AGREED"},
+    "rumour": {"color": (238, 118, 0), "label": "▲ STRONG RUMOUR", "pill": "▲ DEVELOPING"},
+    "collapsed": {"color": (218, 37, 29), "label": "✗ DEAL COLLAPSED", "pill": "✗ MOVE OFF"},
     "injury": {"color": (255, 186, 0), "label": "   INJURY UPDATE", "pill": "+ OUT"},
     "suspension": {"color": (218, 37, 29), "label": "   SUSPENSION", "pill": "▮ SUSPENDED"}
 }
@@ -15,17 +18,29 @@ THEMES = {
 WIDTH, HEIGHT = 1920, 1080
 BG_DARK = (10, 16, 26)  # Dark deep navy gradient base
 
+_DEJAVU_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+_DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+def _load_font(size, candidates):
+    """Try each candidate font path at the requested size; if none exist, fall
+    back to Pillow's scalable default so the 1080p layout keeps its proportions
+    (the old tiny bitmap default made every card's text unreadably small)."""
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except (IOError, OSError):
+            continue
+    try:
+        return ImageFont.load_default(size)  # Pillow >= 10.1: scalable default
+    except TypeError:
+        return ImageFont.load_default()
+
 def load_fonts():
     """Loads fonts safely with proportional sizing for 1080p canvas."""
-    try:
-        # If your environment uses standard system font names or paths
-        name_font = ImageFont.truetype("assets/fonts/Montserrat-BoldItalic.ttf", 96)
-        lbl_font = ImageFont.truetype("assets/fonts/Montserrat-Medium.ttf", 36)
-        val_font = ImageFont.truetype("assets/fonts/Montserrat-Bold.ttf", 46)
-        footer_font = ImageFont.truetype("assets/fonts/Montserrat-Medium.ttf", 26)
-    except IOError:
-        name_font = ImageFont.load_default()
-        lbl_font = val_font = footer_font = ImageFont.load_default()
+    name_font = _load_font(96, ["assets/fonts/Montserrat-BoldItalic.ttf", _DEJAVU_BOLD])
+    lbl_font = _load_font(36, ["assets/fonts/Montserrat-Medium.ttf", _DEJAVU])
+    val_font = _load_font(46, ["assets/fonts/Montserrat-Bold.ttf", _DEJAVU_BOLD])
+    footer_font = _load_font(26, ["assets/fonts/Montserrat-Medium.ttf", _DEJAVU])
     return name_font, lbl_font, val_font, footer_font
 
 def draw_background_gradient(img, theme_color):
@@ -126,8 +141,10 @@ def draw_stats_footer_bar(draw, stats, theme_color, font_lbl, font_val):
 
 def draw_data_fields(draw, fields, theme_color, font_lbl, font_val):
     """Draws the informative text list items detailing primary story points."""
-    start_x, start_y = 60, 440
-    line_gap = 115
+    # 5 fields must fit above the stats footer bar (top edge at HEIGHT-190=890):
+    # last label lands at 430+4*90=790, its value at ~832-878 — no overlap.
+    start_x, start_y = 60, 430
+    line_gap = 90
     
     for i, (label, val) in enumerate(fields.items()):
         current_y = start_y + (i * line_gap)
@@ -207,23 +224,30 @@ def render_core_card(story, sources, output_path):
         "Market Value": story.get("market_value", "—"),
         "Contract Until": story.get("contract_until", "—")
     }
-    draw_stats_footer_bar(draw, stats, theme["color"], lbl_font, val_font)
+    # Footer-size header tags: 36px labels like "CONTRACT UNTIL" overflow the
+    # 280px compartments, the 26px footer font fits every label.
+    draw_stats_footer_bar(draw, stats, theme["color"], footer_font, val_font)
     
     # 8. Draw Top Branding Layer Elements
     draw_header(draw, theme["label"], theme["color"], lbl_font)
     
     # 9. Bottom Right Context State Pill Box Indicator
-    pill_w, pill_h = 320, 75
-    pill_x, pill_y = WIDTH - pill_w - 60, HEIGHT - 180
+    # Pill width follows the text so longer statuses ("▲ DEVELOPING") never overflow.
+    pill_text = theme["pill"].upper()
+    pill_w = max(320, int(draw.textlength(pill_text, font=val_font)) + 70)
+    pill_h = 75
+    # Sits just ABOVE the stats bar (top edge HEIGHT-190) so a wide pill can
+    # never cover the right-most stats compartment.
+    pill_x, pill_y = WIDTH - pill_w - 60, HEIGHT - 285
     draw.rounded_rectangle([(pill_x, pill_y), (pill_x + pill_w, pill_y + pill_h)], radius=12, fill=theme["color"])
-    draw.text((pill_x + 35, pill_y + 15), theme["pill"].upper(), font=val_font, fill=(255, 255, 255))
+    draw.text((pill_x + 35, pill_y + 15), pill_text, font=val_font, fill=(255, 255, 255))
     
     # 10. Outer Frame Footer Meta Descriptions Text Lines
     footer_y = HEIGHT - 55
     draw.line([(0, footer_y - 15), (WIDTH, footer_y - 15)], fill=(25, 35, 50), width=1)
     
     src_txt = f"SOURCE: {str(sources[0] if sources else 'Aggregator').upper()}"
-    time_txt = f"📅 UPDATED: {datetime.now(timezone.utc).strftime('%d %b %Y | %H:%M UTC')}"
+    time_txt = f"UPDATED: {datetime.now(timezone.utc).strftime('%d %b %Y | %H:%M UTC')}"
     draw.text((60, footer_y), src_txt, font=footer_font, fill=(100, 120, 140))
     draw.text((600, footer_y), time_txt, font=footer_font, fill=(100, 120, 140))
     

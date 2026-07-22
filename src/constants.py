@@ -32,7 +32,11 @@ OFFICIAL_ACCOUNTS = {
     "lcfc", "liverpoolfc", "lfc", "mancity", "manutd", "newcastle_nufc", "nufc",
     "nffc", "southamptonfc", "spursofficial", "westham", "wolves",
 }
-OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {"officialfpl", "fpl", "premierleague", "premierinjuries"}
+# RSS ingestion sources (BBC Sport / Sky Sports) count as approved injury
+# sources — since the RSS migration they are the bot's ONLY read sources, and
+# without them here the injury pipeline could never fire at all.
+OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {"officialfpl", "fpl", "premierleague", "premierinjuries",
+                                                "bbc_sport", "skysports"}
 ELITE_TRUSTED = {
     "fabrizioromano", "david_ornstein", 
 }
@@ -40,6 +44,10 @@ TRUSTED_MEDIA = {
     "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
     "guardian_sport", "lequipe", "marca", "diarioas", "as", "kicker",
     "alex_crook", "alexcrabb31", "telegraph", "telegraphfootball",
+    # RSS feed source names (main.RSS_FEEDS keys, lowercased by source_tier).
+    # Without these the RSS-migrated ingestion reads as tier-0 "unreliable"
+    # and classify_post silently drops nearly every story.
+    "bbc_sport", "transfermarkt",
 }
 
 # Single source of truth for "this reads as an officially completed deal"
