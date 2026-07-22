@@ -1,465 +1,246 @@
-"""
-FPL VORTEX — Graphics Engine
-Handles generation of cinematic transfer and injury cards via PIL and Playwright.
-"""
-
 import os
-import re
-import base64
-import hashlib
-import urllib.request
-from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from datetime import datetime, timezone
+from PIL import Image, ImageDraw, ImageFont
 
-# Connect to our Core Engines and Constants
-from src.constants import CLUB_COLORS, FPL_LOGO_IDS, CHANNEL_HANDLE
-from src.fpl_feed import fetch_fpl_data, find_player_in_fpl
-
-FONT = ImageFont.load_default()
-_FONT_CACHE = {}
-_FALLBACK_FONTS = {
-    "Black": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-              "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"],
-    "Bold": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-             "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"],
+# --- THEME STYLING CONFIGURATION ---
+THEMES = {
+    "official": {"color": (0, 168, 93), "label": "✅ CONFIRMED TRANSFER", "pill": "✓ OFFICIAL"},
+    "agreed": {"color": (0, 168, 93), "label": "✅ CONFIRMED TRANSFER", "pill": "✓ AGREED"},
+    "rumour": {"color": (238, 118, 0), "label": "🔥 STRONG RUMOUR", "pill": "🔥 DEVELOPING"},
+    "collapsed": {"color": (218, 37, 29), "label": "❌ DEAL COLLAPSED", "pill": "❌ MOVE OFF"},
+    "injury": {"color": (255, 186, 0), "label": "   INJURY UPDATE", "pill": "+ OUT"},
+    "suspension": {"color": (218, 37, 29), "label": "   SUSPENSION", "pill": "▮ SUSPENDED"}
 }
 
-def _load_fallback(size, weight):
-    for path in _FALLBACK_FONTS.get(weight, _FALLBACK_FONTS["Bold"]):
-        if os.path.exists(path):
-            try: return ImageFont.truetype(path, size)
-            except Exception: continue
-    return ImageFont.load_default()
+WIDTH, HEIGHT = 1920, 1080
+BG_DARK = (10, 16, 26)  # Dark deep navy gradient base
 
-def get_premium_font(size, weight="Bold"):
-    key = (weight, size)
-    if key in _FONT_CACHE: return _FONT_CACHE[key]
-    fp = f"Montserrat-{weight}.ttf"
-    if not os.path.exists(fp):
-        try:
-            url = f"https://raw.githubusercontent.com/JulietaUla/Montserrat/master/fonts/ttf/Montserrat-{weight}.ttf"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=15) as r, open(fp, "wb") as out:
-                out.write(r.read())
-        except Exception:
-            f = _load_fallback(size, weight)
-            _FONT_CACHE[key] = f
-            return f
-    try: f = ImageFont.truetype(fp, size)
-    except Exception: f = _load_fallback(size, weight)
-    _FONT_CACHE[key] = f
-    return f
-
-def _download_asset(url, dest: Path) -> bool:
-    tmp = dest.with_suffix(dest.suffix + ".tmp")
+def load_fonts():
+    """Loads fonts safely with proportional sizing for 1080p canvas."""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status != 200: return False
-            data = resp.read()
-            if not data: return False
-        with open(tmp, "wb") as f: f.write(data)
-        tmp.replace(dest)
-        return True
-    except Exception:
-        try: tmp.exists() and tmp.unlink()
-        except Exception: pass
-        return False
+        # If your environment uses standard system font names or paths
+        name_font = ImageFont.truetype("assets/fonts/Montserrat-BoldItalic.ttf", 96)
+        lbl_font = ImageFont.truetype("assets/fonts/Montserrat-Medium.ttf", 36)
+        val_font = ImageFont.truetype("assets/fonts/Montserrat-Bold.ttf", 46)
+        footer_font = ImageFont.truetype("assets/fonts/Montserrat-Medium.ttf", 26)
+    except IOError:
+        name_font = ImageFont.load_default()
+        lbl_font = val_font = footer_font = ImageFont.load_default()
+    return name_font, lbl_font, val_font, footer_font
 
-def _safe_open_rgba(path: Path):
-    try:
-        im = Image.open(path)
-        im.load()
-        return im.convert("RGBA")
-    except Exception:
-        return None
+def draw_background_gradient(img, theme_color):
+    """Draws a premium dark base canvas with a right-aligned subtle theme color aura."""
+    draw = ImageDraw.Draw(img)
+    # Base dark fill
+    draw.rectangle([(0, 0), (WIDTH, HEIGHT)], fill=BG_DARK)
+    
+    # Simple blend overlay to create a clean right-side color aura glow
+    overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    ol_draw = ImageDraw.Draw(overlay)
+    
+    for r in range(600, 0, -5):
+        alpha = int((1 - (r / 600)) * 35)
+        ol_draw.ellipse(
+            [(WIDTH - 200 - r, (HEIGHT // 2) - r), (WIDTH - 200 + r, (HEIGHT // 2) + r)],
+            fill=(theme_color[0], theme_color[1], theme_color[2], alpha)
+        )
+    return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
-def _fit_contain(im, w, h):
-    return ImageOps.contain(im, (w, h), Image.Resampling.LANCZOS)
+def draw_watermark_v(draw):
+    """Draws the massive geometric structural 'V' watermark on the right canvas panel."""
+    # Drawn using polygons with a subtle low-opacity dark slate color matching your design
+    v_color = (40, 52, 68, 25)
+    # Left wing of V
+    draw.polygon([(1420, 490), (1485, 490), (1570, 610), (1505, 610)], fill=v_color)
+    # Right wing of V
+    draw.polygon([(1570, 610), (1505, 610), (1590, 490), (1655, 490)], fill=v_color)
 
-def _draw_text_shadow(draw, xy, text, font, fill, shadow=(0, 0, 0), offset=2):
-    x, y = xy
-    draw.text((x + offset, y + offset), text, font=font or FONT, fill=shadow)
-    draw.text((x, y), text, font=font or FONT, fill=fill)
+def draw_header(draw, title_text, theme_color, font_lbl):
+    """Renders the top primary branding header bar with the signature red angle flare."""
+    # Top Brand Red Flare Bar
+    draw.polygon([(0, 0), (1100, 0), (1050, 110), (0, 110)], fill=(195, 16, 25))
+    draw.text((100, 30), "FPL VORTEX", font=font_lbl, fill=(255, 255, 255))
+    
+    # Subheader Premier League Title Text Tag
+    draw.text((WIDTH - 300, 30), "PREMIER\nLEAGUE", font=font_lbl, fill=(0, 255, 168), align="right")
+    
+    # Main Categorization Event Badge
+    badge_y = 140
+    draw.polygon([(60, badge_y), (720, badge_y), (690, badge_y + 65), (60, badge_y + 65)], fill=theme_color)
+    draw.text((90, badge_y + 10), title_text.upper(), font=font_lbl, fill=(255, 255, 255))
+    
+    # Specific icon decorations inside the text badge for injuries/suspensions
+    if "INJURY" in title_text:
+        draw.ellipse([(85, badge_y + 18), (115, badge_y + 48)], fill=(255,255,255))
+        draw.rectangle([(97, badge_y + 23), (103, badge_y + 43)], fill=theme_color)
+        draw.rectangle([(87, badge_y + 30), (107, badge_y + 36)], fill=theme_color)
+    elif "SUSPENSION" in title_text:
+        draw.rounded_rectangle([(90, badge_y + 20), (110, badge_y + 46)], radius=3, fill=(255,255,255))
 
-def _load_crest(club_key, box=120):
-    if not club_key: return None
-    safe = club_key.replace(" ", "_").replace("'", "")
-    p = Path(f"logos/{safe}.png")
-    if not p.exists() and FPL_LOGO_IDS.get(safe):
-        _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS[safe]}.png", p)
-    if p.exists():
-        src = _safe_open_rgba(p)
-        if src is not None: return _fit_contain(src, box, box)
+def draw_right_side_graphics(draw, theme_key, theme_color, story):
+    """Draws custom structural right-side graphics dynamically based on theme properties."""
+    center_x, center_y = 1530, 550
+    
+    if theme_key == "suspension":
+        # Floating Red Card Asset Design
+        card = Image.new("RGBA", (140, 220), (0,0,0,0))
+        c_draw = ImageDraw.Draw(card)
+        c_draw.rounded_rectangle([(0,0), (140, 220)], radius=15, fill=(218, 37, 29))
+        rotated_card = card.rotate(15, expand=True)
+        return rotated_card
+        
+    elif theme_key == "injury":
+        # Gold Medical Plus Circle Icon Component
+        draw.ellipse([(center_x - 60, center_y - 60), (center_x + 60, center_y + 60)], fill=theme_color)
+        draw.rectangle([(center_x - 12, center_y - 40), (center_x + 12, center_y + 40)], fill=(255, 255, 255))
+        draw.rectangle([(center_x - 40, center_y - 12), (center_x + 40, center_y + 12)], fill=(255, 255, 255))
+        
+    elif theme_key == "rumour":
+        # Block-segment Probability Progress Indicator Visualizer
+        prob_str = str(story.get("probability", "85")).replace("%", "")
+        try: prob_val = int(prob_str)
+        except: prob_val = 85
+        
+        start_x = center_x - 150
+        for b in range(10):
+            box_x = start_x + (b * 26)
+            fill_color = theme_color if (b * 10) < prob_val else (40, 50, 65)
+            draw.rectangle([(box_x, center_y), (box_x + 20, center_y + 35)], fill=fill_color)
+            
     return None
 
-def _draw_wordmark(draw, xy):
-    x, y = xy
-    f = get_premium_font(46, "Black")
-    _draw_text_shadow(draw, (x, y), "FPL", f, (255, 255, 255), offset=2)
-    fpl_w = draw.textlength("FPL ", font=f)
-    _draw_text_shadow(draw, (x + fpl_w, y), "VORTEX", f, (84, 224, 124), offset=2)
+def draw_stats_footer_bar(draw, stats, theme_color, font_lbl, font_val):
+    """Draws the 5 aligned, structured data compartments along the lower canvas quadrant."""
+    box_w, box_h = 280, 95
+    start_x, start_y = 60, HEIGHT - 190
+    
+    for i, (key, value) in enumerate(stats.items()):
+        x = start_x + (i * (box_w + 12))
+        # Container Bounds Box Outline
+        draw.rectangle([(x, start_y), (x + box_w, start_y + box_h)], outline=(30, 45, 65), width=2)
+        # Inner Header Parameter Tag
+        draw.text((x + 15, start_y + 8), key.upper(), font=font_lbl, fill=(120, 140, 160))
+        # Paramater Evaluated Output Text Block
+        display_val = str(value).upper() if value and str(value).strip() != "" else "—"
+        draw.text((x + 15, start_y + 42), display_val, font=font_val, fill=(255, 255, 255))
 
-def get_club_color(club_key):
-    color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
-    return f"rgb({color_tuple[0]}, {color_tuple[1]}, {color_tuple[2]})"
+def draw_data_fields(draw, fields, theme_color, font_lbl, font_val):
+    """Draws the informative text list items detailing primary story points."""
+    start_x, start_y = 60, 440
+    line_gap = 115
+    
+    for i, (label, val) in enumerate(fields.items()):
+        current_y = start_y + (i * line_gap)
+        draw.text((start_x, current_y), label.upper(), font=font_lbl, fill=theme_color)
+        
+        display_val = str(val).upper() if val and str(val).strip() != "" else "UNDISCLOSED"
+        draw.text((start_x, current_y + 42), display_val, font=font_val, fill=(255, 255, 255))
 
-def _render_html_sync(html_content, filename, error_box=None):
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": 1380, "height": 776}, device_scale_factor=1)
-            page.set_content(html_content, wait_until="domcontentloaded")
-            page.evaluate("document.fonts.ready.then(() => true)")
-            page.wait_for_timeout(500)
-            page.screenshot(path=filename)
-            browser.close()
-    except Exception:
-        if error_box is not None:
-            import traceback
-            error_box.append(traceback.format_exc())
+def get_theme_mode(story):
+    """Determines exact rendering style configuration based on incoming parsed values."""
+    ev = story.get("event")
+    if story.get("collapsed", False): return "collapsed"
+    if ev == "injury": return "injury"
+    if ev == "suspension": return "suspension"
+    
+    mode_lbl = str(story.get("mode", "rumour")).upper()
+    if "OFFICIAL" in mode_lbl or "CONFIRMED" in mode_lbl: return "official"
+    if "AGREED" in mode_lbl: return "agreed"
+    return "rumour"
 
+def render_core_card(story, sources, output_path):
+    """Main execution pipeline constructing the visual canvas assets."""
+    # 1. Canvas Setup
+    base_img = Image.new("RGB", (WIDTH, HEIGHT), color=BG_DARK)
+    theme_key = get_theme_mode(story)
+    theme = THEMES[theme_key]
+    
+    # 2. Add Background Depth Auras
+    img = draw_background_gradient(base_img, theme["color"])
+    draw = ImageDraw.Draw(img)
+    
+    name_font, lbl_font, val_font, footer_font = load_fonts()
+    
+    # 3. Structural Underlays
+    draw_watermark_v(draw)
+    
+    # 4. Right side Overlay Items
+    rotated_layer = draw_right_side_graphics(draw, theme_key, theme["color"], story)
+    if rotated_layer:
+        img.paste(rotated_layer, (1450, 420), rotated_layer)
+        
+    # 5. Dynamic Left-Hand Side Fields Mapping
+    fields = {}
+    if theme_key in ["official", "agreed", "rumour"]:
+        fields["From"] = story.get("from_club", "Undisclosed")
+        fields["To"] = story.get("to_club", "Undisclosed")
+        fields["Fee"] = story.get("fee", "Undisclosed")
+        fields["Contract"] = story.get("contract", "TBD")
+        fields["Status"] = story.get("mode", "Agreed" if theme_key == "agreed" else "Official")
+    elif theme_key == "collapsed":
+        fields["Buying Club"] = story.get("to_club", "Undisclosed")
+        fields["Selling Club"] = story.get("from_club", "Undisclosed")
+        fields["Reason"] = story.get("reason", "Personal Terms")
+        fields["Status"] = "Deal Collapsed"
+    elif theme_key == "injury":
+        fields["Club"] = story.get("from_club") or story.get("to_club") or "Premier League"
+        fields["Injury"] = story.get("diagnosis", "Assessing Situation")
+        fields["Expected Return"] = story.get("expected_return", "Unknown Duration")
+        fields["Availability"] = "Unavailable"
+    elif theme_key == "suspension":
+        fields["Club"] = story.get("from_club") or story.get("to_club") or "Premier League"
+        fields["Reason"] = story.get("diagnosis", "Straight Red Card")
+        fields["Matches"] = story.get("matches_slashed", "3 Matches")
+        fields["Returns"] = story.get("expected_return", "Gameweek TBD")
 
-# ── SHARED ASSET / RENDER HELPERS ─────────────────────────────────────────
-def _data_uri(path: Path, min_size: int = 500) -> str:
-    """Return a base64 data-URI for an image file, or '' if missing/too small."""
-    try:
-        if path.exists() and path.stat().st_size >= min_size:
-            return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
-    except Exception:
-        pass
-    return ""
+    draw_data_fields(draw, fields, theme["color"], lbl_font, val_font)
+    
+    # 6. Player Primary Identification Typography Text
+    player_name = str(story.get("player", "PLAYER")).upper()
+    draw.text((60, 240), player_name, font=name_font, fill=(255, 255, 255))
+    
+    # 7. Low Compartment Stats Mapping
+    stats = {
+        "Age": story.get("age", "—"),
+        "Position": story.get("position", "—"),
+        "Nationality": story.get("nationality", "—"),
+        "Market Value": story.get("market_value", "—"),
+        "Contract Until": story.get("contract_until", "—")
+    }
+    draw_stats_footer_bar(draw, stats, theme["color"], lbl_font, val_font)
+    
+    # 8. Draw Top Branding Layer Elements
+    draw_header(draw, theme["label"], theme["color"], lbl_font)
+    
+    # 9. Bottom Right Context State Pill Box Indicator
+    pill_w, pill_h = 320, 75
+    pill_x, pill_y = WIDTH - pill_w - 60, HEIGHT - 180
+    draw.rounded_rectangle([(pill_x, pill_y), (pill_x + pill_w, pill_y + pill_h)], radius=12, fill=theme["color"])
+    draw.text((pill_x + 35, pill_y + 15), theme["pill"].upper(), font=val_font, fill=(255, 255, 255))
+    
+    # 10. Outer Frame Footer Meta Descriptions Text Lines
+    footer_y = HEIGHT - 55
+    draw.line([(0, footer_y - 15), (WIDTH, footer_y - 15)], fill=(25၊ 35, 50), width=1)
+    
+    src_txt = f"SOURCE: {str(sources[0] if sources else 'Aggregator').upper()}"
+    time_txt = f"📅 UPDATED: {datetime.now(timezone.utc).strftime('%d %b %Y | %H:%M UTC')}"
+    draw.text((60, footer_y), src_txt, font=footer_font, fill=(100, 120, 140))
+    draw.text((600, footer_y), time_txt, font=footer_font, fill=(100, 120, 140))
+    
+    # Precise Account Handle Placement
+    draw.text((WIDTH - 320, footer_y), "▶ @FPLVortexM", font=footer_font, fill=(230, 30, 40))
+    
+    # Save Image out to disk
+    img.save(output_path, "PNG")
+    print(f"🎨 Image output saved: {output_path}")
 
+# Interface abstraction hooks matching old pipeline configurations
+def create_transfer_image(item, sources, image_path, collapsed=False):
+    item["collapsed"] = collapsed
+    render_core_card(item, sources, image_path)
 
-def _crest_uri(club_key) -> str:
-    """Resolve (downloading if needed) a club crest to a data-URI."""
-    if not club_key:
-        return ""
-    safe = club_key.replace(" ", "_").replace("'", "")
-    cp = Path(f"logos/{safe}.png")
-    if not cp.exists() and FPL_LOGO_IDS.get(safe):
-        _download_asset(f"https://resources.premierleague.com/premierleague/badges/t{FPL_LOGO_IDS[safe]}.png", cp)
-    return _data_uri(cp)
+def create_injury_image(item, sources, image_path):
+    render_core_card(item, sources, image_path)
 
-
-def _img_assets(story):
-    """Shared: resolve the verified player, display name, brand logo and player photo."""
-    fpl = fetch_fpl_data()
-    player_el = find_player_in_fpl(story.get("player"), fpl)
-    # Prefer the single canonical display name set by verify_card_data so the card
-    # and the tweet always show the exact same name.
-    player_name = (story.get("display_name")
-                   or (player_el["web_name"] if player_el else story.get("player"))
-                   or "PLAYER")
-
-    logo_uri = _data_uri(Path("Logo.png"))
-
-    photo_uri = ""
-    pid = player_el.get("code") if player_el else None
-    if pid:
-        pp = Path(f"players/{pid}.png")
-        if not pp.exists():
-            _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
-        photo_uri = _data_uri(pp)
-    if not photo_uri and story.get("media_url"):
-        murl = story["media_url"]
-        mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ".png")
-        if not mp.exists():
-            _download_asset(murl, mp)
-        photo_uri = _data_uri(mp)
-
-    return player_el, player_name, logo_uri, photo_uri
-
-
-def _render_card(html_content, filename) -> bool:
-    """Render HTML to PNG via the threaded Playwright helper. Returns True on success."""
-    try:
-        import threading
-        error_box = []
-        t = threading.Thread(target=_render_html_sync, args=(html_content, filename, error_box))
-        t.start()
-        t.join()
-        if error_box:
-            print("  [THREAD TRACEBACK]\n" + error_box[0])
-        if Path(filename).exists() and Path(filename).stat().st_size >= 1000:
-            return True
-    except Exception:
-        import traceback
-        traceback.print_exc()
-    return False
-
-
-def _build_card_html(player_name, status, badge_color, club_color,
-                     logo_uri, photo_uri, crest_uri, rows, source_text, footer_tag):
-    """One template for ALL card types so branding (lion logo, header, footer) is identical.
-
-    rows: list of (label, label_color, value_html, value_style).
-    """
-    logo_html = (f'<img src="{logo_uri}" style="width:64px;height:64px;object-fit:contain;'
-                 f'margin-right:16px;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.6));" />') if logo_uri else ''
-    crest_badge_html = f'<img class="crest-badge" src="{crest_uri}" />' if crest_uri else ''
-    if photo_uri:
-        photo_img_html = f'<img src="{photo_uri}" style="width:100%;height:100%;object-fit:cover;position:relative;z-index:1;" />'
-    elif crest_uri:
-        photo_img_html = f'<img src="{crest_uri}" style="width:70%;height:70%;object-fit:contain;position:relative;z-index:1;opacity:0.85;" />'
-    else:
-        photo_img_html = '<div style="z-index:1;font-size:150px;color:rgba(255,255,255,0.15);font-weight:900;">V</div>'
-
-    rows_html = "".join(
-        f'<div class="detail-label" style="color:{color};">{label}</div>'
-        f'<div class="detail-value" style="{vstyle}">{value}</div>'
-        for (label, color, value, vstyle) in rows)
-
-    return f"""<!DOCTYPE html><html><head><style>
-        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@700;900&display=swap');
-        body {{ margin:0; padding:0; width:1380px; height:776px; background:linear-gradient(135deg,#0b1220 0%,#1c2846 100%); font-family:'Montserrat',sans-serif; color:white; display:flex; overflow:hidden; position:relative; }}
-        .accent-slash {{ position:absolute; width:200%; height:100px; background:{club_color}; opacity:0.15; transform:rotate(-35deg) translateY(-200px); z-index:0; }}
-        .accent-slash:nth-child(2) {{ transform:rotate(-35deg) translateY(200px); opacity:0.05; }}
-        .container {{ width:100%; height:100%; display:flex; flex-direction:row; padding:40px 60px 80px 60px; box-sizing:border-box; z-index:1; }}
-        .left-column {{ flex:1; min-width:0; display:flex; flex-direction:column; justify-content:flex-start; padding-top:30px; }}
-        .right-column {{ width:420px; flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; }}
-        .wordmark {{ font-size:52px; font-weight:900; margin-bottom:24px; text-shadow:0 4px 10px rgba(0,0,0,0.5); display:flex; align-items:center; }}
-        .wordmark span {{ color:#54e07c; margin-left:10px; }}
-        .status-badge {{ display:inline-block; background:{badge_color}; color:#fff; padding:14px 30px; font-size:42px; font-weight:900; border-radius:12px; letter-spacing:3px; margin-bottom:20px; text-transform:uppercase; box-shadow:0 8px 20px rgba(0,0,0,0.4); }}
-        .player-name {{ font-size:88px; font-weight:900; line-height:1.0; text-transform:uppercase; margin-bottom:28px; text-shadow:0 8px 20px rgba(0,0,0,0.6); white-space:nowrap; max-width:100%; }}
-        .details-grid {{ display:grid; grid-template-columns:max-content 1fr; gap:18px 40px; font-size:44px; align-items:center; }}
-        .detail-label {{ font-weight:700; text-transform:uppercase; }}
-        .detail-value {{ font-weight:900; text-transform:uppercase; color:white; display:flex; align-items:center; }}
-        .photo-panel {{ width:370px; height:560px; background:rgba(255,255,255,0.03); border:2px solid rgba(255,255,255,0.1); border-radius:24px; display:flex; align-items:center; justify-content:center; box-shadow:0 20px 50px rgba(0,0,0,0.5); position:relative; overflow:hidden; }}
-        .crest-badge {{ position:absolute; top:18px; right:18px; width:120px; height:120px; object-fit:contain; z-index:2; filter:drop-shadow(0 4px 8px rgba(0,0,0,0.6)); }}
-        .photo-panel::before {{ content:''; position:absolute; top:0; left:0; right:0; bottom:0; background:radial-gradient(circle at center,{club_color} 0%,transparent 70%); opacity:0.2; z-index:0; }}
-        .footer {{ position:absolute; bottom:0; left:0; width:100%; height:65px; background:#141821; display:flex; align-items:center; justify-content:space-between; padding:0 60px; box-sizing:border-box; font-size:24px; font-weight:700; color:#bec8dc; border-top:4px solid {club_color}; }}
-    </style></head><body>
-        <div class="accent-slash"></div><div class="accent-slash"></div>
-        <div class="container">
-            <div class="left-column">
-                <div class="wordmark">{logo_html}FPL<span>VORTEX</span></div>
-                <div><div class="status-badge">{status}</div></div>
-                <div class="player-name">{player_name}</div>
-                <div class="details-grid">{rows_html}</div>
-            </div>
-            <div class="right-column"><div class="photo-panel">{crest_badge_html}{photo_img_html}</div></div>
-        </div>
-        <div class="footer"><div>Source: {source_text} | @FPLVortex</div><div style="color:#d4af37;">{footer_tag}</div></div>
-        <script>
-            // Shrink the player name to ALWAYS fit the left column — never clip or
-            // ellipsize. Measure against the real available width (the parent),
-            // and run after full load so font/layout metrics are final.
-            function fitPlayerName() {{
-                const nameEl = document.querySelector('.player-name');
-                if (!nameEl) return;
-                const avail = nameEl.parentElement.clientWidth;
-                let fs = 88;
-                nameEl.style.fontSize = fs + 'px';
-                while (nameEl.scrollWidth > avail && fs > 22) {{
-                    fs -= 1; nameEl.style.fontSize = fs + 'px';
-                }}
-            }}
-            document.addEventListener("DOMContentLoaded", fitPlayerName);
-            window.addEventListener("load", fitPlayerName);
-        </script>
-    </body></html>"""
-
-
-def _club_cell(name, crest_uri):
-    """Club name with an inline crest (or just the name)."""
-    if crest_uri:
-        return (f'{name} <img src="{crest_uri}" style="width:60px;height:60px;object-fit:contain;'
-                f'vertical-align:middle;margin-left:12px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5));" />')
-    return name
-
-
-def create_transfer_image(story, sources, filename, collapsed=False):
-    player_el, player_name, logo_uri, photo_uri = _img_assets(story)
-
-    to_key = story.get("to_key")
-    from_key = story.get("from_key")
-    to_club = story.get("to_club") or (to_key or "").replace("_", " ")
-    from_club = story.get("from_club") or (from_key or "").replace("_", " ")
-
-    ev = (story.get("event") or "transfer").lower()
-    is_staff = ev == "manager"
-    mode = story.get("mode", "confirmed")
-    # Footer tag ALWAYS states who the subject is: MANAGER / a specific STAFF role
-    # (e.g. "GOALKEEPING COACH") / TRANSFER — so a coach is never shown as a player.
-    role = (story.get("staff_role") or "").strip()
-    if is_staff:
-        footer_tag = (role.upper() if role and role.lower() != "staff"
-                      else "MANAGER" if "manager" in role.lower() or not role else "STAFF")
-    else:
-        footer_tag = "TRANSFER"
-
-    if collapsed or story.get("collapsed"):
-        status, badge = "DEAL COLLAPSED", "#e31e24"
-    elif is_staff:
-        action = story.get("staff_action")
-        if action == "appointment":
-            status, badge = "APPOINTED", "#54e07c"
-        elif action == "departure":
-            status, badge = "DEPARTURE", "#e31e24"
-        else:
-            status, badge = "LINKED", "#f5c518"      # speculation, not confirmed
-    elif mode == "rumour" or not to_key:
-        # No verified destination -> never claim CONFIRMED/OFFICIAL.
-        status, badge = "TRANSFER RUMOUR", "#e31e24"
-    else:
-        status = "OFFICIAL" if story.get("stage", 1) >= 4 else "CONFIRMED"
-        badge = "#54e07c"
-
-    club_color = get_club_color(to_key or from_key)
-    main_crest = _crest_uri(to_key or from_key)
-
-    rows = []
-    if from_club:
-        rows.append(("FROM", "#f5c518", _club_cell(from_club, _crest_uri(from_key)), ""))
-    if to_club:
-        rows.append(("TO" if not is_staff else "CLUB", "#00d4ff",
-                     _club_cell(to_club, _crest_uri(to_key)), ""))
-    if is_staff:
-        # Staff/manager cards show the ROLE, never a transfer FEE.
-        rows.append(("ROLE", "#f5c518",
-                     (role.upper() if role and role.lower() != "staff" else "MANAGER"), ""))
-    else:
-        fee_value = story.get("fee") or "TBD"   # matches the tweet body
-        rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
-
-    source_text = " · ".join(f"@{s}" for s in sources[:2])
-    html = _build_card_html(player_name, status, badge, club_color, logo_uri, photo_uri,
-                            main_crest, rows, source_text, footer_tag)
-
-    if not _render_card(html, filename):
-        Image.new('RGB', (1380, 776), color=(11, 18, 32)).save(filename)
-
-
-def create_injury_image(story, sources, filename):
-    # Same template/branding as transfer cards (lion logo + header + footer).
-    player_el, player_name, logo_uri, photo_uri = _img_assets(story)
-    club_key = story.get("to_key") or story.get("from_key")
-    club_color = get_club_color(club_key)
-    crest_uri = _crest_uri(club_key)
-
-    stage = story.get("stage", 1)
-    avail = {4: "Available / fit again", 3: "Ruled out", 2: "Doubt", 1: "To be assessed"}.get(stage, "To be assessed")
-    rows = []
-    if story.get("diagnosis"):
-        rows.append(("DIAGNOSIS", "#ff8c8c", str(story["diagnosis"]), ""))
-    rows.append(("AVAILABILITY", "#ff8c8c", avail, ""))
-    rows.append(("TIMELINE", "#ff8c8c", story.get("expected_return") or "Awaiting update", ""))
-    if story.get("next_match"):
-        rows.append(("NEXT MATCH", "#ff8c8c", str(story["next_match"]), ""))
-
-    source_text = " · ".join(f"@{s}" for s in sources[:2])
-    html = _build_card_html(player_name, "INJURY UPDATE", "#d2261e", club_color,
-                            logo_uri, photo_uri, crest_uri, rows, source_text,
-                            (story.get("event", "INJURY") or "INJURY").upper())
-
-    if not _render_card(html, filename):
-        _create_injury_image_pil(story, sources, filename)
-
-
-def _create_injury_image_pil(story, sources, filename):
-    """PIL fallback for injury cards if HTML rendering is unavailable."""
-    W, H = 1380, 776
-    fpl = fetch_fpl_data()
-    player_el = find_player_in_fpl(story.get("player"), fpl)
-    player_name = (player_el["web_name"] if player_el else story.get("player")) or "PLAYER"
-
-    img = Image.new("RGB", (W, H), (24, 10, 12))
-    draw = ImageDraw.Draw(img, "RGBA")
-    draw.rectangle([W // 2, 0, W, H], fill=(120, 18, 22))
-
-    right_center = (W - (W // 4), H // 2)
-    pid = player_el.get("code") if player_el else None
-    img_pasted = False
-
-    if pid:
-        pp = Path(f"players/{pid}.png")
-        if not pp.exists():
-            try: _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
-            except Exception: pass
-        if pp.exists() and pp.stat().st_size >= 500:
-            p_img = _safe_open_rgba(pp)
-            if p_img is not None:
-                p_img = _fit_contain(p_img, 400, 500)
-                img.paste(p_img, (right_center[0] - p_img.width // 2, right_center[1] - p_img.height // 2 + 30), p_img)
-                img_pasted = True
-
-    if not img_pasted:
-        club_key = story.get("to_key") or story.get("from_key")
-        if club_key:
-            crest = _load_crest(club_key, box=350)
-            if crest is not None:
-                img.paste(crest, (right_center[0] - crest.width // 2, right_center[1] - crest.height // 2), crest)
-                img_pasted = True
-
-    if not img_pasted:
-        logo_path = Path("Logo.png")
-        if logo_path.exists():
-            l_img = _safe_open_rgba(logo_path)
-            if l_img is not None:
-                l_img = _fit_contain(l_img, 300, 300)
-                img.paste(l_img, (right_center[0] - l_img.width // 2, right_center[1] - l_img.height // 2), l_img)
-
-    TEXT_X = 70
-    _draw_wordmark(draw, (TEXT_X, 48))
-
-    lf = get_premium_font(34, "Bold")
-    label = "INJURY UPDATE"
-    draw.rounded_rectangle([TEXT_X, 120, TEXT_X + draw.textlength(label, font=lf) + 36, 168], radius=10, fill=(210, 30, 34))
-    _draw_text_shadow(draw, (TEXT_X + 18, 126), label, lf, (255, 255, 255), offset=1)
-
-    nf = get_premium_font(88, "Black")
-    _draw_text_shadow(draw, (TEXT_X, 210), player_name.upper(), nf, (255, 255, 255), offset=3)
-
-    rows = []
-    if story.get("diagnosis"): rows.append(("DIAGNOSIS", story["diagnosis"]))
-    stage = story.get("stage", 1)
-    avail = {4: "Available / fit again", 3: "Ruled out", 2: "Doubt", 1: "To be assessed"}.get(stage, "To be assessed")
-    rows.append(("AVAILABILITY", avail))
-    rows.append(("TIMELINE", story.get("expected_return") or "Awaiting update"))
-    if story.get("next_match"): rows.append(("NEXT MATCH", story["next_match"]))
-
-    y = 340
-    lab_f = get_premium_font(26, "Bold")
-    val_f = get_premium_font(34, "Bold")
-    for tag, val in rows[:4]:
-        _draw_text_shadow(draw, (TEXT_X, y), tag, lab_f, (255, 140, 140))
-        _draw_text_shadow(draw, (TEXT_X, y + 32), str(val), val_f, (255, 255, 255))
-        y += 96
-
-    draw.rectangle([0, H - 90, W, H - 12], fill=(20, 10, 12))
-    src = " · ".join(f"@{s}" for s in sources[:2])
-    bar = f"Source: {src}  |  {CHANNEL_HANDLE}"
-    bf = get_premium_font(32, "Bold")
-    draw.text((60, H - 70), bar, font=bf, fill=(220, 190, 190))
-    img.save(filename)
-
-
-def _create_fallback_card(story, sources, filename):
-    W, H = 1200, 675
-    img = Image.new("RGB", (W, H), (11, 18, 32))
-    draw = ImageDraw.Draw(img, "RGBA")
-    draw.rectangle([0, 0, W, 12], fill=(212, 175, 55))
-    draw.rectangle([0, H - 12, W, H], fill=(212, 175, 55))
-    _draw_wordmark(draw, (60, 48))
-    lf = get_premium_font(40, "Bold")
-    label = "BREAKING NEWS"
-    draw.rounded_rectangle([60, 130, 60 + draw.textlength(label, font=lf) + 44, 192], radius=12, fill=(210, 30, 34))
-    _draw_text_shadow(draw, (60 + 22, 138), label, lf, (255, 255, 255), offset=2)
-    head = (story.get("headline") or story.get("player") or "Football update").upper()
-    hf = get_premium_font(64, "Black")
-    words, line, y = head.split(), "", 250
-    for w in words:
-        test = (line + " " + w).strip()
-        if draw.textlength(test, font=hf) > W - 120 and line:
-            _draw_text_shadow(draw, (60, y), line, hf, (255, 255, 255), offset=3)
-            y += 78
-            line = w
-        else: line = test
-    if line: _draw_text_shadow(draw, (60, y), line, hf, (255, 255, 255), offset=3)
-    src = " · ".join(f"@{s}" for s in (sources or [])[:2]) or CHANNEL_HANDLE
-    draw.rectangle([0, H - 78, W, H - 12], fill=(20, 24, 33))
-    bf = get_premium_font(30, "Bold")
-    draw.text((60, H - 64), f"Source: {src}  |  {CHANNEL_HANDLE}", font=bf, fill=(190, 200, 220))
-    img.save(filename)
+def _create_fallback_card(item, sources, image_path):
+    render_core_card(item, sources, image_path)
