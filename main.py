@@ -96,12 +96,13 @@ POSTED_FILE = Path("posted_news.json")
 PENDING_DIR = Path("queue/pending")
 POSTED_DIR = Path("queue/posted")
 DRAFTS_DIR = Path("fpl_drafts")
-for d in (PENDING_DIR, POSTED_DIR, Path("logos"), Path("players"), DRAFTS_DIR):
+from src.constants import LOGOS_DIR, PLAYERS_DIR
+for d in (PENDING_DIR, POSTED_DIR, LOGOS_DIR, PLAYERS_DIR, DRAFTS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # ── CHANNEL BRANDING ─────────────────────────────────────────────────────
 CHANNEL_NAME = "FPL VORTEX"
-CHANNEL_HANDLE = "@FPLVortex"
+CHANNEL_HANDLE = "@FPLVortexM"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
@@ -115,11 +116,27 @@ from src.constants import (
     CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP, STRONG_OFFICIAL_CUES
 )
 
+# Normalise handles on BOTH sides of the tier lookup: RSS source names arrive
+# as e.g. "BBC_Sport" / "SkySports" while the trusted sets store "bbcsport" /
+# "skysports" — a raw string compare silently dropped every RSS source to
+# tier 0, which broke confirmation gating for all feed-sourced stories.
+def _norm_handle(h: str) -> str:
+    return re.sub(r'[^a-z0-9]', '', (h or "").lower().lstrip("@"))
+
+_TIER_SETS = None
+
 def source_tier(handle: str) -> int:
-    h = (handle or "").lower().lstrip("@")
-    if h in OFFICIAL_ACCOUNTS: return 1
-    if h in ELITE_TRUSTED: return 2
-    if h in TRUSTED_MEDIA: return 3
+    global _TIER_SETS
+    if _TIER_SETS is None:
+        _TIER_SETS = (
+            {_norm_handle(x) for x in OFFICIAL_ACCOUNTS},
+            {_norm_handle(x) for x in ELITE_TRUSTED},
+            {_norm_handle(x) for x in TRUSTED_MEDIA},
+        )
+    h = _norm_handle(handle)
+    if h in _TIER_SETS[0]: return 1
+    if h in _TIER_SETS[1]: return 2
+    if h in _TIER_SETS[2]: return 3
     return 0
 
 # Retained local variables required for cache wiring fallback
@@ -392,7 +409,13 @@ def build_story(tweet_text, fpl_data):
     # for the loan itself — loan fees exist but are almost always < £20M.
     if s.get("event") in ("loan", "loan_option") and s.get("fee"):
         _raw_lower = (tweet_text or "").lower()
-        if not any(p in _raw_lower for p in ("loan fee", "loan payment", "season fee")):
+        # A fee tied to a buy clause ("obligation/option to buy for €X") IS
+        # real deal information and belongs on the card — only a bare market-
+        # value mention gets cleared.
+        _FEE_OK_CUES = ("loan fee", "loan payment", "season fee",
+                        "obligation to buy", "option to buy", "buy option",
+                        "buy clause", "purchase option", "purchase clause")
+        if not any(p in _raw_lower for p in _FEE_OK_CUES):
             s["fee"] = None
 
     # 🛡️ FREE AGENT DETECTOR (100% Dynamic, No Hardcoding)
@@ -899,7 +922,7 @@ def verify_card_data(item: dict, fpl_data=None):
     anchor = item.get("to_key") or item.get("from_key")
     if anchor:
         safe = anchor.replace(" ", "_").replace("'", "")
-        if FPL_LOGO_IDS.get(safe) or Path(f"logos/{safe}.png").exists():
+        if FPL_LOGO_IDS.get(safe) or (LOGOS_DIR / f"{safe}.png").exists():
             report.append(f"crest ✓ available for {anchor!r}")
         else:
             report.append(f"crest ⚠ no PL crest for {anchor!r} (branded fallback will be used)")

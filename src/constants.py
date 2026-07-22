@@ -3,7 +3,7 @@ from pathlib import Path
 
 # Branding & Channels
 CHANNEL_NAME = "FPL VORTEX"
-CHANNEL_HANDLE = "@FPLVortex"
+CHANNEL_HANDLE = "@FPLVortexM"
 
 # System Paths
 POSTED_FILE = Path("data/posted_news.json")
@@ -40,6 +40,7 @@ TRUSTED_MEDIA = {
     "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
     "guardian_sport", "lequipe", "marca", "diarioas", "as", "kicker",
     "alex_crook", "alexcrabb31", "telegraph", "telegraphfootball",
+    "transfermarkt",
 }
 
 # Single source of truth for "this reads as an officially completed deal"

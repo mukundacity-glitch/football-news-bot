@@ -113,7 +113,14 @@ _FEE_SINGLE_RE = re.compile(r'([£€$]\s?\d+(?:\.\d+)?\s*(?:million|billion|m|k
 
 def _extract_fee(text):
     m = _FEE_RANGE_RE.search(text) or _FEE_SINGLE_RE.search(text)
-    return m.group(1).upper() if m else None
+    if not m:
+        return None
+    # Normalise long units so the card shows broadcast-style figures
+    # ("€25-30 million" -> "€25-30 M", "£30 million" -> "£30 M").
+    fee = m.group(1).upper()
+    fee = re.sub(r'MILLION', 'M', fee)
+    fee = re.sub(r'BILLION', 'B', fee)
+    return re.sub(r'\s+', ' ', fee).strip()
 
 
 # Contract-duration extraction. Nothing previously populated this field at
@@ -125,7 +132,7 @@ _CONTRACT_YEARS_RE = re.compile(
     r'\b(one|two|three|four|five|six|seven|eight|\d)[\s-]year\s*(?:contract|deal)\b',
     re.IGNORECASE)
 _CONTRACT_UNTIL_RE = re.compile(
-    r'\b(?:contract|deal)\s+(?:runs?\s+)?(?:until|through|to)\s+'
+    r'\b(?:contract|deal|stay)\s+(?:runs?\s+)?(?:until|through|to)\s+'
     r'((?:[A-Za-z]+\s+)?20\d{2})', re.IGNORECASE)
 _CONTRACT_LONGTERM_RE = re.compile(r'\blong[\s-]term\s+(?:contract|deal)\b', re.IGNORECASE)
 
@@ -149,6 +156,33 @@ def _cue_pos(words_list, text):
     best = None
     for w in words_list:
         m = re.search(r'(?<![a-z])' + re.escape(w) + r'(?![a-z])', text)
+        if m and (best is None or m.start() < best):
+            best = m.start()
+    return best
+
+
+# Contract-renewal phrasing is too varied for a literal word list ("signed a
+# new four-year contract", "pens new deal", "extends his stay until 2030",
+# "commits his future") — a literal list missed all of these, so renewals were
+# classified as TRANSFERS and rendered as bogus rumour/transfer cards. These
+# patterns capture the grammar, not specific players or clubs.
+_RENEWAL_PATTERNS = (
+    re.compile(r'\bnew\s+(?:[a-z]+[-\s])?(?:year\s+)?(?:contract|deal)\b'),
+    re.compile(r'\bcontract\s+extension\b'),
+    re.compile(r'\bextend(?:s|ed|ing)?\s+(?:his|her|their)?\s*(?:stay|contract|deal)\b'),
+    re.compile(r'\bsign(?:s|ed)?\s+(?:a\s+)?new\b'),
+    re.compile(r'\bpens?\s+(?:a\s+)?new\b'),
+    re.compile(r'\bputs?\s+pen\s+to\s+paper\b'),
+    re.compile(r'\bcommit(?:s|ted)?\s+(?:his|her|their)\s+future\b'),
+    re.compile(r'\brenew(?:s|ed|al|ing)?\b'),
+)
+
+
+def _renewal_pos(text):
+    """Earliest position of any contract-renewal grammar pattern."""
+    best = None
+    for pat in _RENEWAL_PATTERNS:
+        m = pat.search(text)
         if m and (best is None or m.start() < best):
             best = m.start()
     return best
@@ -197,7 +231,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         "suspension": _cue_pos(["suspended", "suspension", "banned", "ban", "red card", "sent off"], tl),
         "injury": _cue_pos(["injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt"], tl),
         "manager": _cue_pos(["sack", "appoint", "head coach", "manager"], tl),
-        "renewal": _cue_pos(["new deal", "new contract", "signs new", "extension", "renew"], tl),
+        "renewal": _renewal_pos(tl),
         "transfer": _cue_pos(["transfer", "sign", "signs", "signed", "joins", "joined",
                               "deal", "medical", "here we go", "official", "confirmed",
                               "completed", "agreement", "agreed"] + _LOAN_WORDS, tl),
