@@ -97,10 +97,18 @@ def _club_context_is_interest_only(pos: int, text: str) -> bool:
 # amount matched, so any range-quoted fee silently fell back to "TBD" even
 # though the number was right there in the text. Range pattern is tried
 # first (more specific); the single-amount pattern is the fallback.
+# Alternatives ordered LONGEST-first (million/billion before m/k). Regex
+# alternation is first-match-wins, not longest-match-wins — with the
+# abbreviation listed first, "million" partially matched as just "m" and
+# silently truncated every fee of this shape (e.g. "£30-32 million" ->
+# "£30-32 M"), which is why the fee field showed "Undisclosed" even when
+# the number was right there in the tweet. General ordering rule, not
+# specific to any one fee amount — fixes every past and future case of
+# the same shape.
 _FEE_RANGE_RE = re.compile(
-    r'([£€$]\s?\d+(?:\.\d+)?\s*(?:m|k|million|billion)?\s*(?:-|–|—|to|and)\s*'
-    r'(?:[£€$]\s?)?\d+(?:\.\d+)?\s*(?:m|k|million|billion))', re.IGNORECASE)
-_FEE_SINGLE_RE = re.compile(r'([£€$]\s?\d+(?:\.\d+)?\s*(?:m|k|million|billion))', re.IGNORECASE)
+    r'([£€$]\s?\d+(?:\.\d+)?\s*(?:million|billion|m|k)?\s*(?:-|–|—|to|and)\s*'
+    r'(?:[£€$]\s?)?\d+(?:\.\d+)?\s*(?:million|billion|m|k))', re.IGNORECASE)
+_FEE_SINGLE_RE = re.compile(r'([£€$]\s?\d+(?:\.\d+)?\s*(?:million|billion|m|k))', re.IGNORECASE)
 
 
 def _extract_fee(text):
