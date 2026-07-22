@@ -220,7 +220,7 @@ def render_core_card(story, sources, output_path):
     
     # 10. Outer Frame Footer Meta Descriptions Text Lines
     footer_y = HEIGHT - 55
-    draw.line([(0, footer_y - 15), (WIDTH, footer_y - 15)], fill=(25၊ 35, 50), width=1)
+    draw.line([(0, footer_y - 15), (WIDTH, footer_y - 15)], fill=(25, 35, 50), width=1)
     
     src_txt = f"SOURCE: {str(sources[0] if sources else 'Aggregator').upper()}"
     time_txt = f"📅 UPDATED: {datetime.now(timezone.utc).strftime('%d %b %Y | %H:%M UTC')}"
