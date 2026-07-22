@@ -395,6 +395,22 @@ def build_story(tweet_text, fpl_data):
         if not any(p in _raw_lower for p in ("loan fee", "loan payment", "season fee")):
             s["fee"] = None
 
+    # 🛡️ FREE AGENT DETECTOR (100% Dynamic, No Hardcoding)
+    # Detects if the article explicitly states the player is a free agent or out of contract.
+    _raw_lower = (tweet_text or "").lower()
+    free_cues = ("free agent", "free transfer", "out of contract", "bosman", "on a free", "released", "contract expired")
+    
+    # Also cross-references the official FPL database to see if they are unattached.
+    is_fpl_free_agent = False
+    if fpl_data and s.get("player"):
+        el = find_player_in_fpl(s["player"], fpl_data)
+        if el and el.get("team", 0) == 0:
+            is_fpl_free_agent = True
+
+    if any(c in _raw_lower for c in free_cues) or is_fpl_free_agent:
+        s["is_free"] = True
+        s["fee"] = "Free transfer"
+
     try: 
         s["stage"] = max(1, min(4, int(s.get("stage", 1))))
     except Exception: 
@@ -973,7 +989,12 @@ def build_tweet_body(story, sources, mode) -> str:
     details = []   # each entry is one "EMOJI LABEL — VALUE" line
 
     if ev in ("transfer", "loan", "loan_option"):
-        move = "LOAN MOVE" if ev in ("loan", "loan_option") else "PERMANENT TRANSFER"
+        if ev in ("loan", "loan_option"):
+            move = "LOAN MOVE"
+        elif story.get("is_free"):
+            move = "FREE TRANSFER"
+        else:
+            move = "PERMANENT TRANSFER"
         if story.get("collapsed"):
             headline = f"❌ TRANSFER- {player} MOVE TO {to_full or 'NEW CLUB'} HAS COLLAPSED."
         else:
@@ -995,7 +1016,11 @@ def build_tweet_body(story, sources, mode) -> str:
                 route = ""
             prefix = "LOAN" if move == "LOAN MOVE" else "TRANSFER"
             headline = f"{emoji} {prefix}- {player} {status} {move}{route}."
-        details.append(f"💰 FEE — {story.get('fee') or 'Undisclosed fee'}")
+        fee_text = story.get('fee')
+        if not fee_text:
+            fee_text = "Free transfer" if story.get("is_free") else "Undisclosed fee"
+            
+        details.append(f"💰 FEE — {fee_text}")
         details.append(f"📝 CONTRACT — {story.get('contract') or 'Contract length undisclosed'}")
 
     elif ev in ("injury", "suspension"):
