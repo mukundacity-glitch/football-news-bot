@@ -1745,22 +1745,11 @@ async def main(post: bool = True, allow_rumours: bool = False):
     
     # ... rest of your main() logic
 
-    # Build Twikit client only if tokens are present; otherwise rely on Nitter
-    read_client = None
-    if X_AUTH_TOKEN and X_CT0_TOKEN:
-        try:
-            read_client = Client("en-US")
-            read_client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
-        except Exception as e:
-            print(f"[READ] could not init twikit read client: {e}")
-            read_client = None
-    else:
-        print("[READ] Twikit disabled — X_AUTH_TOKEN / X_CT0_TOKEN not set; using Nitter only.")
-
     if not check_daily_limit(data):
         print("[BOT] Daily limit reached — nothing will post today.")
 
-    queue = await scrape(data, read_client)
+    # Execute the new RSS-powered scrape logic (no read_client required)
+    queue = await scrape(data)
     if not queue:
         rh = data.get("last_read_health", {})
         if rh.get("fail_ratio", 0) >= 0.15:
