@@ -28,6 +28,7 @@ import re
 import unicodedata
 from pathlib import Path
 from src.constants import MANAGER_SURNAMES
+from src.fpl_feed import find_player_in_fpl
 
 _DATA = Path(__file__).resolve().parent.parent / "data"
 
@@ -241,17 +242,26 @@ def _role_bound_to_name(name_norm, text, cues):
     return None
 
 
-def staff_role_of(name, text):
+def staff_role_of(name, text, fpl_data=None):
     """Return the COACH/MANAGER role phrase bound to this name, else None.
-    (Directors / executives / agents are handled separately and are NOT postable.)"""
+    (Directors / executives / agents are handled separately and are NOT postable.)
+
+    GUARD: a name already verified against the live FPL feed is a real,
+    rostered PLAYER — never staff. This is checked FIRST, before any text-
+    proximity matching, because proximity alone ("Garnacho ... Villa job")
+    can accidentally brush against role-cue language that has nothing to do
+    with the player being staff. Ground truth beats text pattern-matching.
+    """
+    if fpl_data and find_player_in_fpl(name, fpl_data):
+        return None
     n = _strip(name)
     if _name_matches(n, _STAFF):
         return "staff"
     return _role_bound_to_name(n, text, _ROLE_CUES)
 
 
-def is_staff_subject(name, text="") -> bool:
-    return staff_role_of(name, text) is not None
+def is_staff_subject(name, text="", fpl_data=None) -> bool:
+    return staff_role_of(name, text, fpl_data) is not None
 
 
 def staff_action_of(text):
@@ -270,14 +280,27 @@ def sponsorship_context(text) -> bool:
     return any(cue in t for cue in _SPONSOR_CONTEXT)
 
 
-def classify_entity_detailed(name, text=""):
+def classify_entity_detailed(name, text="", fpl_data=None):
     """Return (entity_type, reason) using the full taxonomy. Order = most-specific
-    rejections first, postable staff next, PLAYER last."""
+    rejections first, postable staff next, PLAYER last — EXCEPT a name already
+    verified against the live FPL feed, which short-circuits to PLAYER
+    immediately (step 0) and skips every other check. A verified player can
+    never be reclassified as staff, director, agent, club, or anything else
+    based on surrounding text, no matter what words sit near their name."""
     name_norm = _strip(name)
     if not name_norm:
         return "PLAYER", "empty_name"  # downstream name-length checks handle it
 
-    # 0. Junk / RSS fragment / social noise ("link click", "why harry kane", ...).
+    # 0. GROUND TRUTH FIRST: a name the live FPL feed confirms is a real,
+    # rostered player is PLAYER, full stop. This must run before every other
+    # check below, because those checks are text-proximity matchers with no
+    # concept of identity — they will happily misclassify a real player as
+    # staff/director/agent if the surrounding tweet text merely brushes past
+    # a role-cue word near the name.
+    if fpl_data and find_player_in_fpl(name, fpl_data):
+        return "PLAYER", "fpl_verified_player"
+
+    # 1. Junk / RSS fragment / social noise ("link click", "why harry kane", ...).
     if _looks_like_junk_name(name):
         return "UNKNOWN", _reason("UNKNOWN", "unknown_entity")
 
@@ -313,8 +336,8 @@ def classify_entity_detailed(name, text=""):
     if _role_bound_to_name(name_norm, text, _EXEC_CUES):
         return "EXECUTIVE", _reason("EXECUTIVE", "executive_entity")
 
-    # 7. Postable football staff: coach / assistant coach / manager.
-    role = staff_role_of(name, text)
+    # 8. Postable football staff: coach / assistant coach / manager.
+    role = staff_role_of(name, text, fpl_data)
     if role:
         rl = role.lower()
         if "assistant" in rl:
@@ -344,13 +367,13 @@ _HARD_REJECT = {"JOURNALIST", "MEDIA", "COMPANY", "BRAND", "SPONSOR",
                 "STADIUM", "CLUB", "AGENT", "DIRECTOR", "EXECUTIVE", "UNKNOWN"}
 
 
-def classify_entity(name, text=""):
+def classify_entity(name, text="", fpl_data=None):
     """Coarse (category, reason). STAFF covers postable coach/manager roles."""
-    etype, reason = classify_entity_detailed(name, text)
+    etype, reason = classify_entity_detailed(name, text, fpl_data)
     return _COARSE.get(etype, etype), reason
 
 
-def is_postable_player(name, text="", event="transfer"):
+def is_postable_player(name, text="", event="transfer", fpl_data=None):
     """Hard gate. Returns (ok, reason).
 
     - Real players pass for player events.
@@ -358,7 +381,7 @@ def is_postable_player(name, text="", event="transfer"):
     - Journalists, media, companies, brands, sponsors, stadiums, clubs, agents,
       directors, executives and junk fragments are NEVER postable.
     """
-    etype, reason = classify_entity_detailed(name, text)
+    etype, reason = classify_entity_detailed(name, text, fpl_data)
     if etype in _HARD_REJECT:
         return False, reason
     if etype in _STAFF_TYPES and event != "manager":
