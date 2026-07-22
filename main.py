@@ -1364,171 +1364,119 @@ async def fetch_rss_news():
             
     return out
 
-async def scrape(data, read_client):
+async def scrape(data):
     fpl = fetch_fpl_data()
     story_map = {}
     seen = skipped = 0
-    accounts_total = len(JOURNALISTS)
-    accounts_failed = 0
     
-    for username in JOURNALISTS:
-        try: 
-            tweets, src = await fetch_tweets(read_client, username)
-        except Exception as e:
-            print(f"  [READ] @{username} error: {e}")
-            tweets, src = [], "error"
-            
-        if not tweets and src in ("none", "error"):
-            accounts_failed += 1
-            print(f"  [WARN] @{username}: ALL sources failed — X tokens may be expired or Nitter is down")
-        else:
-            print(f"  [READ] @{username}: {len(tweets)} tweets via {src}")
-            
-        for t in tweets:
-            tid, text = t["id"], t["text"]
-            if tid in data["posted_ids"]: continue
-            if not any(k in text.lower() for k in FOOTBALL_KW): continue
-           
-            
-            if tweet_too_old(t.get("created_at")):
-                skipped += 1
-                print(f"   skip (older_than_{MAX_TWEET_AGE_DAYS}d): {text[:70]!r}")
-                continue
-                
-            seen += 1
-            
-            if tid in data["extracted"]: 
-                story = dict(data["extracted"][tid])
-            else:
-                story = build_story(text, fpl)
-                story["media_url"] = t.get("media_url")
-                story["created_at"] = t.get("created_at")
-                data["extracted"][tid] = dict(story)
-                
-            safe, why = passes_safety_gate(story, text, fpl, sources=[username], source_tier_func=source_tier)
-            if not safe:
-                skipped += 1
-                print(f"   skip ({why}): {text[:70]!r}")
-                continue
-                
-            valid, vwhy = validate_story(story, fpl, sources=[username])
-            if not valid:
-                skipped += 1
-                print(f"   invalid ({vwhy}): {text[:70]!r}")
-                continue
-
-            # CONFIDENCE ENGINE: score the validated story and log the decision.
-            # SKIP is dropped here (extra precision net — junk, retired/no-origin,
-            # etc.); AUTO_POST / REVIEW carry their score forward for the live gate.
-            _cres = score_confidence(story, fpl, sources=[username])
-            if _cres["decision"] == _conf.SKIP:
-                skipped += 1
-                print(f"   skip (low_confidence:{_cres['score']}): {text[:70]!r}")
-                continue
-            story["confidence_score"] = _cres["score"]
-            story["confidence_decision"] = _cres["decision"]
-
-            anchor = story_anchor(story)
-            key = reconcile_key(story["player"], anchor, story["event"],
-                                story_map, data.get("stories", {}), data.get("pending", {}))
-                                
-            ok, reason = should_post(data, key, story["stage"], story["collapsed"])
-            if not ok:
-                print(f"   skip ({reason}): {key}")
-                continue
-                
-            if key in story_map:
-                ex = story_map[key]
-                # CONTRADICTION DETECTION: two reports sharing this story's key
-                # can legitimately disagree on DIRECTION (this key is already an
-                # unordered club-pair — see story_anchor) without it meaning
-                # much; but if they name genuinely DIFFERENT clubs altogether
-                # (not just swapped), that's trusted sources disagreeing on the
-                # underlying facts. Don't silently treat the new report as a
-                # corroborating source in that case — flag it and hold instead
-                # of ever auto-resolving the disagreement ourselves.
-                _new_to = _norm_text(story.get("to_key") or story.get("to_club") or "")
-                _new_from = _norm_text(story.get("from_key") or story.get("from_club") or "")
-                _ex_to = _norm_text(ex.get("to_key") or ex.get("to_club") or "")
-                _ex_from = _norm_text(ex.get("from_key") or ex.get("from_club") or "")
-                _contradicts = (
-                    bool(_new_to and _ex_to and _new_to != _ex_to and _new_to != _ex_from) or
-                    bool(_new_from and _ex_from and _new_from != _ex_from and _new_from != _ex_to)
-                )
-                if _contradicts:
-                    ex["contradicted"] = True
-                    print(f"   [CONTRADICTION] {key}: @{username} names different club(s) "
-                          f"than already-merged sources {ex['sources']!r} — holding for "
-                          f"review, NOT counting as a corroborating source.")
-                else:
-                    if username not in ex["sources"]: ex["sources"].append(username)
-                    if story["stage"] > ex["stage"]:
-                        ex.update({k: story[k] for k in story if k != "contradicted"})
-                    ex["sources"] = list(dict.fromkeys(ex["sources"]))
-            else:
-                prior = data.get("pending", {}).get(key, {}).get("sources", [])
-                unk = absorb_unknown_variant(story["player"], story["event"], key,
-                                             story_map, data.get("pending", {}))
-                if unk and unk in story_map:
-                    prior = list(dict.fromkeys(prior + story_map[unk].get("sources", [])))
-                    del story_map[unk]
-                elif unk and unk in data.get("pending", {}):
-                    prior = list(dict.fromkeys(prior + data["pending"][unk].get("sources", [])))
-                    data["pending"].pop(unk, None)
-                    
-                story.update({
-                    "id": tid, "key": key, "text": text,
-                    "sources": list(dict.fromkeys(prior + [username])), "reason": reason,
-                })
-                story_map[key] = story
-                
-        await asyncio.sleep(1)
+    rss_items = await fetch_rss_news()
+    if not rss_items:
+        print("  [WARN] Zero news items fetched. Check internet or feed URLs.")
+    else:
+        print(f"  [READ] Fetched {len(rss_items)} articles from RSS.")
         
-    fail_ratio = accounts_failed / accounts_total if accounts_total else 1.0
-    if accounts_failed:
-        print(f"  [READ-HEALTH] {accounts_failed}/{accounts_total} accounts returned nothing "
-              f"({fail_ratio:.0%}). Low volume may be a READ problem, not a quiet news day.")
-    if fail_ratio >= 0.5:
-        print("[READ-HEALTH] WARNING: more than half of sources failed. If Twikit is enabled, refresh X_AUTH_TOKEN / X_CT0_TOKEN. Also verify NITTER_INSTANCES are reachable.")
-    if (seen + skipped) == 0:
-        print("  [WARN] Zero football tweets from ALL journalists. X auth tokens "
-              "likely expired — update X_AUTH_TOKEN and X_CT0_TOKEN secrets.")
-              
-    print(f"  [SCRAPE] {seen} football tweets seen, {skipped} skipped, {len(story_map)} candidate stories")
+    for t in rss_items:
+        tid, text, username = t["id"], t["text"], t["username"]
+        if tid in data["posted_ids"]: continue
+        if not any(k in text.lower() for k in FOOTBALL_KW): continue
+        
+        if item_too_old(t.get("created_at")):
+            skipped += 1
+            print(f"   skip (older_than_{MAX_TWEET_AGE_DAYS}d): {text[:70]!r}")
+            continue
+            
+        seen += 1
+        
+        if tid in data["extracted"]: 
+            story = dict(data["extracted"][tid])
+        else:
+            story = build_story(text, fpl)
+            story["media_url"] = t.get("media_url")
+            story["created_at"] = t.get("created_at")
+            data["extracted"][tid] = dict(story)
+            
+        safe, why = passes_safety_gate(story, text, fpl, sources=[username], source_tier_func=source_tier)
+        if not safe:
+            skipped += 1
+            print(f"   skip ({why}): {text[:70]!r}")
+            continue
+            
+        valid, vwhy = validate_story(story, fpl, sources=[username])
+        if not valid:
+            skipped += 1
+            print(f"   invalid ({vwhy}): {text[:70]!r}")
+            continue
+
+        _cres = score_confidence(story, fpl, sources=[username])
+        if _cres["decision"] == _conf.SKIP:
+            skipped += 1
+            print(f"   skip (low_confidence:{_cres['score']}): {text[:70]!r}")
+            continue
+        story["confidence_score"] = _cres["score"]
+        story["confidence_decision"] = _cres["decision"]
+
+        anchor = story_anchor(story)
+        key = reconcile_key(story["player"], anchor, story["event"],
+                            story_map, data.get("stories", {}), data.get("pending", {}))
+                            
+        ok, reason = should_post(data, key, story["stage"], story["collapsed"])
+        if not ok:
+            print(f"   skip ({reason}): {key}")
+            continue
+            
+        if key in story_map:
+            ex = story_map[key]
+            
+            _new_to = _norm_text(story.get("to_key") or story.get("to_club") or "")
+            _new_from = _norm_text(story.get("from_key") or story.get("from_club") or "")
+            _ex_to = _norm_text(ex.get("to_key") or ex.get("to_club") or "")
+            _ex_from = _norm_text(ex.get("from_key") or ex.get("from_club") or "")
+            _contradicts = (
+                bool(_new_to and _ex_to and _new_to != _ex_to and _new_to != _ex_from) or
+                bool(_new_from and _ex_from and _new_from != _ex_from and _new_from != _ex_to)
+            )
+            if _contradicts:
+                ex["contradicted"] = True
+                print(f"   [CONTRADICTION] {key}: @{username} names different club(s) "
+                      f"than already-merged sources {ex['sources']!r} — holding for "
+                      f"review, NOT counting as a corroborating source.")
+            else:
+                if username not in ex["sources"]: ex["sources"].append(username)
+                if story["stage"] > ex["stage"]:
+                    ex.update({k: story[k] for k in story if k != "contradicted"})
+                ex["sources"] = list(dict.fromkeys(ex["sources"]))
+        else:
+            prior = data.get("pending", {}).get(key, {}).get("sources", [])
+            unk = absorb_unknown_variant(story["player"], story["event"], key,
+                                         story_map, data.get("pending", {}))
+            if unk and unk in story_map:
+                prior = list(dict.fromkeys(prior + story_map[unk].get("sources", [])))
+                del story_map[unk]
+            elif unk and unk in data.get("pending", {}):
+                prior = list(dict.fromkeys(prior + data["pending"][unk].get("sources", [])))
+                data["pending"].pop(unk, None)
+                
+            story.update({
+                "id": tid, "key": key, "text": text,
+                "sources": list(dict.fromkeys(prior + [username])), "reason": reason,
+            })
+            story_map[key] = story
+
+    print(f"  [SCRAPE] {seen} football items seen, {skipped} skipped, {len(story_map)} candidate stories")
     
     data["last_read_health"] = {
-        "accounts_total": accounts_total,
-        "accounts_failed": accounts_failed,
-        "fail_ratio": round(fail_ratio, 3),
+        "accounts_total": len(RSS_FEEDS),
+        "accounts_failed": 0 if rss_items else len(RSS_FEEDS),
+        "fail_ratio": 0.0 if rss_items else 1.0,
         "at": datetime.now(timezone.utc).isoformat(),
     }
     
     ready = []
     for key, st in story_map.items():
-        # Re-score confidence against the FINAL, merged source list. Each
-        # candidate was first scored per-tweet (sources=[single username]) —
-        # purely a precision net to decide whether to keep scanning it at
-        # all — at which point "official_source" (needs a tier-1 account)
-        # and "multiple_sources" (needs 2+) can structurally never be earned,
-        # since corroborating sources for the same story are still being
-        # collected one tweet at a time. Left uncorrected, EVERY journalist-
-        # sourced story permanently caps at 85 (REVIEW) even after 3 elite
-        # reporters independently confirm it — REVIEW never auto-publishes,
-        # so nothing not posted directly by an official club/league account
-        # would ever go out. Re-scoring here with the true, final source
-        # list is what lets genuine multi-source corroboration actually
-        # reach AUTO_POST; these signals are purely additive, so this can
-        # only raise the score, never lower it below what already cleared
-        # the earlier SKIP-tier precision net.
         _final_cres = score_confidence(st, fpl, sources=st["sources"])
         st["confidence_score"] = _final_cres["score"]
         st["confidence_decision"] = _final_cres["decision"]
 
-        # Cross-player destination check: if this player already has a confirmed
-        # move to a DIFFERENT destination in the historical ledger (stage >= 4),
-        # block this story — the earlier, confirmed deal supersedes any new rumour
-        # linking them to a third club (e.g. Gomes → Aston Villa confirmed, then
-        # a stale tweet says Gomes → Spurs).
         if not st.get("contradicted") and st.get("event") in ("transfer", "loan", "loan_option"):
             _pnorm = (st.get("player") or "").lower().strip()
             _new_dest = _norm_text(st.get("to_key") or st.get("to_club") or "")
@@ -1545,9 +1493,6 @@ async def scrape(data, read_client):
                             st["contradicted"] = True
                             break
 
-        # A story with conflicting reports about which clubs are involved is
-        # never auto-published — trusted sources disagreeing on the facts is
-        # exactly the situation that requires a human, not a guess.
         mode = None if st.get("contradicted") else classify_post(st, st["sources"])
         if mode is None:
             data["pending"][key] = {
