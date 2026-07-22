@@ -24,6 +24,7 @@ from src.entity_guard import (is_postable_player, classify_entity,
                               is_staff_subject, staff_role_of, staff_action_of)
 from src import confidence as _conf
 from src import direction as _direction
+from src.verifier import cross_verify
 from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
@@ -105,7 +106,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-14-elite-source-signal"
+_LOGIC_VER = "2026-07-22-auto-cross-verify"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -115,11 +116,22 @@ from src.constants import (
     CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP, STRONG_OFFICIAL_CUES
 )
 
+# Tier sets are compared on a normalised (alphanumeric-only) form so feed
+# names like "BBC_Sport" / "Sky Sports" match their canonical handles
+# ("bbcsport", "skysports") instead of silently dropping to tier 0.
+def _norm_handle(h: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (h or "").lower())
+
+_OFFICIAL_N = {_norm_handle(h) for h in OFFICIAL_ACCOUNTS}
+_ELITE_N = {_norm_handle(h) for h in ELITE_TRUSTED}
+_TRUSTED_N = {_norm_handle(h) for h in TRUSTED_MEDIA}
+_OFFICIAL_INJURY_N = {_norm_handle(h) for h in OFFICIAL_INJURY_ACCOUNTS}
+
 def source_tier(handle: str) -> int:
-    h = (handle or "").lower().lstrip("@")
-    if h in OFFICIAL_ACCOUNTS: return 1
-    if h in ELITE_TRUSTED: return 2
-    if h in TRUSTED_MEDIA: return 3
+    h = _norm_handle(handle)
+    if h in _OFFICIAL_N: return 1
+    if h in _ELITE_N: return 2
+    if h in _TRUSTED_N: return 3
     return 0
 
 # Retained local variables required for cache wiring fallback
@@ -888,7 +900,7 @@ def verify_card_data(item: dict, fpl_data=None):
         sources = item.get("sources", []) or []
         tiers = [source_tier(s) for s in sources]
         approved = any(t in (1, 2) for t in tiers) or any(
-            (s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS for s in sources)
+            _norm_handle(s) in _OFFICIAL_INJURY_N for s in sources)
         if not approved:
             return False, "injury_source_not_approved", report
         report.append(f"injury source ✓ approved ({', '.join('@' + s for s in sources[:2]) or 'n/a'})")
@@ -1501,6 +1513,43 @@ async def scrape(data):
         "at": datetime.now(timezone.utc).isoformat(),
     }
     
+    # ── AUTOMATIC CROSS-VERIFICATION ─────────────────────────────────────
+    # Every candidate story is checked against independent reliable outlets
+    # (official club websites, Google News, FotMob/Sky/BBC/The Athletic,
+    # elite journalists on X) BEFORE the publish decision. Corroborating
+    # outlets are merged into the source list so the tier/classification and
+    # confidence engines upgrade genuinely-confirmed news to auto-post;
+    # uncorroborated stories simply wait and are re-verified next run.
+    read_client = None
+    if story_map and X_AUTH_TOKEN and X_CT0_TOKEN:
+        try:
+            read_client = Client("en-US")
+            read_client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
+        except Exception as e:
+            print(f"  [X-VERIFY] read client unavailable ({e}) — journalist check skipped.")
+
+    _verify_budget = 15  # bound network calls on a freak news day
+    for key, st in story_map.items():
+        if _verify_budget <= 0:
+            break
+        _verify_budget -= 1
+        try:
+            ver = await cross_verify(st, known_sources=st["sources"],
+                                     read_client=read_client)
+        except Exception as e:
+            ver = {"handles": [], "official_confirmed": False,
+                   "n_independent": 0, "log": [f"verifier error: {e}"]}
+        for h in ver["handles"]:
+            st["sources"].append(h)
+        st["sources"] = list(dict.fromkeys(st["sources"]))
+        st["official_confirmed"] = ver["official_confirmed"]
+        st["cross_verified"] = len(st["sources"]) >= 2 or ver["official_confirmed"]
+        print(f"  [X-VERIFY] {st.get('player')!r}: +{ver['n_independent']} "
+              f"corroborating source(s) {ver['handles']!r}"
+              f"{' + OFFICIAL CLUB CONFIRMATION' if ver['official_confirmed'] else ''}")
+        for line in ver["log"][:6]:
+            print(f"             {line}")
+
     ready = []
     for key, st in story_map.items():
         _final_cres = score_confidence(st, fpl, sources=st["sources"])
@@ -1822,17 +1871,19 @@ async def main(post: bool = True, allow_rumours: bool = False):
     # score to REVIEW, because REVIEW means the pipeline isn't sure the
     # extraction (player/club/direction/entity) is even right. That is a
     # "don't guess" situation, not a rumour-vs-confirmed judgement call, so it
-    # is never bypassable. REVIEW-tier stories always stay as drafts in the
-    # queue for a human to review; nothing legitimate is lost, it just isn't
-    # auto-published.
+    # is never bypassable. REVIEW-tier stories are NOT published this run;
+    # they are automatically re-scraped and re-cross-verified on every later
+    # run, so as soon as enough reliable outlets corroborate the story it
+    # clears AUTO_POST and publishes by itself — no manual step anywhere.
     def _conf_ok(d):
         return d.get("confidence_decision", "AUTO_POST") == _conf.AUTO_POST
 
     postable = [d for d in drafts if d.get("mode") in modes_ok and _conf_ok(d)]
     _held = [d for d in drafts if d.get("mode") in modes_ok and not _conf_ok(d)]
     if _held:
-        print(f"[BOT] {len(_held)} story(ies) held for REVIEW (confidence 75-89) — "
-              f"saved as drafts, not auto-posted.")
+        print(f"[BOT] {len(_held)} story(ies) not yet corroborated by enough "
+              f"reliable sources (confidence 75-89) — held back and will be "
+              f"re-cross-verified automatically on the next scheduled run.")
 
     if not postable:
         print("[BOT] No postable stories this run "
