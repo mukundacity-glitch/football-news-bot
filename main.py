@@ -1322,15 +1322,20 @@ def _parse_rss_date(raw):
     try:
         from email.utils import parsedate_to_datetime
         dt = parsedate_to_datetime(raw)
-        return dt if dt.tzinfo else dt.replace(timezone.utc)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except Exception:
         return None
 
-def item_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS, unknown_is_old=True):
+def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS, unknown_is_old=True):
+    """Checks if an item is older than max_days. 
+    Kept the name tweet_too_old so the internal validation gates do not break."""
     dt = _parse_rss_date(created_at)
     if dt is None: return unknown_is_old
     age = datetime.now(timezone.utc) - dt
     return age.total_seconds() > max_days * 86400
+
+# Alias mapping so both function name variations work cleanly across your script
+item_too_old = tweet_too_old
 
 async def fetch_rss_news():
     """Replaces Twikit/Nitter with free, reliable RSS feeds."""
