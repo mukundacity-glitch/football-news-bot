@@ -1,3 +1,4 @@
+import feedparser
 import os
 import re
 import json
@@ -1302,117 +1303,66 @@ async def post_item(post_client, item, data):
         return True
 
     return False
-  # ── SCRAPER CORE ─────────────────────────────────────────────────────────
+  # ── SCRAPER CORE (100% FREE RSS) ─────────────────────────────────────────
 MAX_TWEET_AGE_DAYS = 3
 
-def _parse_tweet_date(raw):
-    if not raw:
-        return None
-    if isinstance(raw, datetime):
-        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
-    s = str(raw).strip()
-    s_norm = re.sub(r'\b(GMT|UTC)\b', '+0000', s)
-    for fmt in ("%a, %d %b %Y %H:%M:%S %z",
-                "%a %b %d %H:%M:%S %z %Y",
-                "%Y-%m-%dT%H:%M:%S%z",
-                "%Y-%m-%d %H:%M:%S%z"):
-        try:
-            dt = datetime.strptime(s_norm, fmt)
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            continue
+RSS_FEEDS = {
+    "BBC_Sport": "https://feeds.bbci.co.uk/sport/football/premier-league/rss.xml",
+    "Transfermarkt": "https://www.transfermarkt.com/rss/news",
+    "SkySports": "https://www.skysports.com/rss/12040"
+}
+
+def clean_html(raw_html):
+    """Strips HTML tags from RSS summaries."""
+    cleanr = re.compile('<.*?>')
+    return re.sub(cleanr, ' ', raw_html).strip()
+
+def _parse_rss_date(raw):
+    if not raw: return None
     try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(raw)
+        return dt if dt.tzinfo else dt.replace(timezone.utc)
+    except Exception:
         return None
 
-def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS, unknown_is_old=True):
-    """True if the item is older than max_days. FAIL-CLOSED: an unparseable/missing
-    date is treated as too old (unknown_is_old=True) so we never publish news whose
-    recency we cannot verify — the bot must not post anything older than 3 days."""
-    dt = _parse_tweet_date(created_at)
-    if dt is None:
-        return unknown_is_old
+def item_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS, unknown_is_old=True):
+    dt = _parse_rss_date(created_at)
+    if dt is None: return unknown_is_old
     age = datetime.now(timezone.utc) - dt
     return age.total_seconds() > max_days * 86400
 
-def get_nitter_tweets(username):
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; RSS reader)"}
-    for inst in NITTER_INSTANCES:
+async def fetch_rss_news():
+    """Replaces Twikit/Nitter with free, reliable RSS feeds."""
+    out = []
+    for source_name, url in RSS_FEEDS.items():
         try:
-            r = requests.get(f"{inst}/{username}/rss", headers=headers, timeout=10)
-            if r.status_code != 200: 
-                continue
-            root = ET.fromstring(r.content)
-            out = []
-            for it in root.findall(".//item")[:20]:
-                link, desc, pubdate = it.find("link"), it.find("description"), it.find("pubDate")
-                if link is None: 
-                    continue
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:20]:
+                tid = hashlib.md5(entry.link.encode('utf-8')).hexdigest()[:15]
                 
-                tid = link.text.strip().split("/")[-1].split("#")[0]
-                desc_text = desc.text if desc is not None and desc.text else ""
-                text = re.sub(r'\<[^\>]+\>', '', desc_text).strip()
+                # Combine Title + Summary to mimic a tweet's text structure
+                summary = clean_html(entry.get('summary', ''))
+                text = f"{entry.title}. {summary}"
                 
-                created_at = pubdate.text.strip() if pubdate is not None and pubdate.text else None
-
-                # Image extraction logic
                 media_url = None
-                img_match = re.search(r'<img[^>]+src="([^">]+)"', desc_text)
-                if img_match:
-                    media_url = img_match.group(1)
-                    if media_url.startswith("/"):
-                        media_url = f"{inst}{media_url}"
-
-                if tid and text: 
+                if 'media_content' in entry and len(entry.media_content) > 0:
+                    media_url = entry.media_content[0].get('url')
+                
+                created_at = entry.get('published', None)
+                
+                if text:
                     out.append({
                         "id": tid, 
                         "text": text, 
                         "media_url": media_url, 
-                        "created_at": created_at
+                        "created_at": created_at,
+                        "username": source_name
                     })
-                    
-            if out: 
-                return out
-                
-        except Exception: 
-            continue
-            
-    return []
-
-async def get_twikit_tweets(read_client, username, count=20, retries=2):
-    if read_client is None: return []
-    for attempt in range(retries):
-        try:
-            user = await read_client.get_user_by_screen_name(username)
-            tweets = await read_client.get_user_tweets(user.id, "Tweets", count=count)
-            out = []
-            for t in tweets:
-                txt = getattr(t, "full_text", None) or getattr(t, "text", "") or ""
-                tid = str(getattr(t, "id", "") or "")
-                created_at = getattr(t, "created_at", None) or getattr(t, "created_at_datetime", None)
-
-                media_url = None
-                if hasattr(t, "media") and t.media:
-                    for m in t.media:
-                        m_type = getattr(m, "type", None) or (m.get("type") if isinstance(m, dict) else None)
-                        if m_type == "photo":
-                            media_url = getattr(m, "media_url_https", None) or (m.get("media_url_https") if isinstance(m, dict) else None)
-                            if media_url: break
-
-                if tid and txt: out.append({"id": tid, "text": txt, "media_url": media_url, "created_at": created_at})
-            return out
         except Exception as e:
-            if attempt + 1 < retries: await asyncio.sleep(3 * (attempt + 1))
-            else: print(f"  [READ] twikit failed for @{username}: {e}")
-    return []
-
-async def fetch_tweets(read_client, username):
-    tweets = await get_twikit_tweets(read_client, username)
-    if tweets: return tweets, "twikit"
-    nit = get_nitter_tweets(username)
-    return nit, ("nitter" if nit else "none")
+            print(f"  [READ] {source_name} feed error: {e}")
+            
+    return out
 
 async def scrape(data, read_client):
     fpl = fetch_fpl_data()
