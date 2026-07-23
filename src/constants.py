@@ -28,9 +28,11 @@ NITTER_INSTANCES = [
 OFFICIAL_ACCOUNTS = {
     "premierleague", "officialfpl", "fpl", "uefa", "fifacom", "fifaworldcup",
     "arsenal", "avfcofficial", "afcbournemouth", "brentfordfc",
-    "officialbhafc", "chelseafc", "cpfc", "everton", "fulhamfc",
+    "officialbhafc", "burnleyofficial", "chelseafc", "cpfc", "everton", "fulhamfc",
+    "ipswichtown", "leedsunited", "lufc",
     "lcfc", "liverpoolfc", "lfc", "mancity", "manutd", "newcastle_nufc", "nufc",
-    "nffc", "southamptonfc", "spursofficial", "westham", "wolves",
+    "nffc", "southamptonfc", "spursofficial", "sunderlandafc", "safc",
+    "westham", "wolves",
 }
 OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {"officialfpl", "fpl", "premierleague", "premierinjuries"}
 ELITE_TRUSTED = {
@@ -40,6 +42,57 @@ TRUSTED_MEDIA = {
     "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
     "guardian_sport", "lequipe", "marca", "diarioas", "as", "kicker",
     "alex_crook", "alexcrabb31", "telegraph", "telegraphfootball",
+    "fotmob", "transfermarkt",
+}
+
+# ── AUTOMATIC CROSS-VERIFICATION SOURCES ─────────────────────────────────
+# Official club website domain + the club's canonical (tier-1) handle, keyed
+# by club key. When a story's club's OWN website carries the news, that is
+# treated as an official confirmation.
+CLUB_OFFICIAL_DOMAINS = {
+    "Arsenal": ("arsenal.com", "arsenal"),
+    "Aston_Villa": ("avfc.co.uk", "avfcofficial"),
+    "Bournemouth": ("afcb.co.uk", "afcbournemouth"),
+    "Brentford": ("brentfordfc.com", "brentfordfc"),
+    "Brighton": ("brightonandhovealbion.com", "officialbhafc"),
+    "Burnley": ("burnleyfootballclub.com", "burnleyofficial"),
+    "Chelsea": ("chelseafc.com", "chelseafc"),
+    "Crystal_Palace": ("cpfc.co.uk", "cpfc"),
+    "Everton": ("evertonfc.com", "everton"),
+    "Fulham": ("fulhamfc.com", "fulhamfc"),
+    "Ipswich": ("itfc.co.uk", "ipswichtown"),
+    "Leeds": ("leedsunited.com", "leedsunited"),
+    "Leicester": ("lcfc.com", "lcfc"),
+    "Liverpool": ("liverpoolfc.com", "liverpoolfc"),
+    "Man_City": ("mancity.com", "mancity"),
+    "Man_Utd": ("manutd.com", "manutd"),
+    "Newcastle": ("newcastleunited.com", "nufc"),
+    "Nottm_Forest": ("nottinghamforest.co.uk", "nffc"),
+    "Southampton": ("southamptonfc.com", "southamptonfc"),
+    "Spurs": ("tottenhamhotspur.com", "spursofficial"),
+    "Sunderland": ("safc.com", "sunderlandafc"),
+    "West_Ham": ("whufc.com", "westham"),
+    "Wolves": ("wolves.co.uk", "wolves"),
+}
+
+# Trusted media website domain -> canonical handle (tier 2/3 via the sets
+# above). Used to map Google News results back onto the source-tier system.
+TRUSTED_MEDIA_DOMAINS = {
+    "bbc.co.uk": "bbcsport",
+    "bbc.com": "bbcsport",
+    "skysports.com": "skysports",
+    "theathletic.com": "theathleticfc",
+    "nytimes.com": "theathleticfc",       # The Athletic lives under NYT
+    "fotmob.com": "fotmob",
+    "theguardian.com": "guardian_sport",
+    "telegraph.co.uk": "telegraph",
+    "transfermarkt.com": "transfermarkt",
+    "transfermarkt.co.uk": "transfermarkt",
+    "transfermarkt.us": "transfermarkt",
+    "premierleague.com": "premierleague",
+    "lequipe.fr": "lequipe",
+    "marca.com": "marca",
+    "kicker.de": "kicker",
 }
 
 # Single source of truth for "this reads as an officially completed deal"

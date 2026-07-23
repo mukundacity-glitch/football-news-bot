@@ -114,6 +114,34 @@ _RAW_JOINT_AGREEMENT = re.compile(
     r"(?:an?\s+)?(?:full\s+)?agreement\b")
 _ORIGIN_STOPWORDS = {"the", "a", "an", "his", "her", "their", "june", "july",
                      "january", "summer", "winter", "next", "last"}
+# News-prose words that can NEVER be part of a club name. A raw capture is cut
+# at the first one of these, so "from Sporting. Negotiations ..." resolves to
+# "Sporting", never the sentence fragment "Sporting. Negotiations".
+_CLUB_JUNK_WORDS = {
+    "negotiations", "negotiation", "talks", "deal", "deals", "move", "moves",
+    "transfer", "transfers", "loan", "fee", "fees", "medical", "agreement",
+    "sources", "exclusive", "breaking", "official", "confirmed", "personal",
+    "terms", "bid", "offer", "swap", "clause", "update", "news", "story",
+    "latest", "here", "reports", "report", "understand", "understands",
+}
+
+
+def _clean_raw_club(cand):
+    """Sanitise a raw proper-noun club capture: cut at the first sentence
+    boundary and at the first news-prose word, so grammar captures that ran
+    past the club name can't leak sentence fragments onto cards/tweets."""
+    if not cand:
+        return None
+    cand = re.split(r"[.;:!?\n]\s", str(cand))[0]
+    kept = []
+    for w in cand.split():
+        if _norm(w) in _CLUB_JUNK_WORDS:
+            break
+        kept.append(w)
+    cand = " ".join(kept).strip().rstrip(".,;:")
+    if not cand or _norm(cand.split()[0]) in _ORIGIN_STOPWORDS:
+        return None
+    return cand
 _SUBJECT_SIGN = re.compile(
     r"\b(sign|signs|signed|complete[sd]?\s+the\s+signing\s+of|"
     r"complete[sd]?\s+signing\s+of|land[s]?|announce[sd]?|unveil[s]?|"
@@ -127,8 +155,8 @@ def _lookup_club(raw_phrase):
     for phrase, (canon, key) in _LEXICON:
         if n == phrase or n.endswith(" " + phrase) or n.startswith(phrase + " "):
             return canon, key
-    cand = raw_phrase.strip().rstrip(".,;:")
-    if cand and _norm(cand.split()[0]) not in _ORIGIN_STOPWORDS:
+    cand = _clean_raw_club(raw_phrase)
+    if cand:
         return cand, None
     return None, None
 
@@ -159,9 +187,7 @@ def resolve(text):
     if from_club is None:
         m = _RAW_ORIGIN.search(text or "") or _RAW_ORIGIN_AGREE.search(text or "")
         if m:
-            cand = m.group(1).strip().rstrip(".,;:")
-            if cand and _norm(cand.split()[0]) not in _ORIGIN_STOPWORDS:
-                from_club = cand
+            from_club = _clean_raw_club(m.group(1))
 
     # DESTINATION 1: club immediately preceded by a movement verb OR bare "to".
     for start, canon, key in clubs:

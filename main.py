@@ -24,6 +24,7 @@ from src.entity_guard import (is_postable_player, classify_entity,
                               is_staff_subject, staff_role_of, staff_action_of)
 from src import confidence as _conf
 from src import direction as _direction
+from src.verifier import cross_verify
 from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
@@ -105,7 +106,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-14-elite-source-signal"
+_LOGIC_VER = "2026-07-23-fpl-entity-guard-club-clean"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -115,11 +116,22 @@ from src.constants import (
     CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP, STRONG_OFFICIAL_CUES
 )
 
+# Tier sets are compared on a normalised (alphanumeric-only) form so feed
+# names like "BBC_Sport" / "Sky Sports" match their canonical handles
+# ("bbcsport", "skysports") instead of silently dropping to tier 0.
+def _norm_handle(h: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (h or "").lower())
+
+_OFFICIAL_N = {_norm_handle(h) for h in OFFICIAL_ACCOUNTS}
+_ELITE_N = {_norm_handle(h) for h in ELITE_TRUSTED}
+_TRUSTED_N = {_norm_handle(h) for h in TRUSTED_MEDIA}
+_OFFICIAL_INJURY_N = {_norm_handle(h) for h in OFFICIAL_INJURY_ACCOUNTS}
+
 def source_tier(handle: str) -> int:
-    h = (handle or "").lower().lstrip("@")
-    if h in OFFICIAL_ACCOUNTS: return 1
-    if h in ELITE_TRUSTED: return 2
-    if h in TRUSTED_MEDIA: return 3
+    h = _norm_handle(handle)
+    if h in _OFFICIAL_N: return 1
+    if h in _ELITE_N: return 2
+    if h in _TRUSTED_N: return 3
     return 0
 
 # Retained local variables required for cache wiring fallback
@@ -353,8 +365,11 @@ def build_story(tweet_text, fpl_data):
     # this is NOT a player transfer. Tag the role/action for accurate wording and
     # re-route any player event to STAFF/MANAGER news so it is classified
     # correctly and still posts — never as a fake player move.
-    if s.get("player") and is_staff_subject(s.get("player"), tweet_text):
-        s["staff_role"] = staff_role_of(s.get("player"), tweet_text)
+    # fpl_data MUST be passed: it is the ground-truth guard that stops a real,
+    # rostered PLAYER (e.g. Garnacho) being re-routed to the manager pipeline
+    # just because role-cue words ("the ... job", "boss") sit near his name.
+    if s.get("player") and is_staff_subject(s.get("player"), tweet_text, fpl_data):
+        s["staff_role"] = staff_role_of(s.get("player"), tweet_text, fpl_data)
         s["staff_action"] = staff_action_of(tweet_text)
         if s.get("event") in _PLAYER_EVENTS:
             s["event"] = "manager"
@@ -392,7 +407,13 @@ def build_story(tweet_text, fpl_data):
     # for the loan itself — loan fees exist but are almost always < £20M.
     if s.get("event") in ("loan", "loan_option") and s.get("fee"):
         _raw_lower = (tweet_text or "").lower()
-        if not any(p in _raw_lower for p in ("loan fee", "loan payment", "season fee")):
+        # A fee tied to a buy clause ("obligation/option to buy for €X") is a
+        # genuine, reportable number — keep it. Only a bare amount with no
+        # loan-fee or buy-clause context is treated as a market-value misparse.
+        _FEE_KEEP_CUES = ("loan fee", "loan payment", "season fee",
+                          "obligation to buy", "option to buy", "buy clause",
+                          "buy option", "obligation to sign", "future fee")
+        if not any(p in _raw_lower for p in _FEE_KEEP_CUES):
             s["fee"] = None
 
     # 🛡️ FREE AGENT DETECTOR (100% Dynamic, No Hardcoding)
@@ -411,9 +432,17 @@ def build_story(tweet_text, fpl_data):
         s["is_free"] = True
         s["fee"] = "Free transfer"
 
-    try: 
+    # CLUB-FIELD SANITATION: whatever path filled from_club/to_club, the value
+    # printed on the card/tweet must be a club NAME, never a sentence fragment
+    # ("Sporting. Negotiations"). Re-clean both raw fields as a last line of
+    # defence; a field that cleans away to nothing is dropped entirely.
+    for _f in ("from_club", "to_club"):
+        if s.get(_f):
+            s[_f] = _direction._clean_raw_club(s[_f])
+
+    try:
         s["stage"] = max(1, min(4, int(s.get("stage", 1))))
-    except Exception: 
+    except Exception:
         s["stage"] = 1
         
     s["collapsed"] = bool(s.get("collapsed"))
@@ -476,10 +505,43 @@ def content_hash(story: dict) -> str:
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
+def _same_person(a: str, b: str) -> bool:
+    """True when two extracted names refer to the same person despite variant
+    forms — 'Alejandro Garnacho' vs 'Alejandro Garnacho Ferreyra'. One name's
+    tokens being a subset of the other's, or sharing 2+ tokens, is a match."""
+    ta, tb = set(_norm_text(a).split()), set(_norm_text(b).split())
+    if not ta or not tb:
+        return False
+    return ta <= tb or tb <= ta or len(ta & tb) >= 2
+
 def is_duplicate_content(story: dict, data: dict, threshold: float = 0.90):
     h = content_hash(story)
     if h in data.get("posted_hashes", []): return True, "content_hash"
-    
+
+    # CROSS-STORY GUARDS against already-POSTED stories. Two failure modes the
+    # plain hash can't see, both real incidents:
+    #  1. The SAME person posted under two different event families (a loan AND
+    #     a "manager" story) — contradictory posts about one piece of news.
+    #  2. The SAME story re-posted under a name variant ('Garnacho' vs
+    #     'Garnacho Ferreyra'), which mints a different key and hash.
+    fam = _event_family(story.get("event"))
+    my_clubs = {k for k in (story.get("to_key"), story.get("from_key")) if k}
+    for prev in data.get("stories", {}).values():
+        if not _same_person(prev.get("player"), story.get("player")):
+            continue
+        prev_fam = _event_family(prev.get("event"))
+        prev_clubs = {k for k in (prev.get("to_key"),) if k}
+        overlap = (bool(my_clubs & prev_clubs) if (my_clubs and prev_clubs)
+                   else True)
+        if not overlap:
+            continue
+        if {prev_fam, fam} == {"transfer", "manager"}:
+            return True, "conflicting_event_family_same_person"
+        if (prev_fam == fam and prev.get("status") == "active"
+                and my_clubs and prev_clubs and (my_clubs & prev_clubs)
+                and int(story.get("stage", 1)) <= int(prev.get("stage", 0))):
+            return True, "same_story_name_variant"
+
     player_name = _norm_text(story.get("player") or "")
     event_type = _norm_text(story.get("event") or "")
     stage_num = str(story.get("stage", 1))
@@ -694,6 +756,7 @@ def score_confidence(story, fpl_data=None, sources=None):
         official_source=(1 in tiers),
         elite_source=(2 in tiers),
         n_sources=len(set(s.lower() for s in sources if s)),
+        fpl_data=fpl_data,
     )
     print("  " + _conf.decision_log_line(story, result))
     return result
@@ -715,9 +778,17 @@ def validate_story(story, fpl_data=None, sources=None):
     # ENTITY SAFETY GATE (hard reject): the subject must be a real player, never a
     # journalist, company/sponsor, stadium, or a coach filed as a player transfer.
     _ent_text = " . ".join(str(story.get(k, "") or "") for k in ("raw_text", "body", "headline"))
-    _ent_ok, _ent_reason = is_postable_player(player, _ent_text, ev)
+    _ent_ok, _ent_reason = is_postable_player(player, _ent_text, ev, fpl_data)
     if not _ent_ok:
         return False, _ent_reason
+
+    # PLAYER-IS-NOT-A-MANAGER GATE: a name the live FPL feed confirms as a
+    # rostered player can NEVER be the subject of manager/staff news. Kills
+    # the "ALEJANDRO GARNACHO LINKED WITH THE ASTON VILLA JOB" failure where
+    # role-cue words near a player's name re-routed a transfer to the staff
+    # pipeline and produced a second, contradictory post.
+    if ev == "manager" and fpl_data and find_player_in_fpl(player, fpl_data) is not None:
+        return False, "manager_subject_is_active_player"
     _ptokens = [t for t in re.split(r"[\s\-']+", player) if t]
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
@@ -888,7 +959,7 @@ def verify_card_data(item: dict, fpl_data=None):
         sources = item.get("sources", []) or []
         tiers = [source_tier(s) for s in sources]
         approved = any(t in (1, 2) for t in tiers) or any(
-            (s or "").lower().lstrip("@") in OFFICIAL_INJURY_ACCOUNTS for s in sources)
+            _norm_handle(s) in _OFFICIAL_INJURY_N for s in sources)
         if not approved:
             return False, "injury_source_not_approved", report
         report.append(f"injury source ✓ approved ({', '.join('@' + s for s in sources[:2]) or 'n/a'})")
@@ -1501,6 +1572,43 @@ async def scrape(data):
         "at": datetime.now(timezone.utc).isoformat(),
     }
     
+    # ── AUTOMATIC CROSS-VERIFICATION ─────────────────────────────────────
+    # Every candidate story is checked against independent reliable outlets
+    # (official club websites, Google News, FotMob/Sky/BBC/The Athletic,
+    # elite journalists on X) BEFORE the publish decision. Corroborating
+    # outlets are merged into the source list so the tier/classification and
+    # confidence engines upgrade genuinely-confirmed news to auto-post;
+    # uncorroborated stories simply wait and are re-verified next run.
+    read_client = None
+    if story_map and X_AUTH_TOKEN and X_CT0_TOKEN:
+        try:
+            read_client = Client("en-US")
+            read_client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
+        except Exception as e:
+            print(f"  [X-VERIFY] read client unavailable ({e}) — journalist check skipped.")
+
+    _verify_budget = 15  # bound network calls on a freak news day
+    for key, st in story_map.items():
+        if _verify_budget <= 0:
+            break
+        _verify_budget -= 1
+        try:
+            ver = await cross_verify(st, known_sources=st["sources"],
+                                     read_client=read_client)
+        except Exception as e:
+            ver = {"handles": [], "official_confirmed": False,
+                   "n_independent": 0, "log": [f"verifier error: {e}"]}
+        for h in ver["handles"]:
+            st["sources"].append(h)
+        st["sources"] = list(dict.fromkeys(st["sources"]))
+        st["official_confirmed"] = ver["official_confirmed"]
+        st["cross_verified"] = len(st["sources"]) >= 2 or ver["official_confirmed"]
+        print(f"  [X-VERIFY] {st.get('player')!r}: +{ver['n_independent']} "
+              f"corroborating source(s) {ver['handles']!r}"
+              f"{' + OFFICIAL CLUB CONFIRMATION' if ver['official_confirmed'] else ''}")
+        for line in ver["log"][:6]:
+            print(f"             {line}")
+
     ready = []
     for key, st in story_map.items():
         _final_cres = score_confidence(st, fpl, sources=st["sources"])
@@ -1822,17 +1930,19 @@ async def main(post: bool = True, allow_rumours: bool = False):
     # score to REVIEW, because REVIEW means the pipeline isn't sure the
     # extraction (player/club/direction/entity) is even right. That is a
     # "don't guess" situation, not a rumour-vs-confirmed judgement call, so it
-    # is never bypassable. REVIEW-tier stories always stay as drafts in the
-    # queue for a human to review; nothing legitimate is lost, it just isn't
-    # auto-published.
+    # is never bypassable. REVIEW-tier stories are NOT published this run;
+    # they are automatically re-scraped and re-cross-verified on every later
+    # run, so as soon as enough reliable outlets corroborate the story it
+    # clears AUTO_POST and publishes by itself — no manual step anywhere.
     def _conf_ok(d):
         return d.get("confidence_decision", "AUTO_POST") == _conf.AUTO_POST
 
     postable = [d for d in drafts if d.get("mode") in modes_ok and _conf_ok(d)]
     _held = [d for d in drafts if d.get("mode") in modes_ok and not _conf_ok(d)]
     if _held:
-        print(f"[BOT] {len(_held)} story(ies) held for REVIEW (confidence 75-89) — "
-              f"saved as drafts, not auto-posted.")
+        print(f"[BOT] {len(_held)} story(ies) not yet corroborated by enough "
+              f"reliable sources (confidence 75-89) — held back and will be "
+              f"re-cross-verified automatically on the next scheduled run.")
 
     if not postable:
         print("[BOT] No postable stories this run "
