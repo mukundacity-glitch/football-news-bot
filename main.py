@@ -708,9 +708,22 @@ def classify_post(story, sources):
 
     # Manager / staff: only a concrete appointment or departure is posted.
     # Pure "linked with the job" speculation returns None — pending, not posted.
+    # All three conditions must hold: concrete action type, reliable source tier,
+    # AND actual confirmation language in the text. An elite reporter saying
+    # "linked with the job" is NOT enough — the appointment must be real.
     if story.get("event") == "manager":
         action = story.get("staff_action")
-        if action in ("appointment", "departure") and (has_official or n_elite >= 1):
+        tl_mgr = (story.get("body", "") + " " + (story.get("headline", "") or "")
+                  + " " + (story.get("raw_text", "") or "")).lower()
+        _MGR_CONFIRM_CUES = (
+            "appointed", "confirmed", "official", "announced", "signed",
+            "here we go", "completed", "agreed", "sacked", "dismissed",
+            "left the club", "departure confirmed", "leaves as",
+        )
+        has_mgr_confirm = any(c in tl_mgr for c in _MGR_CONFIRM_CUES)
+        if (action in ("appointment", "departure")
+                and (has_official or n_elite >= 1)
+                and has_mgr_confirm):
             return "confirmed"
         return None
 
@@ -790,6 +803,31 @@ def validate_story(story, fpl_data=None, sources=None):
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
     if ev == "manager" and len(_ptokens) < 2: return False, "manager_name_single_token"
+
+    # MANAGER SPECULATION GATE: pure speculation without actual appointment/departure
+    # language is blocked here rather than waiting for classify_post(). "Linked with",
+    # "frontrunner", "in the frame" etc. from even elite sources must NOT auto-post —
+    # the appointment itself must be real. This killed the Iraola-to-Liverpool false post
+    # where speculation language ("linked with") yielded staff_action="appointment".
+    if ev == "manager":
+        _mgr_blob = (story.get("raw_text", "") + " " + story.get("body", "") + " "
+                     + (story.get("headline") or "")).lower()
+        _MGR_SPEC_CUES = (
+            "linked with", "could be appointed", "in the frame", "in contention",
+            "shortlisted", "being considered", "candidate for",
+            "frontrunner", "favourite for the job", "interviewed for",
+            "could take charge", "being lined up", "lined up as",
+            "set to hold talks", "approach made", "interest in",
+        )
+        _MGR_CONFIRM_CUES = (
+            "appointed", "confirmed", "signed", "official", "announced",
+            "here we go", "completed", "agreed", "left the club", "sacked",
+            "dismissed", "departure confirmed", "leaves as",
+        )
+        if (any(c in _mgr_blob for c in _MGR_SPEC_CUES)
+                and not any(c in _mgr_blob for c in _MGR_CONFIRM_CUES)):
+            return False, "manager_speculation_language"
+
     if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
 
@@ -1819,6 +1857,16 @@ async def scrape(data):
         st["confidence_score"] = _final_cres["score"]
         st["confidence_decision"] = _final_cres["decision"]
 
+        # FINAL AGE HARD-GATE: stories can sit in pending accumulating sources for
+        # days. If the original source item is now stale (> 3 days old), never
+        # publish — the news is too old regardless of confidence score. Remove from
+        # pending so it doesn't block queue and wastes no further verification effort.
+        _final_created = st.get("created_at")
+        if _final_created and tweet_too_old(_final_created, unknown_is_old=False):
+            print(f"   [BLOCK] {st.get('player')!r}: source item stale ({_final_created}) — skipping")
+            data["pending"].pop(key, None)
+            continue
+
         if not st.get("contradicted") and st.get("event") in ("transfer", "loan", "loan_option"):
             _pnorm = (st.get("player") or "").lower().strip()
             _new_dest = _norm_text(st.get("to_key") or st.get("to_club") or "")
@@ -1832,6 +1880,24 @@ async def scrape(data):
                             print(f"   [BLOCK] {st.get('player')!r}: already confirmed "
                                   f"(stage {_prev['stage']}) to {_prev_dest!r}; "
                                   f"new story says {_new_dest!r} — marking contradicted")
+                            st["contradicted"] = True
+                            break
+
+        # MANAGER ALREADY-AT-CLUB GUARD: if we already have a confirmed (stage≥4)
+        # posting of this manager at the SAME destination club, suppress the
+        # duplicate. Parallel to the transfer already-confirmed guard above.
+        if not st.get("contradicted") and st.get("event") == "manager":
+            _mgr_name_n = (st.get("player") or "").lower().strip()
+            _mgr_dest_n = _norm_text(st.get("to_key") or st.get("to_club") or "")
+            if _mgr_name_n and _mgr_dest_n:
+                for _prev in data.get("stories", {}).values():
+                    if ((_prev.get("player") or "").lower().strip() == _mgr_name_n
+                            and _prev.get("event") == "manager"
+                            and _prev.get("stage", 0) >= 4):
+                        _prev_dest_n = _norm_text(_prev.get("to_key") or _prev.get("to_club") or "")
+                        if _prev_dest_n and _prev_dest_n == _mgr_dest_n:
+                            print(f"   [BLOCK] {st.get('player')!r}: already confirmed manager "
+                                  f"at {_mgr_dest_n!r} (stage {_prev['stage']}) — suppressing duplicate")
                             st["contradicted"] = True
                             break
 
