@@ -5,9 +5,11 @@ Handles generation of cinematic transfer and injury cards via PIL and Playwright
 
 import os
 import re
+import json
 import base64
 import hashlib
 import urllib.request
+import urllib.parse
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -178,16 +180,14 @@ def _img_assets(story):
         pname = story.get("player", "")
         if pname:
             try:
-                import urllib.parse as _up
                 wiki_api = ("https://en.wikipedia.org/api/rest_v1/page/summary/"
-                            + _up.quote(pname.replace(" ", "_")))
+                            + urllib.parse.quote(pname.replace(" ", "_")))
                 req = urllib.request.Request(
                     wiki_api,
                     headers={"User-Agent": "FPLVortexBot/1.0 (football-news-bot)"}
                 )
                 with urllib.request.urlopen(req, timeout=8) as resp:
-                    import json as _json
-                    wdata = _json.loads(resp.read().decode("utf-8"))
+                    wdata = json.loads(resp.read().decode("utf-8"))
                 thumb = wdata.get("thumbnail", {}).get("source", "")
                 if thumb:
                     wp = Path("players/wiki_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".jpg")
@@ -204,16 +204,14 @@ def _img_assets(story):
         pname = story.get("player", "")
         if pname:
             try:
-                import json as _json
-                import urllib.parse as _up
                 espn_url = ("https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1"
-                            "/athletes?search=" + _up.quote(pname) + "&limit=5")
+                            "/athletes?search=" + urllib.parse.quote(pname) + "&limit=5")
                 req = urllib.request.Request(
                     espn_url,
                     headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)"}
                 )
                 with urllib.request.urlopen(req, timeout=8) as resp:
-                    edata = _json.loads(resp.read().decode("utf-8"))
+                    edata = json.loads(resp.read().decode("utf-8"))
                 athletes = edata.get("athletes") or []
                 for ath in athletes[:3]:
                     ath_id = str(ath.get("id") or "")
@@ -265,17 +263,15 @@ def _img_assets(story):
         pname = story.get("player", "")
         if pname:
             try:
-                import json as _json
-                import urllib.parse as _up
                 fotmob_url = ("https://www.fotmob.com/api/search?term="
-                              + _up.quote(pname) + "&lang=en")
+                              + urllib.parse.quote(pname) + "&lang=en")
                 req = urllib.request.Request(
                     fotmob_url,
                     headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)",
                              "Accept": "application/json"}
                 )
                 with urllib.request.urlopen(req, timeout=8) as resp:
-                    fdata = _json.loads(resp.read().decode("utf-8"))
+                    fdata = json.loads(resp.read().decode("utf-8"))
                 players = fdata.get("squad") or fdata.get("players") or []
                 for entry in players[:3]:
                     fid = str(entry.get("id") or "")

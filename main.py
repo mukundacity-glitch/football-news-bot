@@ -25,12 +25,6 @@ from src.entity_guard import (is_postable_player, classify_entity,
 from src import confidence as _conf
 from src import direction as _direction
 from src.verifier import cross_verify
-from src.constants import (
-    CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
-    JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
-    ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
-    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP
-)
 
 # Shared Canvas Namespace Initialization
 FONT = ImageFont.load_default()
@@ -1203,8 +1197,6 @@ def trim_for_twitter(body: str, limit: int = 278) -> str:
     return out.rstrip() + "…"
 
 
-
-from src.renderer import create_transfer_image, create_injury_image, _create_fallback_card
 
 # ── QUEUE ARCHIVE MANAGEMENT ─────────────────────────────────────────────
 
