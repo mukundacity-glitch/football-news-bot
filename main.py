@@ -1971,30 +1971,28 @@ async def build_draft(item, data, fpl):
         return None
         
     body = trim_for_twitter(build_tweet_body(item, item["sources"], mode), limit=278)
-    save_draft(item, body, image_path)
-    
+    if SAVE_DRAFTS_TO_DISK:
+        save_draft(item, body, image_path)
+
     item["draft_caption"] = body
     item["draft_image"] = str(image_path)
-    
-    print(f"  DRAFT READY [{label}]: {item['player']} — {item['event']} "
+
+    print(f"  QUEUED [{label}]: {item['player']} — {item['event']} "
           f"(stage {item['stage']}, {len(item['sources'])} src) -> {image_path.name}")
     return item
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
 
 # ================== AUTO-POST SAFETY CONFIG ==================
-# Auto-posting is OPT-IN. It stays OFF (draft-only) unless you explicitly set
-# the env var ENABLE_AUTOPOST=true. The GitHub Actions BOT_PAUSED repo variable
-# remains a separate, independent kill switch.
+# ENABLE_AUTOPOST defaults ON — the bot is fully hands-free by default.
+# To pause posting without a code change, set repo env var ENABLE_AUTOPOST=false.
+# To force draft-only for a single run, pass --draft-only on the CLI.
 #
 # Policy: NEVER getting flagged is the priority. Posts go out one at a time,
-# well spaced (the jitter below is the real anti-flag mechanism), highest-value
-# PLAYER news first (see EVENT_PRIORITY). On a normal day every story posts; on
-# a freak flood the per-run/hour caps defer the least important items to the
-# next run rather than bursting. If X ever pushes back, the cooldown engages.
-#
-# Auto-post defaults ON so it's set-and-forget after merge. To pause without a
-# code change, set repo Variable ENABLE_AUTOPOST=false (or BOT_PAUSED=true).
+# spaced by human-like jitter (the real anti-flag mechanism). Highest-value
+# PLAYER news posts first (see EVENT_PRIORITY). Per-run and per-hour caps
+# defer overflow items to the next run rather than bursting. If X flags us,
+# the cooldown engages and blocks all posting until the back-off window clears.
 ENABLE_AUTOPOST = ((os.getenv("ENABLE_AUTOPOST") or "true").strip().lower() == "true")
 MAX_POSTS_PER_RUN = _env_int("MAX_POSTS_PER_RUN", 10)
 MAX_POSTS_PER_HOUR = _env_int("MAX_POSTS_PER_HOUR", 12)
@@ -2008,9 +2006,10 @@ POST_JITTER_RANGE_S = (
 COOLDOWN_FLAGGED_MIN = _env_int("COOLDOWN_FLAGGED_MIN", 180)     # 3h after 226/326
 COOLDOWN_RATELIMIT_MIN = _env_int("COOLDOWN_RATELIMIT_MIN", 30)  # 30m after 429
 
-# Draft saving settings
-SAVE_DRAFTS_TO_DISK = True
-DRAFTS_FOLDER = "fpl_drafts"        # All drafts will be saved here
+# Set SAVE_DRAFTS_TO_DISK=False to skip writing draft files to fpl_drafts/
+# (images in queue/pending/ are always kept — they are needed for posting).
+SAVE_DRAFTS_TO_DISK = ((os.getenv("SAVE_DRAFTS_TO_DISK") or "true").strip().lower() != "false")
+DRAFTS_FOLDER = "fpl_drafts"
 # ============================================================
 
 # Posting order when there's a queue — PLAYER news goes out first so the most
@@ -2123,7 +2122,6 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
         print("[DRY-RUN] FAIL: some images did not render — investigate above.")
 
 
-# 1. Unindent main to the absolute left edge (module level)
 async def main(post: bool = True, allow_rumours: bool = False):
     # ================== POSTING MODE ==================
     # Live posting only when ENABLE_AUTOPOST=true AND the run wasn't forced to
@@ -2150,8 +2148,6 @@ async def main(post: bool = True, allow_rumours: bool = False):
         print(f"[BOT] X safety cooldown active until {data.get('cooldown_until')} — "
               f"not posting this run.")
         post = False
-    
-    # ... rest of your main() logic
 
     if not check_daily_limit(data):
         print("[BOT] Daily limit reached — nothing will post today.")
@@ -2161,11 +2157,11 @@ async def main(post: bool = True, allow_rumours: bool = False):
     if not queue:
         rh = data.get("last_read_health", {})
         if rh.get("fail_ratio", 0) >= 0.15:
-            print("[BOT] No drafts — but over half of sources failed to read. "
-                  "Likely a READ/access problem, not a quiet news day. "
-                  "Verify X cookies and Nitter, then re-run.")
+            print("[BOT] No postable stories — but many sources failed to read. "
+                  "Likely a network/cookie issue, not a quiet news day. "
+                  "Check Nitter availability and RSS feeds, then re-run.")
         else:
-            print("[BOT] Quiet run. No new stories found (sources read OK).")
+            print("[BOT] Quiet run — no new stories cleared all gates (sources read OK).")
         save_data(data)
         return
 
@@ -2175,17 +2171,24 @@ async def main(post: bool = True, allow_rumours: bool = False):
         if built is not None:
             drafts.append(built)
     save_data(data)
-    print(f"\n[BOT] {len(drafts)} draft(s) written to {PENDING_DIR}/.")
 
     if not post:
-        print("[BOT] DRAFT-ONLY run. Review drafts in queue/pending/ and re-run "
-              "with --post to publish.")
+        print(f"\n[BOT] DRAFT-ONLY mode — {len(drafts)} item(s) prepared. "
+              f"Images in {PENDING_DIR}/"
+              + (f", text in {DRAFTS_FOLDER}/" if SAVE_DRAFTS_TO_DISK else "")
+              + ". Set ENABLE_AUTOPOST=true to enable live posting.")
+        return
+
+    if not drafts:
+        print("[BOT] No items passed all validation gates this run.")
         return
 
     if not (X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN):
-        print("[BOT] --post set but no posting cookies. "
-              "Set X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN. Nothing posted.")
+        print("[BOT] ENABLE_AUTOPOST=true but posting credentials are missing. "
+              "Set X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN. Nothing was posted.")
         return
+
+    print(f"\n[BOT] {len(drafts)} item(s) prepared — evaluating for live post…")
 
     # Accuracy safety: by default only fully CONFIRMED/OFFICIAL stories go live.
     # Lower-confidence RUMOURs are posted only when explicitly opted in.
