@@ -214,8 +214,9 @@ def hashtag_for(name_or_key: str):
 CLUB_FULL_NAME = {
     "Arsenal": "Arsenal", "Aston_Villa": "Aston Villa", "Bournemouth": "Bournemouth",
     "Brentford": "Brentford", "Brighton": "Brighton", "Burnley": "Burnley",
-    "Chelsea": "Chelsea", "Crystal_Palace": "Crystal Palace", "Everton": "Everton",
-    "Fulham": "Fulham", "Ipswich": "Ipswich Town", "Leeds": "Leeds United",
+    "Chelsea": "Chelsea", "Coventry": "Coventry City", "Crystal_Palace": "Crystal Palace",
+    "Everton": "Everton", "Fulham": "Fulham", "Hull": "Hull City",
+    "Ipswich": "Ipswich Town", "Leeds": "Leeds United",
     "Leicester": "Leicester City", "Liverpool": "Liverpool", "Man_City": "Manchester City",
     "Man_Utd": "Manchester United", "Newcastle": "Newcastle United", "Nottm_Forest": "Nottingham Forest",
     "Southampton": "Southampton", "Spurs": "Tottenham", "Sunderland": "Sunderland",

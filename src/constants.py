@@ -15,7 +15,7 @@ DRAFTS_DIR = Path("fpl_drafts")
 
 # Target Scrape Accounts
 JOURNALISTS = [
-    "FabrizioRomano", "David_Ornstein", 
+    "FabrizioRomano", "David_Ornstein",
 ]
 
 NITTER_INSTANCES = [
@@ -24,20 +24,31 @@ NITTER_INSTANCES = [
     "https://nitter.poast.org",
 ]
 
-# Source Verification Tiers
+# ── SOURCE VERIFICATION TIERS ─────────────────────────────────────────────
+# Handles are compared via _norm_handle (strip non-alnum, lowercase) so
+# "BBC_Sport" normalises to "bbcsport", "Sky Sports" -> "skysports", etc.
 OFFICIAL_ACCOUNTS = {
     "premierleague", "officialfpl", "fpl", "uefa", "fifacom", "fifaworldcup",
+    # Current PL clubs
     "arsenal", "avfcofficial", "afcbournemouth", "brentfordfc",
-    "officialbhafc", "burnleyofficial", "chelseafc", "cpfc", "everton", "fulhamfc",
-    "ipswichtown", "leedsunited", "lufc",
-    "lcfc", "liverpoolfc", "lfc", "mancity", "manutd", "newcastle_nufc", "nufc",
-    "nffc", "southamptonfc", "spursofficial", "sunderlandafc", "safc",
-    "westham", "wolves",
+    "officialbhafc", "chelseafc", "cpfc", "everton", "fulhamfc",
+    "ipswichtown", "lcfc", "liverpoolfc", "lfc", "mancity", "manutd",
+    "newcastle_nufc", "nufc", "nffc", "southamptonfc", "spursofficial",
+    "sunderlandafc", "safc", "coventrycity", "hullcity",
+    # Relegated clubs — still in scope for player transfer/injury news
+    "burnleyofficial", "westham", "wolves",
+    # Championship / EFL clubs frequently involved in PL transfers
+    "leedsunited", "lufc",
 }
-OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {"officialfpl", "fpl", "premierleague", "premierinjuries"}
+
+OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {
+    "officialfpl", "fpl", "premierleague", "premierinjuries",
+}
+
 ELITE_TRUSTED = {
-    "fabrizioromano", "david_ornstein", 
+    "fabrizioromano", "david_ornstein",
 }
+
 TRUSTED_MEDIA = {
     "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
     "guardian_sport", "lequipe", "marca", "diarioas", "as", "kicker",
@@ -51,51 +62,53 @@ TRUSTED_MEDIA = {
 # by club key. When a story's club's OWN website carries the news, that is
 # treated as an official confirmation.
 CLUB_OFFICIAL_DOMAINS = {
-    "Arsenal": ("arsenal.com", "arsenal"),
-    "Aston_Villa": ("avfc.co.uk", "avfcofficial"),
-    "Bournemouth": ("afcb.co.uk", "afcbournemouth"),
-    "Brentford": ("brentfordfc.com", "brentfordfc"),
-    "Brighton": ("brightonandhovealbion.com", "officialbhafc"),
-    "Burnley": ("burnleyfootballclub.com", "burnleyofficial"),
-    "Chelsea": ("chelseafc.com", "chelseafc"),
-    "Crystal_Palace": ("cpfc.co.uk", "cpfc"),
-    "Everton": ("evertonfc.com", "everton"),
-    "Fulham": ("fulhamfc.com", "fulhamfc"),
-    "Ipswich": ("itfc.co.uk", "ipswichtown"),
-    "Leeds": ("leedsunited.com", "leedsunited"),
-    "Leicester": ("lcfc.com", "lcfc"),
-    "Liverpool": ("liverpoolfc.com", "liverpoolfc"),
-    "Man_City": ("mancity.com", "mancity"),
-    "Man_Utd": ("manutd.com", "manutd"),
-    "Newcastle": ("newcastleunited.com", "nufc"),
-    "Nottm_Forest": ("nottinghamforest.co.uk", "nffc"),
-    "Southampton": ("southamptonfc.com", "southamptonfc"),
-    "Spurs": ("tottenhamhotspur.com", "spursofficial"),
-    "Sunderland": ("safc.com", "sunderlandafc"),
-    "West_Ham": ("whufc.com", "westham"),
-    "Wolves": ("wolves.co.uk", "wolves"),
+    "Arsenal":        ("arsenal.com",                 "arsenal"),
+    "Aston_Villa":    ("avfc.co.uk",                  "avfcofficial"),
+    "Bournemouth":    ("afcb.co.uk",                  "afcbournemouth"),
+    "Brentford":      ("brentfordfc.com",              "brentfordfc"),
+    "Brighton":       ("brightonandhovealbion.com",    "officialbhafc"),
+    "Burnley":        ("burnleyfootballclub.com",       "burnleyofficial"),
+    "Chelsea":        ("chelseafc.com",               "chelseafc"),
+    "Coventry":       ("coventrycityfc.co.uk",         "coventrycity"),
+    "Crystal_Palace": ("cpfc.co.uk",                  "cpfc"),
+    "Everton":        ("evertonfc.com",               "everton"),
+    "Fulham":         ("fulhamfc.com",                "fulhamfc"),
+    "Hull":           ("hullcityafc.co.uk",            "hullcity"),
+    "Ipswich":        ("itfc.co.uk",                  "ipswichtown"),
+    "Leeds":          ("leedsunited.com",              "leedsunited"),
+    "Leicester":      ("lcfc.com",                    "lcfc"),
+    "Liverpool":      ("liverpoolfc.com",              "liverpoolfc"),
+    "Man_City":       ("mancity.com",                 "mancity"),
+    "Man_Utd":        ("manutd.com",                  "manutd"),
+    "Newcastle":      ("newcastleunited.com",          "nufc"),
+    "Nottm_Forest":   ("nottinghamforest.co.uk",       "nffc"),
+    "Southampton":    ("southamptonfc.com",            "southamptonfc"),
+    "Spurs":          ("tottenhamhotspur.com",         "spursofficial"),
+    "Sunderland":     ("safc.com",                    "sunderlandafc"),
+    "West_Ham":       ("whufc.com",                   "westham"),
+    "Wolves":         ("wolves.co.uk",                "wolves"),
 }
 
 # Trusted media website domain -> canonical handle (tier 2/3 via the sets
 # above). Used to map Google News results back onto the source-tier system.
 TRUSTED_MEDIA_DOMAINS = {
-    "bbc.co.uk": "bbcsport",
-    "bbc.com": "bbcsport",
-    "skysports.com": "skysports",
-    "theathletic.com": "theathleticfc",
-    "nytimes.com": "theathleticfc",       # The Athletic lives under NYT
-    "fotmob.com": "fotmob",
-    "theguardian.com": "guardian_sport",
-    "telegraph.co.uk": "telegraph",
-    "transfermarkt.com": "transfermarkt",
+    "bbc.co.uk":           "bbcsport",
+    "bbc.com":             "bbcsport",
+    "skysports.com":       "skysports",
+    "theathletic.com":     "theathleticfc",
+    "nytimes.com":         "theathleticfc",   # The Athletic lives under NYT
+    "fotmob.com":          "fotmob",
+    "theguardian.com":     "guardian_sport",
+    "telegraph.co.uk":     "telegraph",
+    "transfermarkt.com":   "transfermarkt",
     "transfermarkt.co.uk": "transfermarkt",
-    "transfermarkt.us": "transfermarkt",
-    "premierleague.com": "premierleague",
-    "lequipe.fr": "lequipe",
-    "marca.com": "marca",
-    "kicker.de": "kicker",
-    "espn.com": "espn",
-    "espnfc.com": "espn",
+    "transfermarkt.us":    "transfermarkt",
+    "premierleague.com":   "premierleague",
+    "lequipe.fr":          "lequipe",
+    "marca.com":           "marca",
+    "kicker.de":           "kicker",
+    "espn.com":            "espn",
+    "espnfc.com":          "espn",
 }
 
 # Single source of truth for "this reads as an officially completed deal"
@@ -117,6 +130,7 @@ FOOTBALL_KW = [
     "injury", "injured", "ruled out", "scan", "hamstring", "surgery", "doubt",
     "sack", "appoint", "manager", "head coach", "stay", "return", "recall",
     "suspended", "suspension", "banned", "red card", "sent off",
+    "acl", "mcl", "concussion", "fracture", "ligament", "muscle",
 ]
 
 STAFF_BLOCK_KW = [
@@ -158,48 +172,81 @@ NATIONALITY_ADJECTIVES = {
     "armenian", "israeli", "iranian", "jamaican", "spaniard",
 }
 
-# Club Mapping Metadata
+# ── CLUB MAPPING METADATA ─────────────────────────────────────────────────
+# Includes current PL clubs, promoted clubs (Coventry, Hull, Ipswich),
+# relegated clubs (Burnley, Wolves, West Ham — kept because players at those
+# clubs are still regularly involved in PL transfer news), and common
+# Championship clubs that appear frequently in PL transfer stories.
 CLUB_ALIASES = {
-    "arsenal": "Arsenal", "aston villa": "Aston_Villa", "villa": "Aston_Villa",
-    "bournemouth": "Bournemouth", "brentford": "Brentford", "brighton": "Brighton",
-    "burnley": "Burnley", "chelsea": "Chelsea", "crystal palace": "Crystal_Palace",
-    "palace": "Crystal_Palace", "everton": "Everton", "fulham": "Fulham",
-    "ipswich": "Ipswich", "ipswich town": "Ipswich", "leeds": "Leeds",
-    "leeds united": "Leeds", "leicester": "Leicester", "leicester city": "Leicester",
-    "liverpool": "Liverpool", "manchester city": "Man_City", "man city": "Man_City",
+    # Current PL clubs
+    "arsenal": "Arsenal",
+    "aston villa": "Aston_Villa", "villa": "Aston_Villa",
+    "bournemouth": "Bournemouth", "afc bournemouth": "Bournemouth",
+    "brentford": "Brentford",
+    "brighton": "Brighton", "brighton & hove albion": "Brighton",
+    "chelsea": "Chelsea",
+    "coventry": "Coventry", "coventry city": "Coventry",
+    "crystal palace": "Crystal_Palace", "palace": "Crystal_Palace",
+    "everton": "Everton",
+    "fulham": "Fulham",
+    "hull": "Hull", "hull city": "Hull",
+    "ipswich": "Ipswich", "ipswich town": "Ipswich",
+    "leicester": "Leicester", "leicester city": "Leicester",
+    "liverpool": "Liverpool",
+    "manchester city": "Man_City", "man city": "Man_City",
     "manchester united": "Man_Utd", "man united": "Man_Utd", "man utd": "Man_Utd",
-    "newcastle": "Newcastle", "newcastle united": "Newcastle", "nottingham forest": "Nottm_Forest",
-    "nott'm forest": "Nottm_Forest", "forest": "Nottm_Forest", "southampton": "Southampton",
-    "sunderland": "Sunderland", "tottenham": "Spurs", "spurs": "Spurs",
-    "tottenham hotspur": "Spurs", "west ham": "West_Ham", "west ham united": "West_Ham",
-    "wolves": "Wolves", "wolverhampton": "Wolves",
+    "newcastle": "Newcastle", "newcastle united": "Newcastle",
+    "nottingham forest": "Nottm_Forest", "nott'm forest": "Nottm_Forest", "forest": "Nottm_Forest",
+    "southampton": "Southampton",
+    "sunderland": "Sunderland",
+    "tottenham": "Spurs", "spurs": "Spurs", "tottenham hotspur": "Spurs",
+    # Relegated clubs (still covered)
+    "burnley": "Burnley",
+    "west ham": "West_Ham", "west ham united": "West_Ham",
+    "wolves": "Wolves", "wolverhampton": "Wolves", "wolverhampton wanderers": "Wolves",
+    # Championship clubs frequently in PL transfer news
+    "leeds": "Leeds", "leeds united": "Leeds",
 }
 
 FPL_LOGO_IDS = {
     "Arsenal": "3", "Aston_Villa": "7", "Bournemouth": "91", "Brentford": "94",
-    "Brighton": "36", "Burnley": "90", "Chelsea": "8", "Crystal_Palace": "31", "Everton": "11",
-    "Fulham": "54", "Ipswich": "40", "Leeds": "2", "Leicester": "13", "Liverpool": "14",
-    "Man_City": "43", "Man_Utd": "1", "Newcastle": "4", "Nottm_Forest": "17",
-    "Southampton": "20", "Spurs": "6", "Sunderland": "56", "West_Ham": "21", "Wolves": "39",
+    "Brighton": "36", "Burnley": "90", "Chelsea": "8", "Crystal_Palace": "31",
+    "Everton": "11", "Fulham": "54", "Ipswich": "40", "Leeds": "2",
+    "Leicester": "13", "Liverpool": "14", "Man_City": "43", "Man_Utd": "1",
+    "Newcastle": "4", "Nottm_Forest": "17", "Southampton": "20", "Spurs": "6",
+    "Sunderland": "56", "West_Ham": "21", "Wolves": "39",
+    # Newly promoted — badge IDs fetched from live PL API at runtime
+    # "Coventry": "XX", "Hull": "XX",  (assigned after promotion confirmation)
 }
 
 CLUB_COLORS = {
-    "Arsenal": (239, 1, 7), "Aston_Villa": (103, 14, 54), "Bournemouth": (181, 14, 18),
-    "Brentford": (227, 6, 19), "Brighton": (0, 87, 184), "Burnley": (111, 34, 50),
-    "Chelsea": (3, 70, 148), "Crystal_Palace": (27, 69, 143), "Everton": (39, 68, 136),
-    "Fulham": (15, 15, 15), "Ipswich": (0, 0, 255), "Leeds": (29, 66, 138),
-    "Leicester": (0, 83, 160), "Liverpool": (200, 16, 46),
-    "Man_City": (108, 173, 223), "Man_Utd": (218, 41, 28), "Newcastle": (15, 15, 15),
-    "Nottm_Forest": (229, 50, 51), "Southampton": (215, 25, 32), "Spurs": (17, 24, 38),
-    "Sunderland": (235, 23, 43), "West_Ham": (122, 38, 58), "Wolves": (253, 185, 19),
+    "Arsenal": (239, 1, 7),        "Aston_Villa": (103, 14, 54),
+    "Bournemouth": (181, 14, 18),  "Brentford": (227, 6, 19),
+    "Brighton": (0, 87, 184),      "Burnley": (111, 34, 50),
+    "Chelsea": (3, 70, 148),       "Coventry": (0, 162, 224),
+    "Crystal_Palace": (27, 69, 143), "Everton": (39, 68, 136),
+    "Fulham": (15, 15, 15),        "Hull": (247, 166, 0),
+    "Ipswich": (0, 0, 255),        "Leeds": (29, 66, 138),
+    "Leicester": (0, 83, 160),     "Liverpool": (200, 16, 46),
+    "Man_City": (108, 173, 223),   "Man_Utd": (218, 41, 28),
+    "Newcastle": (15, 15, 15),     "Nottm_Forest": (229, 50, 51),
+    "Southampton": (215, 25, 32),  "Spurs": (17, 24, 38),
+    "Sunderland": (235, 23, 43),   "West_Ham": (122, 38, 58),
+    "Wolves": (253, 185, 19),
 }
 
 CLUB_HASHTAG_MAP = {
-    "Arsenal": "#Arsenal", "Aston_Villa": "#AVFC", "Bournemouth": "#AFCB",
-    "Brentford": "#Brentford", "Brighton": "#BHAFC", "Burnley": "#BurnleyFC",
-    "Chelsea": "#Chelsea", "Crystal_Palace": "#CPFC", "Everton": "#EFC",
-    "Fulham": "#FFC", "Ipswich": "#ITFC", "Leeds": "#LUFC", "Leicester": "#LCFC",
-    "Liverpool": "#LFC", "Man_City": "#MCFC", "Man_Utd": "#MUFC",
-    "Newcastle": "#NUFC", "Nottm_Forest": "#NFFC", "Southampton": "#SaintsFC",
-    "Spurs": "#THFC", "Sunderland": "#SAFC", "West_Ham": "#WHUFC", "Wolves": "#Wolves",
+    "Arsenal": "#Arsenal",         "Aston_Villa": "#AVFC",
+    "Bournemouth": "#AFCB",        "Brentford": "#Brentford",
+    "Brighton": "#BHAFC",          "Burnley": "#BurnleyFC",
+    "Chelsea": "#Chelsea",         "Coventry": "#CCFC",
+    "Crystal_Palace": "#CPFC",     "Everton": "#EFC",
+    "Fulham": "#FFC",              "Hull": "#HCAFC",
+    "Ipswich": "#ITFC",            "Leeds": "#LUFC",
+    "Leicester": "#LCFC",          "Liverpool": "#LFC",
+    "Man_City": "#MCFC",           "Man_Utd": "#MUFC",
+    "Newcastle": "#NUFC",          "Nottm_Forest": "#NFFC",
+    "Southampton": "#SaintsFC",    "Spurs": "#THFC",
+    "Sunderland": "#SAFC",         "West_Ham": "#WHUFC",
+    "Wolves": "#Wolves",
 }

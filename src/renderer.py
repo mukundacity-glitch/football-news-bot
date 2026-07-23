@@ -165,7 +165,8 @@ def _img_assets(story):
         photo_uri = _data_uri(pp)
     if not photo_uri and story.get("media_url"):
         murl = story["media_url"]
-        mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ".png")
+        ext = ".jpg" if any(x in murl.lower() for x in (".jpg", ".jpeg")) else ".png"
+        mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ext)
         if not mp.exists():
             _download_asset(murl, mp)
         photo_uri = _data_uri(mp)
@@ -230,6 +231,34 @@ def _img_assets(story):
             except Exception as _ee:
                 print(f"  [PHOTO] ESPN lookup failed for {pname!r}: {_ee}")
 
+    # BBC Sport fallback: scrape the og:image from the player's BBC Sport page.
+    if not photo_uri:
+        pname = story.get("player", "")
+        if pname:
+            try:
+                slug = re.sub(r"[^a-z0-9]+", "-", pname.lower()).strip("-")
+                bbc_url = f"https://www.bbc.co.uk/sport/football/players/{slug}"
+                req = urllib.request.Request(
+                    bbc_url,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    html = resp.read().decode("utf-8", errors="replace")
+                m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
+                if not m:
+                    m = re.search(r'content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html)
+                if m:
+                    img_url = m.group(1)
+                    ext = ".jpg" if any(x in img_url.lower() for x in (".jpg", ".jpeg")) else ".png"
+                    bp = Path("players/bbc_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ext)
+                    if not bp.exists():
+                        _download_asset(img_url, bp)
+                    if bp.exists() and bp.stat().st_size > 500:
+                        photo_uri = _data_uri(bp)
+                        print(f"  [PHOTO] BBC Sport image found for {pname!r}")
+            except Exception as _be:
+                pass
+
     # FotMob fallback: search FotMob for the player and fetch their photo.
     # FotMob has the most comprehensive photo database for active football players.
     if not photo_uri:
@@ -249,17 +278,17 @@ def _img_assets(story):
                     fdata = _json.loads(resp.read().decode("utf-8"))
                 players = fdata.get("squad") or fdata.get("players") or []
                 for entry in players[:3]:
-                    pid = str(entry.get("id") or "")
-                    if not pid:
+                    fid = str(entry.get("id") or "")
+                    if not fid:
                         continue
                     img_url = (entry.get("imageUrl") or
-                               f"https://images.fotmob.com/image_resources/playerimages/{pid}.png")
+                               f"https://images.fotmob.com/image_resources/playerimages/{fid}.png")
                     fp = Path("players/fm_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".png")
                     if not fp.exists():
                         _download_asset(img_url, fp)
                     if fp.exists() and fp.stat().st_size > 500:
                         photo_uri = _data_uri(fp)
-                        print(f"  [PHOTO] FotMob image found for {pname!r} (id={pid})")
+                        print(f"  [PHOTO] FotMob image found for {pname!r} (id={fid})")
                         break
             except Exception as _fe:
                 print(f"  [PHOTO] FotMob lookup failed for {pname!r}: {_fe}")
