@@ -1587,10 +1587,19 @@ def clean_html(raw_html):
     return re.sub(cleanr, ' ', raw_html).strip()
 
 def _parse_rss_date(raw):
+    """Parse a date string in RFC 2822 (RSS) or ISO 8601 (FPL API, Bluesky) format."""
     if not raw: return None
+    # RFC 2822 — standard RSS/Atom pubDate: "Mon, 23 Jul 2026 10:00:00 +0000"
     try:
         from email.utils import parsedate_to_datetime
         dt = parsedate_to_datetime(raw)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        pass
+    # ISO 8601 — FPL bootstrap-static news_added, Bluesky createdAt:
+    # "2026-07-23T10:00:00Z" / "2026-07-23T10:00:00.123Z" / "2026-07-23T10:00:00+00:00"
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except Exception:
         return None
@@ -1614,7 +1623,8 @@ async def fetch_rss_news():
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:20]:
-                link = entry.get("link") or entry.get("id") or ""
+                link = (entry.get("link") or entry.get("id")
+                        or (entry.get("title", "") + str(entry.get("published", ""))))
                 tid = hashlib.md5(link.encode("utf-8")).hexdigest()[:15]
                 if tid in seen_ids:
                     continue
