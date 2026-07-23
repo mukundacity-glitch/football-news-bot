@@ -320,7 +320,28 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None, source_tier_func
 
     # TRANSFER SAFETY LOCK
     pl_club = bool(story.get("to_key") or story.get("from_key"))
-    if pl_player or pl_club:
-        return True, "ok_pl_transfer"
+    if not (pl_player or pl_club):
+        return False, "not_pl_relevant"
 
-    return False, "not_pl_relevant"
+    # NEGATIVE OUTCOME GATE: if the article explicitly says the deal/bid was
+    # rejected, collapsed, or ruled out, never publish it as a transfer.
+    # These phrases signal the OPPOSITE of a completed move — posting them
+    # as transfer news is factually wrong and damages credibility.
+    if story.get("event") in ("transfer", "loan", "loan_option"):
+        _NEG_SIGNALS = (
+            "bid rejected", "rejected bid", "rejected a bid",
+            "bid turned down", "turned down the bid",
+            "bid knocked back", "knocked back the bid",
+            "not for sale", "refuses to sell", "refused to sell",
+            "rejected move", "rejects move", "rejects a move",
+            "deal collapsed", "deal has collapsed",
+            "falls through", "fell through", "has fallen through",
+            "pulled out", "pulls out",
+            "no deal agreed", "deal off", "no fee agreed",
+            "failed to agree", "unable to agree",
+            "turned down a bid", "turned down an offer",
+        )
+        if any(s in tl for s in _NEG_SIGNALS):
+            return False, "negative_outcome_detected"
+
+    return True, "ok_pl_transfer"

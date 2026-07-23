@@ -168,6 +168,34 @@ def _img_assets(story):
             _download_asset(murl, mp)
         photo_uri = _data_uri(mp)
 
+    # Wikipedia fallback: if neither FPL API nor media_url produced a photo,
+    # query the Wikipedia REST summary API for the player's lead image.
+    # This covers players not in the FPL dataset (foreign signings, new arrivals).
+    if not photo_uri:
+        pname = story.get("player", "")
+        if pname:
+            try:
+                import urllib.parse as _up
+                wiki_api = ("https://en.wikipedia.org/api/rest_v1/page/summary/"
+                            + _up.quote(pname.replace(" ", "_")))
+                req = urllib.request.Request(
+                    wiki_api,
+                    headers={"User-Agent": "FPLVortexBot/1.0 (football-news-bot)"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    import json as _json
+                    wdata = _json.loads(resp.read().decode("utf-8"))
+                thumb = wdata.get("thumbnail", {}).get("source", "")
+                if thumb:
+                    wp = Path("players/wiki_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".jpg")
+                    if not wp.exists():
+                        _download_asset(thumb, wp)
+                    if wp.exists() and wp.stat().st_size > 500:
+                        photo_uri = _data_uri(wp)
+                        print(f"  [PHOTO] Wikipedia image found for {pname!r}")
+            except Exception as _we:
+                print(f"  [PHOTO] Wikipedia lookup failed for {pname!r}: {_we}")
+
     return player_el, player_name, logo_uri, photo_uri
 
 

@@ -694,7 +694,11 @@ def player_already_at_club(story, fpl_data) -> bool:
     return bool(cur and to_key and cur == to_key)
 
 def classify_post(story, sources):
-    if story.get("collapsed"): return "rumour"
+    # Collapsed/rejected deals are NEVER posted — they describe a move that
+    # did NOT happen. Previously these returned "rumour" which caused the bot
+    # to post factually wrong cards ("TRANSFER RUMOUR" for a dead bid).
+    if story.get("collapsed"): return None
+
     tiers = [source_tier(s) for s in sources]
     has_official = 1 in tiers
     n_elite = sum(1 for t in tiers if t == 2)
@@ -706,34 +710,30 @@ def classify_post(story, sources):
         if has_official or n_elite >= 1: return "confirmed"
         return None
 
-    # Manager / staff: only an actual appointment or departure is CONFIRMED. A bare
-    # "linked with the job" is speculation -> RUMOUR (never a CONFIRMED card).
+    # Manager / staff: only a concrete appointment or departure is posted.
+    # Pure "linked with the job" speculation returns None — pending, not posted.
     if story.get("event") == "manager":
         action = story.get("staff_action")
         if action in ("appointment", "departure") and (has_official or n_elite >= 1):
             return "confirmed"
-        if has_official or n_elite >= 1 or has_media:
-            return "rumour"
         return None
 
-    # A transfer/loan can't be OFFICIAL/CONFIRMED without a known destination
-    # club — but "known" means any resolved club, including a foreign/EFL one
-    # captured only as a raw name (to_club, no PL to_key). Requiring to_key
-    # specifically would mean a PL club's OWN official announcement of a
-    # player going out on loan to a non-PL club (e.g. Chelsea -> Sporting
-    # Lisbon) could never be labelled CONFIRMED no matter how certain the
-    # source — exactly the false-negative failure this checks for.
+    # Transfer/loan without a resolved destination club: never post.
     if story.get("event") in ("transfer", "loan", "loan_option") and not (
             story.get("to_key") or story.get("to_club")):
-        if has_official or n_elite >= 1 or has_media:
-            return "rumour"
         return None
 
-    trusted_strong = strong_words and (has_official or n_elite >= 1)
+    # A trusted source (tier 1/2/3) WITH strong confirmation language
+    # ("signed", "confirmed", "here we go", stage≥4) = CONFIRMED post.
+    # Without strong language, even from a good source, the story waits
+    # for more verification before being published.
+    trusted_strong = strong_words and (has_official or n_elite >= 1 or has_media)
     video_only = story.get("from_video") and not has_official
-    if (has_official or trusted_strong or n_elite >= 2) and not video_only: return "confirmed"
-    if n_elite >= 1: return "rumour"
-    if has_media: return "rumour"
+    if (has_official or trusted_strong or n_elite >= 2) and not video_only:
+        return "confirmed"
+
+    # Everything that falls through here is unconfirmed speculation.
+    # It goes to pending for re-verification on the next run, not published.
     return None
 
 def score_confidence(story, fpl_data=None, sources=None):
@@ -837,6 +837,26 @@ def validate_story(story, fpl_data=None, sources=None):
         fc = (story.get("from_club") or "").strip().lower()
         tc = (story.get("to_club") or "").strip().lower()
         if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
+
+        # SPECULATION GATE: stage-1 stories containing pure "linked with" /
+        # "interest" / "could move" language are never published. They require
+        # confirmation language (stage ≥ 2: agreed/advanced/personal terms) or
+        # an official source first. This blocked the Sterling "LINKED WITH A
+        # PERMANENT TRANSFER" false post — that was stage-1 speculation with no
+        # confirmation language whatsoever.
+        if story.get("stage", 1) <= 1:
+            _SPEC_CUES = (
+                "linked with", "could join", "could move", "weighing up",
+                "considering a move", "potential move", "showing interest",
+                "interest in signing", "rumoured to be", "in the frame",
+                "keeping tabs", "a permanent transfer", "might join",
+                "keen to sign", "want to sign", "wants to sign",
+                "eyeing a move", "eyeing a swoop", "monitoring",
+                "tracking the", "set to hold talks", "in talks over a move",
+            )
+            _blob = (story.get("raw_text", "") + " " + story.get("body", "")).lower()
+            if any(c in _blob for c in _SPEC_CUES):
+                return False, "speculation_stage1_language"
 
         # PLAYER-IDENTITY GATE: a "transfer" of someone NOT in the FPL player
         # database must carry positive evidence they are actually a PLAYER — a
@@ -1630,9 +1650,17 @@ async def scrape(data):
         st["sources"] = list(dict.fromkeys(st["sources"]))
         st["official_confirmed"] = ver["official_confirmed"]
         st["cross_verified"] = len(st["sources"]) >= 2 or ver["official_confirmed"]
-        print(f"  [X-VERIFY] {st.get('player')!r}: +{ver['n_independent']} "
-              f"corroborating source(s) {ver['handles']!r}"
-              f"{' + OFFICIAL CLUB CONFIRMATION' if ver['official_confirmed'] else ''}")
+        # If the verifier found 2+ sources CONTRADICTING the story (e.g.
+        # "bid rejected", "not for sale"), mark it contradicted so it never posts.
+        if ver.get("contradicted"):
+            st["contradicted"] = True
+            print(f"  [BLOCKED by verifier] {st.get('player')!r}: "
+                  f"{ver.get('n_contradictions', 0)} contradiction signal(s) found "
+                  f"— story suppressed")
+        else:
+            print(f"  [X-VERIFY] {st.get('player')!r}: +{ver['n_independent']} "
+                  f"corroborating source(s) {ver['handles']!r}"
+                  f"{' + OFFICIAL CLUB CONFIRMATION' if ver['official_confirmed'] else ''}")
         for line in ver["log"][:6]:
             print(f"             {line}")
 
