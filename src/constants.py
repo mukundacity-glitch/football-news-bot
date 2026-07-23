@@ -15,7 +15,7 @@ DRAFTS_DIR = Path("fpl_drafts")
 
 # Target Scrape Accounts
 JOURNALISTS = [
-    "FabrizioRomano", "David_Ornstein",
+    "FabrizioRomano", "David_Ornstein", "BenDinnery",
 ]
 
 NITTER_INSTANCES = [
@@ -47,6 +47,10 @@ OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {
 
 ELITE_TRUSTED = {
     "fabrizioromano", "david_ornstein",
+    # Premier Injuries (injury specialist) + Ben Dinnery (BBC Sport injury correspondent)
+    # added to ELITE_TRUSTED so classify_post() passes the injury check (has_official
+    # or n_elite >= 1) and stories from these accounts can auto-post.
+    "premierinjuries", "bendinnery",
 }
 
 TRUSTED_MEDIA = {
@@ -55,6 +59,7 @@ TRUSTED_MEDIA = {
     "alex_crook", "alexcrabb31", "telegraph", "telegraphfootball",
     "fotmob", "transfermarkt",
     "espn", "espnsoccer", "espnfc",
+    "rootwire", "rootwiresoccer",
 }
 
 # ── AUTOMATIC CROSS-VERIFICATION SOURCES ─────────────────────────────────
@@ -109,6 +114,7 @@ TRUSTED_MEDIA_DOMAINS = {
     "kicker.de":           "kicker",
     "espn.com":            "espn",
     "espnfc.com":          "espn",
+    "rootwiresoccer.com":  "rootwire",
 }
 
 # Single source of truth for "this reads as an officially completed deal"

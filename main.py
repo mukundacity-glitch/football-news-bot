@@ -9,6 +9,7 @@ import random
 import argparse
 import asyncio
 import requests
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
@@ -1429,38 +1430,156 @@ async def post_item(post_client, item, data):
   # ── SCRAPER CORE (100% FREE RSS) ─────────────────────────────────────────
 MAX_TWEET_AGE_DAYS = 3
 
-RSS_FEEDS = {
-    # ── TIER 3: Trusted media ─────────────────────────────────────────────
-    # Source key must normalise (strip non-alnum) to a handle in TRUSTED_MEDIA
-    # so source_tier() assigns tier-3 credit (+5 trusted_source signal).
-    "BBC_Sport":      "https://feeds.bbci.co.uk/sport/football/premier-league/rss.xml",
-    "Transfermarkt":  "https://www.transfermarkt.com/rss/news",
-    "SkySports":      "https://www.skysports.com/rss/12040",
-    "guardian_sport": "https://www.theguardian.com/football/transfers/rss",
-    "espn":           "https://www.espn.com/espn/rss/soccer/news",
-
-    # ── TIER 2: Elite journalists monitored via Google News ───────────────
-    # Google News aggregates every article that cites Romano / Ornstein, so
-    # their breaking "Here We Go" items surface here within minutes. The feed
-    # key normalises to the handle in ELITE_TRUSTED → elite_source (+5 bonus).
-    "FabrizioRomano": (
-        "https://news.google.com/rss/search?q=%22Fabrizio+Romano%22"
-        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
-    ),
-    "David_Ornstein": (
-        "https://news.google.com/rss/search?q=%22David+Ornstein%22"
-        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
-    ),
-
+# List of (source_name, url) tuples — list not dict so we can have multiple
+# entries sharing the same source_name (e.g. two premierleague search feeds).
+RSS_FEEDS = [
     # ── TIER 1: Official Premier League announcements ─────────────────────
-    # Site-scoped Google News captures official club signing announcements
-    # published on premierleague.com. Key normalises to "premierleague" which
-    # is in OFFICIAL_ACCOUNTS → official_source (+15 bonus, always AUTO_POST).
-    "premierleague": (
+    # Site-scoped Google News captures official signing announcements on
+    # premierleague.com. Key → "premierleague" ∈ OFFICIAL_ACCOUNTS
+    # → official_source (+15 bonus, always AUTO_POST).
+    ("premierleague", (
         "https://news.google.com/rss/search?q=site%3Apremierleague.com"
         "+transfer+OR+signs+OR+joined&hl=en-GB&gl=GB&ceid=GB:en"
-    ),
-}
+    )),
+    ("premierleague", (
+        "https://news.google.com/rss/search?q=site%3Apremierleague.com"
+        "+injur+OR+suspended+OR+ruled+out&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+
+    # ── TIER 2: Elite journalists monitored via Google News ───────────────
+    ("FabrizioRomano", (
+        "https://news.google.com/rss/search?q=%22Fabrizio+Romano%22"
+        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("David_Ornstein", (
+        "https://news.google.com/rss/search?q=%22David+Ornstein%22"
+        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("BenDinnery", (
+        "https://news.google.com/rss/search?q=%22Ben+Dinnery%22"
+        "+injur+OR+fitness+OR+ruled+out&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+
+    # ── TIER 3: Trusted media ─────────────────────────────────────────────
+    ("BBC_Sport",      "https://feeds.bbci.co.uk/sport/football/premier-league/rss.xml"),
+    ("BBC_Sport",      "https://feeds.bbci.co.uk/sport/football/rss.xml"),
+    ("Transfermarkt",  "https://www.transfermarkt.com/rss/news"),
+    ("SkySports",      "https://www.skysports.com/rss/12040"),
+    ("guardian_sport", "https://www.theguardian.com/football/transfers/rss"),
+    ("espn",           "https://www.espn.com/espn/rss/soccer/news"),
+    ("rootwire", (
+        "https://news.google.com/rss/search?q=site%3Arootwiresoccer.com"
+        "+premier+league&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+]
+
+# Bluesky handles to poll via the public AT Protocol API (no auth required).
+# Each entry is (handle, source_name) where source_name normalises to a handle
+# in ELITE_TRUSTED so classify_post() passes the injury check.
+_BLUESKY_HANDLES = [
+    ("premierinjuries.bsky.social", "premierinjuries"),
+    ("bendinnery.bsky.social", "bendinnery"),
+]
+
+def fetch_fpl_injury_news(fpl_data) -> list:
+    """Generate structured injury/suspension items directly from the official FPL API."""
+    if not fpl_data:
+        return []
+    out = []
+    now = datetime.now(timezone.utc)
+    team_map = {t["id"]: t for t in fpl_data.get("teams", [])}
+    status_to_stage = {"d": 2, "i": 3, "u": 3, "n": 3, "s": 4}
+    for el in fpl_data.get("elements", []):
+        status = el.get("status", "a")
+        if status == "a":
+            continue
+        news_text = (el.get("news") or "").strip()
+        if not news_text:
+            continue
+        news_added = el.get("news_added") or ""
+        if news_added:
+            try:
+                dt = datetime.fromisoformat(news_added.replace("Z", "+00:00"))
+                if (now - dt).total_seconds() > MAX_TWEET_AGE_DAYS * 86400:
+                    continue
+            except Exception:
+                pass
+        player_full = f"{el.get('first_name', '')} {el.get('second_name', '')}".strip()
+        if not player_full:
+            continue
+        team = team_map.get(el.get("team", 0), {})
+        club_key = resolve_club_key(
+            f"{team.get('name', '')} {team.get('short_name', '')}".lower()
+        )
+        chance = el.get("chance_of_playing_this_round")
+        event = "suspension" if status == "s" else "injury"
+        stage = status_to_stage.get(status, 2)
+        if event == "injury" and chance is not None:
+            stage = 3 if chance <= 25 else 2
+        tid = "fpl_" + hashlib.md5(
+            f"{el['id']}_{news_text[:40]}".encode()).hexdigest()[:12]
+        text = f"{player_full}: {news_text}"
+        out.append({
+            "id": tid,
+            "text": text,
+            "media_url": None,
+            "created_at": news_added or None,
+            "username": "officialfpl",
+            "_fpl_pre_built": {
+                "player": player_full,
+                "display_name": player_full,
+                "verified_player_code": el.get("code"),
+                "event": event,
+                "stage": stage,
+                "from_key": club_key,
+                "to_key": None,
+                "from_club": club_display(club_key) if club_key else "",
+                "to_club": "",
+                "diagnosis": news_text,
+                "expected_return": None,
+                "fee": None, "contract": None, "is_free": False,
+                "collapsed": False, "historical": False,
+                "headline": text, "body": news_text, "raw_text": text,
+                "from_video": False, "has_written_claim": True,
+                "chance_of_playing": chance,
+                "sources": ["officialfpl"],
+            }
+        })
+    print(f"  [FPL-INJURY] {len(out)} fresh official injury/suspension item(s).")
+    return out
+
+
+def fetch_bluesky_posts() -> list:
+    """Fetch recent posts from Bluesky injury/transfer accounts (public AT Protocol API)."""
+    out = []
+    for handle, source_name in _BLUESKY_HANDLES:
+        try:
+            url = (
+                "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
+                f"?actor={urllib.parse.quote(handle)}&limit=30&filter=posts_no_replies"
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "FPLVortexBot/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            feed_items = (data.get("feed") or [])[:30]
+            for item in feed_items:
+                post = item.get("post", {})
+                record = post.get("record", {})
+                text = (record.get("text") or "").strip()
+                if not text:
+                    continue
+                created_at = record.get("createdAt") or post.get("indexedAt")
+                uri = post.get("uri", "") or text
+                tid = "bsky_" + hashlib.md5(uri.encode()).hexdigest()[:15]
+                out.append({
+                    "id": tid, "text": text, "media_url": None,
+                    "created_at": created_at, "username": source_name,
+                })
+            print(f"  [BLUESKY] @{handle}: {len(feed_items)} post(s) fetched.")
+        except Exception as e:
+            print(f"  [BLUESKY] @{handle}: {e}")
+    return out
+
 
 def clean_html(raw_html):
     """Strips HTML tags from RSS summaries."""
@@ -1488,62 +1607,74 @@ def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS, unknown_is_old=True):
 item_too_old = tweet_too_old
 
 async def fetch_rss_news():
-    """Replaces Twikit/Nitter with free, reliable RSS feeds."""
+    """Fetch RSS feeds and Bluesky posts; returns a unified list of items."""
     out = []
-    for source_name, url in RSS_FEEDS.items():
+    seen_ids: set = set()
+    for source_name, url in RSS_FEEDS:
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:20]:
-                tid = hashlib.md5(entry.link.encode('utf-8')).hexdigest()[:15]
-                
-                # Combine Title + Summary to mimic a tweet's text structure
-                summary = clean_html(entry.get('summary', ''))
+                link = entry.get("link") or entry.get("id") or ""
+                tid = hashlib.md5(link.encode("utf-8")).hexdigest()[:15]
+                if tid in seen_ids:
+                    continue
+                seen_ids.add(tid)
+                summary = clean_html(entry.get("summary", ""))
                 text = f"{entry.title}. {summary}"
-                
                 media_url = None
-                if 'media_content' in entry and len(entry.media_content) > 0:
-                    media_url = entry.media_content[0].get('url')
-                
-                created_at = entry.get('published', None)
-                
+                if "media_content" in entry and entry.media_content:
+                    media_url = entry.media_content[0].get("url")
+                created_at = entry.get("published", None)
                 if text:
                     out.append({
-                        "id": tid, 
-                        "text": text, 
-                        "media_url": media_url, 
+                        "id": tid,
+                        "text": text,
+                        "media_url": media_url,
                         "created_at": created_at,
-                        "username": source_name
+                        "username": source_name,
                     })
         except Exception as e:
             print(f"  [READ] {source_name} feed error: {e}")
-            
+
+    for item in fetch_bluesky_posts():
+        if item["id"] not in seen_ids:
+            seen_ids.add(item["id"])
+            out.append(item)
+
     return out
 
 async def scrape(data):
     fpl = fetch_fpl_data()
     story_map = {}
     seen = skipped = 0
-    
+
     rss_items = await fetch_rss_news()
-    if not rss_items:
+    fpl_injury_items = fetch_fpl_injury_news(fpl_data=fpl)
+
+    if not rss_items and not fpl_injury_items:
         print("  [WARN] Zero news items fetched. Check internet or feed URLs.")
     else:
-        print(f"  [READ] Fetched {len(rss_items)} articles from RSS.")
-        
-    for t in rss_items:
+        print(f"  [READ] {len(rss_items)} RSS/Bluesky items + {len(fpl_injury_items)} FPL injury items.")
+
+    for t in rss_items + fpl_injury_items:
         tid, text, username = t["id"], t["text"], t["username"]
         if tid in data["posted_ids"]: continue
         if not any(k in text.lower() for k in FOOTBALL_KW): continue
-        
+
         if item_too_old(t.get("created_at")):
             skipped += 1
             print(f"   skip (older_than_{MAX_TWEET_AGE_DAYS}d): {text[:70]!r}")
             continue
-            
+
         seen += 1
-        
-        if tid in data["extracted"]: 
+
+        if tid in data["extracted"]:
             story = dict(data["extracted"][tid])
+        elif "_fpl_pre_built" in t:
+            story = dict(t["_fpl_pre_built"])
+            story["media_url"] = None
+            story["created_at"] = t.get("created_at")
+            data["extracted"][tid] = dict(story)
         else:
             story = build_story(text, fpl)
             story["media_url"] = t.get("media_url")
@@ -1619,9 +1750,10 @@ async def scrape(data):
 
     print(f"  [SCRAPE] {seen} football items seen, {skipped} skipped, {len(story_map)} candidate stories")
     
+    _feed_count = len(RSS_FEEDS) + len(_BLUESKY_HANDLES)
     data["last_read_health"] = {
-        "accounts_total": len(RSS_FEEDS),
-        "accounts_failed": 0 if rss_items else len(RSS_FEEDS),
+        "accounts_total": _feed_count,
+        "accounts_failed": 0 if rss_items else _feed_count,
         "fail_ratio": 0.0 if rss_items else 1.0,
         "at": datetime.now(timezone.utc).isoformat(),
     }
