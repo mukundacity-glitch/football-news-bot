@@ -694,7 +694,11 @@ def player_already_at_club(story, fpl_data) -> bool:
     return bool(cur and to_key and cur == to_key)
 
 def classify_post(story, sources):
-    if story.get("collapsed"): return "rumour"
+    # Collapsed/rejected deals are NEVER posted — they describe a move that
+    # did NOT happen. Previously these returned "rumour" which caused the bot
+    # to post factually wrong cards ("TRANSFER RUMOUR" for a dead bid).
+    if story.get("collapsed"): return None
+
     tiers = [source_tier(s) for s in sources]
     has_official = 1 in tiers
     n_elite = sum(1 for t in tiers if t == 2)
@@ -706,34 +710,30 @@ def classify_post(story, sources):
         if has_official or n_elite >= 1: return "confirmed"
         return None
 
-    # Manager / staff: only an actual appointment or departure is CONFIRMED. A bare
-    # "linked with the job" is speculation -> RUMOUR (never a CONFIRMED card).
+    # Manager / staff: only a concrete appointment or departure is posted.
+    # Pure "linked with the job" speculation returns None — pending, not posted.
     if story.get("event") == "manager":
         action = story.get("staff_action")
         if action in ("appointment", "departure") and (has_official or n_elite >= 1):
             return "confirmed"
-        if has_official or n_elite >= 1 or has_media:
-            return "rumour"
         return None
 
-    # A transfer/loan can't be OFFICIAL/CONFIRMED without a known destination
-    # club — but "known" means any resolved club, including a foreign/EFL one
-    # captured only as a raw name (to_club, no PL to_key). Requiring to_key
-    # specifically would mean a PL club's OWN official announcement of a
-    # player going out on loan to a non-PL club (e.g. Chelsea -> Sporting
-    # Lisbon) could never be labelled CONFIRMED no matter how certain the
-    # source — exactly the false-negative failure this checks for.
+    # Transfer/loan without a resolved destination club: never post.
     if story.get("event") in ("transfer", "loan", "loan_option") and not (
             story.get("to_key") or story.get("to_club")):
-        if has_official or n_elite >= 1 or has_media:
-            return "rumour"
         return None
 
-    trusted_strong = strong_words and (has_official or n_elite >= 1)
+    # A trusted source (tier 1/2/3) WITH strong confirmation language
+    # ("signed", "confirmed", "here we go", stage≥4) = CONFIRMED post.
+    # Without strong language, even from a good source, the story waits
+    # for more verification before being published.
+    trusted_strong = strong_words and (has_official or n_elite >= 1 or has_media)
     video_only = story.get("from_video") and not has_official
-    if (has_official or trusted_strong or n_elite >= 2) and not video_only: return "confirmed"
-    if n_elite >= 1: return "rumour"
-    if has_media: return "rumour"
+    if (has_official or trusted_strong or n_elite >= 2) and not video_only:
+        return "confirmed"
+
+    # Everything that falls through here is unconfirmed speculation.
+    # It goes to pending for re-verification on the next run, not published.
     return None
 
 def score_confidence(story, fpl_data=None, sources=None):
@@ -837,6 +837,26 @@ def validate_story(story, fpl_data=None, sources=None):
         fc = (story.get("from_club") or "").strip().lower()
         tc = (story.get("to_club") or "").strip().lower()
         if (fk and tk and fk == tk) or (fc and tc and fc == tc): return False, "from_equals_to"
+
+        # SPECULATION GATE: stage-1 stories containing pure "linked with" /
+        # "interest" / "could move" language are never published. They require
+        # confirmation language (stage ≥ 2: agreed/advanced/personal terms) or
+        # an official source first. This blocked the Sterling "LINKED WITH A
+        # PERMANENT TRANSFER" false post — that was stage-1 speculation with no
+        # confirmation language whatsoever.
+        if story.get("stage", 1) <= 1:
+            _SPEC_CUES = (
+                "linked with", "could join", "could move", "weighing up",
+                "considering a move", "potential move", "showing interest",
+                "interest in signing", "rumoured to be", "in the frame",
+                "keeping tabs", "a permanent transfer", "might join",
+                "keen to sign", "want to sign", "wants to sign",
+                "eyeing a move", "eyeing a swoop", "monitoring",
+                "tracking the", "set to hold talks", "in talks over a move",
+            )
+            _blob = (story.get("raw_text", "") + " " + story.get("body", "")).lower()
+            if any(c in _blob for c in _SPEC_CUES):
+                return False, "speculation_stage1_language"
 
         # PLAYER-IDENTITY GATE: a "transfer" of someone NOT in the FPL player
         # database must carry positive evidence they are actually a PLAYER — a
@@ -1018,25 +1038,28 @@ def status_label(story, mode):
 # ── HASHTAGS ─────────────────────────────────────────────────────────────
 
 def build_hashtags(story):
-    """Exactly 4 SEO hashtags: club(s) first, then an event tag, padded with
-    #PremierLeague / #FPL. Source/brand tags are intentionally left out."""
+    """Exactly 3 SEO hashtags: primary club, event type, #FPL."""
     ev = story["event"]
     out = []
-    # Club tags carry the most search value — lead with them.
+    # 1. One primary club hashtag (destination club preferred over origin).
     for key, name in ((story.get("to_key"), story.get("to_club")),
                       (story.get("from_key"), story.get("from_club"))):
         ht = hashtag_for(key) or hashtag_for(name)
-        if ht and ht not in out: out.append(ht)
+        if ht:
+            out.append(ht)
+            break
+    # 2. Event type hashtag.
     if ev in ("injury", "suspension"): etag = "#InjuryNews"
     elif ev in ("transfer", "loan", "loan_option"): etag = "#TransferNews"
     elif ev in ("renewal", "stay"): etag = "#ContractNews"
     elif ev == "manager": etag = "#ManagerNews"
     else: etag = "#FootballNews"
-    if etag not in out: out.append(etag)
-    for extra in ("#PremierLeague", "#FPL", "#PL", "#FPLVortex"):
-        if len(out) >= 4: break
-        if extra not in out: out.append(extra)
-    return " ".join(out[:4])
+    if etag not in out:
+        out.append(etag)
+    # 3. Always close with #FPL for fantasy football discovery.
+    if "#FPL" not in out:
+        out.append("#FPL")
+    return " ".join(out[:3])
 
 # ── TWEET TEXT ───────────────────────────────────────────────────────────
 # Structured 3-line description that mirrors the player card exactly. No source
@@ -1088,32 +1111,38 @@ def build_tweet_body(story, sources, mode) -> str:
                 route = ""
             prefix = "LOAN" if move == "LOAN MOVE" else "TRANSFER"
             headline = f"{emoji} {prefix}- {player} {status} {move}{route}."
-        fee_text = story.get('fee')
-        if not fee_text:
-            fee_text = "Free transfer" if story.get("is_free") else "Undisclosed fee"
-            
-        details.append(f"💰 FEE — {fee_text}")
-        details.append(f"📝 CONTRACT — {story.get('contract') or 'Contract length undisclosed'}")
+        # Always exactly 2 detail lines (no "undisclosed" filler).
+        fee_text = story.get("fee")
+        contract_text = story.get("contract")
+        stage_labels = {4: "COMPLETED & OFFICIAL", 3: "PAPERWORK UNDERWAY",
+                        2: "AGREEMENT REACHED", 1: "IN PROGRESS"}
+        stage_text = stage_labels.get(story.get("stage", 1), "CONFIRMED")
+        if fee_text:
+            details.append(f"💰 FEE — {fee_text}")
+        else:
+            details.append(f"🔄 DEAL TYPE — {move}")
+        if contract_text:
+            details.append(f"📝 CONTRACT — {contract_text}")
+        else:
+            details.append(f"📊 STAGE — {stage_text}")
 
     elif ev in ("injury", "suspension"):
         club = (to_full or from_full).upper()
         club_part = f" ({club})" if club else ""
         if ev == "suspension":
             headline = f"🟥 SUSPENSION- {player}{club_part} IS SUSPENDED."
-            if story.get("diagnosis"):
-                details.append(f"⛔ REASON — {story['diagnosis']}")
+            details.append(f"⛔ REASON — {story['diagnosis'] if story.get('diagnosis') else 'Red card / disciplinary'}")
             details.append(f"📅 STATUS — {_avail_text(story.get('stage', 1))}")
         else:
             headline = f"🚑 INJURY- {player}{club_part} {_avail_text(story.get('stage', 1))}."
-            if story.get("diagnosis"):
-                details.append(f"🏥 DIAGNOSIS — {story['diagnosis']}")
-            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'Not yet reported'}")
+            details.append(f"🏥 DIAGNOSIS — {story['diagnosis'] if story.get('diagnosis') else 'Details awaited'}")
+            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'Timeline to be confirmed'}")
 
     elif ev in ("renewal", "stay"):
         club = (from_full or to_full).upper()
         headline = f"📝 CONTRACT- {player} SIGNS A NEW DEAL" + (f" AT {club}" if club else "") + "."
-        if story.get("contract"):
-            details.append(f"📝 TERMS — {story['contract']}")
+        details.append(f"📝 TERMS — {story['contract'] if story.get('contract') else 'Contract length to be confirmed'}")
+        details.append(f"🏟️ CLUB — {club if club else 'To be announced'}")
 
     elif ev == "manager":
         club = (to_full or from_full).upper()
@@ -1125,20 +1154,19 @@ def build_tweet_body(story, sources, mode) -> str:
                 headline = f"👔 STAFF- {player} LEAVES {club} AS {role_u}." if club else f"👔 STAFF- {player} LEAVES ROLE AS {role_u}."
             elif action == "appointment":
                 headline = f"👔 STAFF- {player} APPOINTED {club} {role_u}." if club else f"👔 STAFF- {player} APPOINTED AS {role_u}."
-                if story.get("contract"):
-                    details.append(f"📝 CONTRACT — {story['contract']}")
             else:
-                # A role is known but there's no confirmed appointment/departure
-                # action — e.g. "leading candidate for the job", "was in the
-                # running" — so this can NEVER read as a settled fact. Hedge it
-                # exactly like a transfer rumour, regardless of source tier.
                 headline = (f"👀 STAFF- {player} LINKED WITH A {role_u} ROLE"
                             + (f" AT {club}" if club else "") + ".")
+            details.append(f"📝 CONTRACT — {story['contract'] if story.get('contract') else 'Details pending'}")
         else:
             headline = f"🎩 MANAGER- {player} LINKED WITH THE {club or 'CLUB'} JOB."
+            details.append(f"🏟️ CLUB — {club if club else 'To be confirmed'}")
+        details.append(f"🔄 ROLE — {role.upper() if role and role != 'staff' else 'HEAD COACH'}")
 
     else:
         headline = f"🔵 NEWS- {player}."
+        details.append(f"📰 UPDATE — Latest football news.")
+        details.append(f"🏴󠁧󠁢󠁥󠁮󠁧󠁿 LEAGUE — PREMIER LEAGUE")
 
     lines = [headline] + details
     return "\n".join(lines) + "\n\n" + build_hashtags(story)
@@ -1630,9 +1658,17 @@ async def scrape(data):
         st["sources"] = list(dict.fromkeys(st["sources"]))
         st["official_confirmed"] = ver["official_confirmed"]
         st["cross_verified"] = len(st["sources"]) >= 2 or ver["official_confirmed"]
-        print(f"  [X-VERIFY] {st.get('player')!r}: +{ver['n_independent']} "
-              f"corroborating source(s) {ver['handles']!r}"
-              f"{' + OFFICIAL CLUB CONFIRMATION' if ver['official_confirmed'] else ''}")
+        # If the verifier found 2+ sources CONTRADICTING the story (e.g.
+        # "bid rejected", "not for sale"), mark it contradicted so it never posts.
+        if ver.get("contradicted"):
+            st["contradicted"] = True
+            print(f"  [BLOCKED by verifier] {st.get('player')!r}: "
+                  f"{ver.get('n_contradictions', 0)} contradiction signal(s) found "
+                  f"— story suppressed")
+        else:
+            print(f"  [X-VERIFY] {st.get('player')!r}: +{ver['n_independent']} "
+                  f"corroborating source(s) {ver['handles']!r}"
+                  f"{' + OFFICIAL CLUB CONFIRMATION' if ver['official_confirmed'] else ''}")
         for line in ver["log"][:6]:
             print(f"             {line}")
 

@@ -98,6 +98,34 @@ def matches_story(text: str, story: dict) -> bool:
     return any(k in tl for k in kws)
 
 
+# Signals that indicate a story's outcome is the OPPOSITE of what was claimed.
+# If verification sources carry these phrases alongside the player's name, the
+# story is contradicted — it should be blocked, not corroborated.
+_CONTRADICTION_SIGNALS = (
+    "bid rejected", "rejected bid", "rejected a bid",
+    "bid turned down", "bid knocked back", "knocked back",
+    "not for sale", "refuses to sell", "refused to sell",
+    "rejected move", "rejects move", "rejects a move",
+    "deal collapsed", "falls through", "fell through", "has fallen through",
+    "pulled out", "pulls out", "no deal", "deal off",
+    "failed to agree", "unable to agree",
+    "free agent", "terminated contract", "by mutual agreement",
+    "stays at", "remains at", "signs new deal", "new deal signed",
+    "extends contract", "contract extension signed",
+    "turned down a bid", "turned down an offer",
+)
+
+
+def _contradicts_story(text: str, story: dict) -> bool:
+    """True when a verification headline signals the deal was rejected/dead/wrong.
+    Requires the player's surname to be present so generic headlines don't fire."""
+    tl = " " + (text or "").lower() + " "
+    sur = _surname(story.get("player"))
+    if not sur or sur not in tl:
+        return False
+    return any(s in tl for s in _CONTRADICTION_SIGNALS)
+
+
 def _too_old(entry) -> bool:
     tp = entry.get("published_parsed") or entry.get("updated_parsed")
     if not tp:
@@ -195,6 +223,7 @@ async def cross_verify(story: dict, known_sources=(), read_client=None) -> dict:
                 "n_independent": 0, "log": ["no player name to verify"]}
 
     official_confirmed = False
+    n_contradictions = 0
 
     # 1) Google News aggregate check — one query covers BBC, Sky Sports,
     #    The Athletic, FotMob, Guardian, Telegraph AND official club sites.
@@ -202,6 +231,14 @@ async def cross_verify(story: dict, known_sources=(), read_client=None) -> dict:
         if _too_old(entry):
             continue
         title = entry.get("title", "")
+        # Contradiction check BEFORE corroboration: if this headline signals
+        # the deal was rejected/dead/wrong, count it against the story rather
+        # than as a supporting source. Two contradictions from independent
+        # outlets marks the story as contradicted and blocks it from posting.
+        if _contradicts_story(title, story):
+            n_contradictions += 1
+            log.append(f"CONTRADICTION ({_entry_domain(entry)}): {title[:70]!r}")
+            continue
         if not matches_story(title, story):
             continue
         handle, kind = _handle_for_domain(_entry_domain(entry))
@@ -230,9 +267,15 @@ async def cross_verify(story: dict, known_sources=(), read_client=None) -> dict:
     for h in await _x_journalists(read_client, story, log):
         _add(h)
 
+    # Two or more independent sources contradicting the story = it's false.
+    # A single contradiction could be a misparsed headline; two is a pattern.
+    contradicted = n_contradictions >= 2
+
     return {
         "handles": handles,
         "official_confirmed": official_confirmed,
         "n_independent": len(handles),
+        "contradicted": contradicted,
+        "n_contradictions": n_contradictions,
         "log": log,
     }
