@@ -61,12 +61,12 @@ jobs:
 
         run: |
           set +e
-          python main.py --allow-rumours
+          python main.py
           code=$?
           if [ $code -ne 0 ]; then
             echo "First attempt failed (exit $code) — retrying once after 30s"
             sleep 30
-            python main.py --allow-rumours
+            python main.py
             code=$?
           fi
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"

@@ -2122,7 +2122,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
         print("[DRY-RUN] FAIL: some images did not render — investigate above.")
 
 
-async def main(post: bool = True, allow_rumours: bool = False):
+async def main(post: bool = True):
     # ================== POSTING MODE ==================
     # Live posting only when ENABLE_AUTOPOST=true AND the run wasn't forced to
     # draft-only (--draft-only). Otherwise we save drafts and post nothing.
@@ -2190,36 +2190,21 @@ async def main(post: bool = True, allow_rumours: bool = False):
 
     print(f"\n[BOT] {len(drafts)} item(s) prepared — evaluating for live post…")
 
-    # Accuracy safety: by default only fully CONFIRMED/OFFICIAL stories go live.
-    # Lower-confidence RUMOURs are posted only when explicitly opted in.
-    modes_ok = {"confirmed"} | ({"rumour"} if allow_rumours else set())
-
-    # Confidence gate: only AUTO_POST (score >= 90) publishes live, ALWAYS,
-    # with no flag able to bypass it. "mode" (rumour vs confirmed) and
-    # "confidence_decision" (REVIEW vs AUTO_POST) answer two different
-    # questions — --allow-rumours governs whether an ACCURATELY-extracted but
-    # factually-unconfirmed event (a genuine transfer rumour) may post; it
-    # must never also unlock a story the confidence engine itself could only
-    # score to REVIEW, because REVIEW means the pipeline isn't sure the
-    # extraction (player/club/direction/entity) is even right. That is a
-    # "don't guess" situation, not a rumour-vs-confirmed judgement call, so it
-    # is never bypassable. REVIEW-tier stories are NOT published this run;
-    # they are automatically re-scraped and re-cross-verified on every later
-    # run, so as soon as enough reliable outlets corroborate the story it
-    # clears AUTO_POST and publishes by itself — no manual step anywhere.
+    # Only fully CONFIRMED stories post live. classify_post() returns "confirmed"
+    # or None — there is no rumour path in the automated pipeline.
+    # REVIEW-tier stories (confidence 75-89) are held back and re-verified
+    # automatically on the next scheduled run; no manual step needed.
     def _conf_ok(d):
         return d.get("confidence_decision", "AUTO_POST") == _conf.AUTO_POST
 
-    postable = [d for d in drafts if d.get("mode") in modes_ok and _conf_ok(d)]
-    _held = [d for d in drafts if d.get("mode") in modes_ok and not _conf_ok(d)]
+    postable = [d for d in drafts if d.get("mode") == "confirmed" and _conf_ok(d)]
+    _held = [d for d in drafts if d.get("mode") == "confirmed" and not _conf_ok(d)]
     if _held:
-        print(f"[BOT] {len(_held)} story(ies) not yet corroborated by enough "
-              f"reliable sources (confidence 75-89) — held back and will be "
-              f"re-cross-verified automatically on the next scheduled run.")
+        print(f"[BOT] {len(_held)} story(ies) need more corroboration (confidence "
+              f"75-89) — held, will re-verify automatically on the next run.")
 
     if not postable:
-        print("[BOT] No postable stories this run "
-              f"(modes allowed: {sorted(modes_ok)}).")
+        print("[BOT] No confirmed stories cleared all gates this run.")
         return
 
     postable.sort(key=lambda s: (
@@ -2302,8 +2287,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FPL VORTEX news bot.")
     parser.add_argument("--draft-only", action="store_true",
                         help="Force draft-only mode (no posting). Default is LIVE.")
-    parser.add_argument("--allow-rumours", action="store_true",
-                        help="Also auto-post RUMOUR-labelled stories (NOT recommended).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Offline test: run fixtures through the full pipeline.")
     parser.add_argument("--fixtures", default="fixtures/tweets.json",
@@ -2314,4 +2297,4 @@ if __name__ == "__main__":
     if args.dry_run:
         asyncio.run(run_dry_run(fixtures_path=args.fixtures, runs=args.runs))
     else:
-        asyncio.run(main(post=not args.draft_only, allow_rumours=args.allow_rumours))
+        asyncio.run(main(post=not args.draft_only))
