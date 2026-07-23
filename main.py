@@ -1038,7 +1038,7 @@ def status_label(story, mode):
 # ── HASHTAGS ─────────────────────────────────────────────────────────────
 
 def build_hashtags(story):
-    """Exactly 3 SEO hashtags: primary club, event type, #FPL."""
+    """Exactly 3 SEO hashtags: primary club (or player name), event type, #FPL."""
     ev = story["event"]
     out = []
     # 1. One primary club hashtag (destination club preferred over origin).
@@ -1048,6 +1048,11 @@ def build_hashtags(story):
         if ht:
             out.append(ht)
             break
+    # Player-name fallback when no club hashtag is found (e.g. free agent news).
+    if not out:
+        player = (story.get("display_name") or story.get("player") or "").strip()
+        if player:
+            out.append("#" + re.sub(r"[^A-Za-z0-9]", "", player))
     # 2. Event type hashtag.
     if ev in ("injury", "suspension"): etag = "#InjuryNews"
     elif ev in ("transfer", "loan", "loan_option"): etag = "#TransferNews"
@@ -1135,8 +1140,8 @@ def build_tweet_body(story, sources, mode) -> str:
             details.append(f"📅 STATUS — {_avail_text(story.get('stage', 1))}")
         else:
             headline = f"🚑 INJURY- {player}{club_part} {_avail_text(story.get('stage', 1))}."
-            details.append(f"🏥 DIAGNOSIS — {story['diagnosis'] if story.get('diagnosis') else 'Details awaited'}")
-            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'Timeline to be confirmed'}")
+            details.append(f"🏥 DIAGNOSIS — {story['diagnosis'] if story.get('diagnosis') else 'Injury confirmed — full assessment pending'}")
+            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'Exact return date to be announced'}")
 
     elif ev in ("renewal", "stay"):
         club = (from_full or to_full).upper()
@@ -1439,6 +1444,7 @@ RSS_FEEDS = {
     "Transfermarkt":  "https://www.transfermarkt.com/rss/news",
     "SkySports":      "https://www.skysports.com/rss/12040",
     "guardian_sport": "https://www.theguardian.com/football/transfers/rss",
+    "espn":           "https://www.espn.com/espn/rss/soccer/news",
 
     # ── TIER 2: Elite journalists monitored via Google News ───────────────
     # Google News aggregates every article that cites Romano / Ornstein, so

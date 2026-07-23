@@ -43,6 +43,7 @@ TRUSTED_MEDIA = {
     "guardian_sport", "lequipe", "marca", "diarioas", "as", "kicker",
     "alex_crook", "alexcrabb31", "telegraph", "telegraphfootball",
     "fotmob", "transfermarkt",
+    "espn", "espnsoccer", "espnfc",
 }
 
 # ── AUTOMATIC CROSS-VERIFICATION SOURCES ─────────────────────────────────
@@ -93,6 +94,8 @@ TRUSTED_MEDIA_DOMAINS = {
     "lequipe.fr": "lequipe",
     "marca.com": "marca",
     "kicker.de": "kicker",
+    "espn.com": "espn",
+    "espnfc.com": "espn",
 }
 
 # Single source of truth for "this reads as an officially completed deal"
@@ -182,20 +185,21 @@ FPL_LOGO_IDS = {
 
 CLUB_COLORS = {
     "Arsenal": (239, 1, 7), "Aston_Villa": (103, 14, 54), "Bournemouth": (181, 14, 18),
-    "Brentford": (227, 6, 19), "Brighton": (0, 87, 184), "Chelsea": (3, 70, 148),
-    "Crystal_Palace": (27, 69, 143), "Everton": (39, 68, 136), "Fulham": (15, 15, 15),
-    "Ipswich": (0, 0, 255), "Leicester": (0, 83, 160), "Liverpool": (200, 16, 46),
+    "Brentford": (227, 6, 19), "Brighton": (0, 87, 184), "Burnley": (111, 34, 50),
+    "Chelsea": (3, 70, 148), "Crystal_Palace": (27, 69, 143), "Everton": (39, 68, 136),
+    "Fulham": (15, 15, 15), "Ipswich": (0, 0, 255), "Leeds": (29, 66, 138),
+    "Leicester": (0, 83, 160), "Liverpool": (200, 16, 46),
     "Man_City": (108, 173, 223), "Man_Utd": (218, 41, 28), "Newcastle": (15, 15, 15),
     "Nottm_Forest": (229, 50, 51), "Southampton": (215, 25, 32), "Spurs": (17, 24, 38),
-    "West_Ham": (122, 38, 58), "Wolves": (253, 185, 19),
+    "Sunderland": (235, 23, 43), "West_Ham": (122, 38, 58), "Wolves": (253, 185, 19),
 }
 
 CLUB_HASHTAG_MAP = {
     "Arsenal": "#Arsenal", "Aston_Villa": "#AVFC", "Bournemouth": "#AFCB",
-    "Brentford": "#Brentford", "Brighton": "#BHAFC", "Chelsea": "#Chelsea",
-    "Crystal_Palace": "#CPFC", "Everton": "#EFC", "Fulham": "#FFC",
-    "Ipswich": "#ITFC", "Leicester": "#LCFC", "Liverpool": "#LFC",
-    "Man_City": "#MCFC", "Man_Utd": "#MUFC", "Newcastle": "#NUFC",
-    "Nottm_Forest": "#NFFC", "Southampton": "#SaintsFC", "Spurs": "#THFC",
-    "West_Ham": "#WHUFC", "Wolves": "#Wolves",
+    "Brentford": "#Brentford", "Brighton": "#BHAFC", "Burnley": "#BurnleyFC",
+    "Chelsea": "#Chelsea", "Crystal_Palace": "#CPFC", "Everton": "#EFC",
+    "Fulham": "#FFC", "Ipswich": "#ITFC", "Leeds": "#LUFC", "Leicester": "#LCFC",
+    "Liverpool": "#LFC", "Man_City": "#MCFC", "Man_Utd": "#MUFC",
+    "Newcastle": "#NUFC", "Nottm_Forest": "#NFFC", "Southampton": "#SaintsFC",
+    "Spurs": "#THFC", "Sunderland": "#SAFC", "West_Ham": "#WHUFC", "Wolves": "#Wolves",
 }

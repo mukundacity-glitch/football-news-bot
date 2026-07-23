@@ -125,7 +125,9 @@ def _data_uri(path: Path, min_size: int = 500) -> str:
     """Return a base64 data-URI for an image file, or '' if missing/too small."""
     try:
         if path.exists() and path.stat().st_size >= min_size:
-            return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+            ext = path.suffix.lower()
+            mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+            return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
     except Exception:
         pass
     return ""
@@ -195,6 +197,38 @@ def _img_assets(story):
                         print(f"  [PHOTO] Wikipedia image found for {pname!r}")
             except Exception as _we:
                 print(f"  [PHOTO] Wikipedia lookup failed for {pname!r}: {_we}")
+
+    # ESPN fallback: search the ESPN athletes API and fetch their headshot.
+    if not photo_uri:
+        pname = story.get("player", "")
+        if pname:
+            try:
+                import json as _json
+                import urllib.parse as _up
+                espn_url = ("https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1"
+                            "/athletes?search=" + _up.quote(pname) + "&limit=5")
+                req = urllib.request.Request(
+                    espn_url,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    edata = _json.loads(resp.read().decode("utf-8"))
+                athletes = edata.get("athletes") or []
+                for ath in athletes[:3]:
+                    ath_id = str(ath.get("id") or "")
+                    if not ath_id:
+                        continue
+                    img_url = (f"https://a.espncdn.com/combiner/i?img=/i/headshots/soccer"
+                               f"/players/full/{ath_id}.png&w=350&h=254")
+                    ep = Path("players/espn_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".png")
+                    if not ep.exists():
+                        _download_asset(img_url, ep)
+                    if ep.exists() and ep.stat().st_size > 500:
+                        photo_uri = _data_uri(ep)
+                        print(f"  [PHOTO] ESPN image found for {pname!r} (id={ath_id})")
+                        break
+            except Exception as _ee:
+                print(f"  [PHOTO] ESPN lookup failed for {pname!r}: {_ee}")
 
     # FotMob fallback: search FotMob for the player and fetch their photo.
     # FotMob has the most comprehensive photo database for active football players.
@@ -390,7 +424,15 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         rows.append(("ROLE", "#f5c518",
                      (role.upper() if role and role.lower() != "staff" else "MANAGER"), ""))
     else:
-        fee_value = story.get("fee") or "TBD"   # matches the tweet body
+        raw_fee = story.get("fee")
+        if raw_fee:
+            fee_value = raw_fee
+        elif ev in ("loan", "loan_option"):
+            fee_value = "LOAN DEAL"
+        elif story.get("is_free"):
+            fee_value = "FREE TRANSFER"
+        else:
+            fee_value = "UNDISCLOSED"
         rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
 
     source_text = " · ".join(f"@{s}" for s in sources[:2])
