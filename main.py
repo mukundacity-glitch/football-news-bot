@@ -700,7 +700,15 @@ def classify_post(story, sources):
     n_elite = sum(1 for t in tiers if t == 2)
     has_media = 3 in tiers
     tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    strong_words = story["stage"] >= 4 or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
+    # strong_cue: one of the confirmation phrases appears in the story text.
+    # strong_words: True ONLY when stage=4 (paperwork done), OR when a
+    # confirmation cue is present AND the source is official/elite (tier 1/2).
+    # This stops tier-3 media (BBC, Sky Sports) using speculative "signs/joins"
+    # language from triggering a CONFIRMED post — the Trafford false-positive was
+    # caused by Sky Sports headlining "Trafford signs for Leeds" while the deal
+    # was still just "in talks". Tier-3 media language alone is never confirmation.
+    strong_cue = any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
+    strong_words = story["stage"] >= 4 or (strong_cue and (has_official or n_elite >= 1))
 
     if story["event"] == "injury":
         if has_official or n_elite >= 1: return "confirmed"
@@ -732,10 +740,12 @@ def classify_post(story, sources):
             story.get("to_key") or story.get("to_club")):
         return None
 
-    # A trusted source (tier 1/2/3) WITH strong confirmation language
-    # ("signed", "confirmed", "here we go", stage≥4) = CONFIRMED post.
-    # Without strong language, even from a good source, the story waits
-    # for more verification before being published.
+    # CONFIRMED requires either: official/elite source, OR stage=4 (paperwork done).
+    # Tier-3 media alone (BBC, Sky Sports) can only trigger CONFIRMED when the
+    # story has already reached stage 4 — their speculative "signs/joins" wording
+    # does not count as confirmation evidence. They do contribute to the confidence
+    # score, so the story accumulates verification and posts once an elite/official
+    # source also confirms or stage reaches 4 on the next cross-verify run.
     trusted_strong = strong_words and (has_official or n_elite >= 1 or has_media)
     video_only = story.get("from_video") and not has_official
     if (has_official or trusted_strong or n_elite >= 2) and not video_only:
