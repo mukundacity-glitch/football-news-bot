@@ -1404,9 +1404,35 @@ async def post_item(post_client, item, data):
 MAX_TWEET_AGE_DAYS = 3
 
 RSS_FEEDS = {
-    "BBC_Sport": "https://feeds.bbci.co.uk/sport/football/premier-league/rss.xml",
-    "Transfermarkt": "https://www.transfermarkt.com/rss/news",
-    "SkySports": "https://www.skysports.com/rss/12040"
+    # ── TIER 3: Trusted media ─────────────────────────────────────────────
+    # Source key must normalise (strip non-alnum) to a handle in TRUSTED_MEDIA
+    # so source_tier() assigns tier-3 credit (+5 trusted_source signal).
+    "BBC_Sport":      "https://feeds.bbci.co.uk/sport/football/premier-league/rss.xml",
+    "Transfermarkt":  "https://www.transfermarkt.com/rss/news",
+    "SkySports":      "https://www.skysports.com/rss/12040",
+    "guardian_sport": "https://www.theguardian.com/football/transfers/rss",
+
+    # ── TIER 2: Elite journalists monitored via Google News ───────────────
+    # Google News aggregates every article that cites Romano / Ornstein, so
+    # their breaking "Here We Go" items surface here within minutes. The feed
+    # key normalises to the handle in ELITE_TRUSTED → elite_source (+5 bonus).
+    "FabrizioRomano": (
+        "https://news.google.com/rss/search?q=%22Fabrizio+Romano%22"
+        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
+    ),
+    "David_Ornstein": (
+        "https://news.google.com/rss/search?q=%22David+Ornstein%22"
+        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
+    ),
+
+    # ── TIER 1: Official Premier League announcements ─────────────────────
+    # Site-scoped Google News captures official club signing announcements
+    # published on premierleague.com. Key normalises to "premierleague" which
+    # is in OFFICIAL_ACCOUNTS → official_source (+15 bonus, always AUTO_POST).
+    "premierleague": (
+        "https://news.google.com/rss/search?q=site%3Apremierleague.com"
+        "+transfer+OR+signs+OR+joined&hl=en-GB&gl=GB&ceid=GB:en"
+    ),
 }
 
 def clean_html(raw_html):
