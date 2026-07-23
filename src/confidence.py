@@ -199,7 +199,8 @@ def score_signals(signals: dict) -> dict:
 
 
 def evaluate(story, *, player_verified=False, official_source=False,
-             elite_source=False, n_sources=0, pl_relevant=None) -> dict:
+             elite_source=False, n_sources=0, pl_relevant=None,
+             fpl_data=None) -> dict:
     """Build the signal dict from a story + caller-known facts, then score it.
 
     Args:
@@ -207,6 +208,8 @@ def evaluate(story, *, player_verified=False, official_source=False,
         official_source: an official club / league / tier-1 source is present.
         n_sources:       number of distinct sources.
         pl_relevant:     override PL relevance; if None, derived from clubs.
+        fpl_data:        live FPL feed — lets the entity classifier short-circuit
+                         a rostered player to PLAYER before any text matching.
     """
     # Clause-breaking separator so role-binding regexes can't match ACROSS field
     # boundaries (e.g. "...free agent" + "Callum Wilson..." must not read as
@@ -214,7 +217,7 @@ def evaluate(story, *, player_verified=False, official_source=False,
     text = " . ".join(str(story.get(k, "") or "") for k in
                       ("raw_text", "body", "headline"))
     name = story.get("player") or ""
-    etype, ereason = classify_entity_detailed(name, text)
+    etype, ereason = classify_entity_detailed(name, text, fpl_data)
 
     ev = story.get("event")
     dir_ok, dir_reason = validate_direction(story)

@@ -106,7 +106,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-22-auto-cross-verify"
+_LOGIC_VER = "2026-07-23-fpl-entity-guard-club-clean"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -365,8 +365,11 @@ def build_story(tweet_text, fpl_data):
     # this is NOT a player transfer. Tag the role/action for accurate wording and
     # re-route any player event to STAFF/MANAGER news so it is classified
     # correctly and still posts — never as a fake player move.
-    if s.get("player") and is_staff_subject(s.get("player"), tweet_text):
-        s["staff_role"] = staff_role_of(s.get("player"), tweet_text)
+    # fpl_data MUST be passed: it is the ground-truth guard that stops a real,
+    # rostered PLAYER (e.g. Garnacho) being re-routed to the manager pipeline
+    # just because role-cue words ("the ... job", "boss") sit near his name.
+    if s.get("player") and is_staff_subject(s.get("player"), tweet_text, fpl_data):
+        s["staff_role"] = staff_role_of(s.get("player"), tweet_text, fpl_data)
         s["staff_action"] = staff_action_of(tweet_text)
         if s.get("event") in _PLAYER_EVENTS:
             s["event"] = "manager"
@@ -404,7 +407,13 @@ def build_story(tweet_text, fpl_data):
     # for the loan itself — loan fees exist but are almost always < £20M.
     if s.get("event") in ("loan", "loan_option") and s.get("fee"):
         _raw_lower = (tweet_text or "").lower()
-        if not any(p in _raw_lower for p in ("loan fee", "loan payment", "season fee")):
+        # A fee tied to a buy clause ("obligation/option to buy for €X") is a
+        # genuine, reportable number — keep it. Only a bare amount with no
+        # loan-fee or buy-clause context is treated as a market-value misparse.
+        _FEE_KEEP_CUES = ("loan fee", "loan payment", "season fee",
+                          "obligation to buy", "option to buy", "buy clause",
+                          "buy option", "obligation to sign", "future fee")
+        if not any(p in _raw_lower for p in _FEE_KEEP_CUES):
             s["fee"] = None
 
     # 🛡️ FREE AGENT DETECTOR (100% Dynamic, No Hardcoding)
@@ -423,9 +432,17 @@ def build_story(tweet_text, fpl_data):
         s["is_free"] = True
         s["fee"] = "Free transfer"
 
-    try: 
+    # CLUB-FIELD SANITATION: whatever path filled from_club/to_club, the value
+    # printed on the card/tweet must be a club NAME, never a sentence fragment
+    # ("Sporting. Negotiations"). Re-clean both raw fields as a last line of
+    # defence; a field that cleans away to nothing is dropped entirely.
+    for _f in ("from_club", "to_club"):
+        if s.get(_f):
+            s[_f] = _direction._clean_raw_club(s[_f])
+
+    try:
         s["stage"] = max(1, min(4, int(s.get("stage", 1))))
-    except Exception: 
+    except Exception:
         s["stage"] = 1
         
     s["collapsed"] = bool(s.get("collapsed"))
@@ -488,10 +505,43 @@ def content_hash(story: dict) -> str:
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
+def _same_person(a: str, b: str) -> bool:
+    """True when two extracted names refer to the same person despite variant
+    forms — 'Alejandro Garnacho' vs 'Alejandro Garnacho Ferreyra'. One name's
+    tokens being a subset of the other's, or sharing 2+ tokens, is a match."""
+    ta, tb = set(_norm_text(a).split()), set(_norm_text(b).split())
+    if not ta or not tb:
+        return False
+    return ta <= tb or tb <= ta or len(ta & tb) >= 2
+
 def is_duplicate_content(story: dict, data: dict, threshold: float = 0.90):
     h = content_hash(story)
     if h in data.get("posted_hashes", []): return True, "content_hash"
-    
+
+    # CROSS-STORY GUARDS against already-POSTED stories. Two failure modes the
+    # plain hash can't see, both real incidents:
+    #  1. The SAME person posted under two different event families (a loan AND
+    #     a "manager" story) — contradictory posts about one piece of news.
+    #  2. The SAME story re-posted under a name variant ('Garnacho' vs
+    #     'Garnacho Ferreyra'), which mints a different key and hash.
+    fam = _event_family(story.get("event"))
+    my_clubs = {k for k in (story.get("to_key"), story.get("from_key")) if k}
+    for prev in data.get("stories", {}).values():
+        if not _same_person(prev.get("player"), story.get("player")):
+            continue
+        prev_fam = _event_family(prev.get("event"))
+        prev_clubs = {k for k in (prev.get("to_key"),) if k}
+        overlap = (bool(my_clubs & prev_clubs) if (my_clubs and prev_clubs)
+                   else True)
+        if not overlap:
+            continue
+        if {prev_fam, fam} == {"transfer", "manager"}:
+            return True, "conflicting_event_family_same_person"
+        if (prev_fam == fam and prev.get("status") == "active"
+                and my_clubs and prev_clubs and (my_clubs & prev_clubs)
+                and int(story.get("stage", 1)) <= int(prev.get("stage", 0))):
+            return True, "same_story_name_variant"
+
     player_name = _norm_text(story.get("player") or "")
     event_type = _norm_text(story.get("event") or "")
     stage_num = str(story.get("stage", 1))
@@ -706,6 +756,7 @@ def score_confidence(story, fpl_data=None, sources=None):
         official_source=(1 in tiers),
         elite_source=(2 in tiers),
         n_sources=len(set(s.lower() for s in sources if s)),
+        fpl_data=fpl_data,
     )
     print("  " + _conf.decision_log_line(story, result))
     return result
@@ -727,9 +778,17 @@ def validate_story(story, fpl_data=None, sources=None):
     # ENTITY SAFETY GATE (hard reject): the subject must be a real player, never a
     # journalist, company/sponsor, stadium, or a coach filed as a player transfer.
     _ent_text = " . ".join(str(story.get(k, "") or "") for k in ("raw_text", "body", "headline"))
-    _ent_ok, _ent_reason = is_postable_player(player, _ent_text, ev)
+    _ent_ok, _ent_reason = is_postable_player(player, _ent_text, ev, fpl_data)
     if not _ent_ok:
         return False, _ent_reason
+
+    # PLAYER-IS-NOT-A-MANAGER GATE: a name the live FPL feed confirms as a
+    # rostered player can NEVER be the subject of manager/staff news. Kills
+    # the "ALEJANDRO GARNACHO LINKED WITH THE ASTON VILLA JOB" failure where
+    # role-cue words near a player's name re-routed a transfer to the staff
+    # pipeline and produced a second, contradictory post.
+    if ev == "manager" and fpl_data and find_player_in_fpl(player, fpl_data) is not None:
+        return False, "manager_subject_is_active_player"
     _ptokens = [t for t in re.split(r"[\s\-']+", player) if t]
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"

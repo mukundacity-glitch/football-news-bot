@@ -113,7 +113,13 @@ _FEE_SINGLE_RE = re.compile(r'([£€$]\s?\d+(?:\.\d+)?\s*(?:million|billion|m|k
 
 def _extract_fee(text):
     m = _FEE_RANGE_RE.search(text) or _FEE_SINGLE_RE.search(text)
-    return m.group(1).upper() if m else None
+    if not m:
+        return None
+    # Normalise the unit word to the compact card form ("£30 MILLION" -> "£30 M")
+    fee = m.group(1).upper()
+    fee = re.sub(r'\s*MILLION\b', ' M', fee)
+    fee = re.sub(r'\s*BILLION\b', ' B', fee)
+    return re.sub(r'\s+', ' ', fee).strip()
 
 
 # Contract-duration extraction. Nothing previously populated this field at
