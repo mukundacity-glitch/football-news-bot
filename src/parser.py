@@ -264,7 +264,11 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
             to_key = other_clubs[0]
     elif clubs:
         to_key = clubs[0]
-        if len(clubs) > 1: from_key = clubs[1]
+        # from_key is NOT assigned positionally for non-FPL players.
+        # direction.resolve() in build_story() handles from_club via grammar
+        # ("from X", "agreed fee with X"). Positional second-club caused the
+        # Manu Kone "FROM BRIGHTON" false post: Brighton was a comparison club
+        # in the article, not Kone's actual club (AS Roma).
 
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
 

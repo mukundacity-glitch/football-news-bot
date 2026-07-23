@@ -196,6 +196,48 @@ def _img_assets(story):
             except Exception as _we:
                 print(f"  [PHOTO] Wikipedia lookup failed for {pname!r}: {_we}")
 
+    # FotMob fallback: search FotMob for the player and fetch their photo.
+    # FotMob has the most comprehensive photo database for active football players.
+    if not photo_uri:
+        pname = story.get("player", "")
+        if pname:
+            try:
+                import json as _json
+                import urllib.parse as _up
+                fotmob_url = ("https://www.fotmob.com/api/search?term="
+                              + _up.quote(pname) + "&lang=en")
+                req = urllib.request.Request(
+                    fotmob_url,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)",
+                             "Accept": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    fdata = _json.loads(resp.read().decode("utf-8"))
+                players = fdata.get("squad") or fdata.get("players") or []
+                for entry in players[:3]:
+                    pid = str(entry.get("id") or "")
+                    if not pid:
+                        continue
+                    img_url = (entry.get("imageUrl") or
+                               f"https://images.fotmob.com/image_resources/playerimages/{pid}.png")
+                    fp = Path("players/fm_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".png")
+                    if not fp.exists():
+                        _download_asset(img_url, fp)
+                    if fp.exists() and fp.stat().st_size > 500:
+                        photo_uri = _data_uri(fp)
+                        print(f"  [PHOTO] FotMob image found for {pname!r} (id={pid})")
+                        break
+            except Exception as _fe:
+                print(f"  [PHOTO] FotMob lookup failed for {pname!r}: {_fe}")
+
+    # Club crest fallback: if still no photo, use the destination or origin crest
+    # as a last resort so the card is never completely imageless.
+    if not photo_uri:
+        crest = _crest_uri(story.get("to_key") or story.get("from_key"))
+        if crest:
+            photo_uri = crest
+            print(f"  [PHOTO] Crest fallback for {story.get('player')!r}")
+
     return player_el, player_name, logo_uri, photo_uri
 
 
