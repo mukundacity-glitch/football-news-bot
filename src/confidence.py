@@ -44,6 +44,7 @@ WEIGHTS = {
     "direction_verified": 15,
     "official_source": 15,
     "elite_source": 5,
+    "trusted_source": 5,
     "multiple_sources": 10,
     "premier_league_relevant": 10,
 }
@@ -199,17 +200,19 @@ def score_signals(signals: dict) -> dict:
 
 
 def evaluate(story, *, player_verified=False, official_source=False,
-             elite_source=False, n_sources=0, pl_relevant=None,
-             fpl_data=None) -> dict:
+             elite_source=False, trusted_source=False, n_sources=0,
+             pl_relevant=None, fpl_data=None) -> dict:
     """Build the signal dict from a story + caller-known facts, then score it.
 
     Args:
-        player_verified: FPL/trusted-DB match OR a reliable-source-reported signing.
-        official_source: an official club / league / tier-1 source is present.
-        n_sources:       number of distinct sources.
-        pl_relevant:     override PL relevance; if None, derived from clubs.
-        fpl_data:        live FPL feed — lets the entity classifier short-circuit
-                         a rostered player to PLAYER before any text matching.
+        player_verified:  FPL/trusted-DB match OR a reliable-source-reported signing.
+        official_source:  an official club / league / tier-1 source is present.
+        elite_source:     an elite journalist (Romano, Ornstein) is present.
+        trusted_source:   a tier-3 trusted media outlet (BBC, Sky, Athletic…) is present.
+        n_sources:        number of distinct sources.
+        pl_relevant:      override PL relevance; if None, derived from clubs.
+        fpl_data:         live FPL feed — lets the entity classifier short-circuit
+                          a rostered player to PLAYER before any text matching.
     """
     # Clause-breaking separator so role-binding regexes can't match ACROSS field
     # boundaries (e.g. "...free agent" + "Callum Wilson..." must not read as
@@ -233,6 +236,7 @@ def evaluate(story, *, player_verified=False, official_source=False,
         "direction_verified": dir_ok,
         "official_source": bool(official_source),
         "elite_source": bool(elite_source),
+        "trusted_source": bool(trusted_source),
         "multiple_sources": (n_sources or 0) >= 2,
         "premier_league_relevant": bool(pl_relevant),
         "entity_type": etype,

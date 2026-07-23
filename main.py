@@ -755,6 +755,7 @@ def score_confidence(story, fpl_data=None, sources=None):
         player_verified=player_verified,
         official_source=(1 in tiers),
         elite_source=(2 in tiers),
+        trusted_source=(3 in tiers),
         n_sources=len(set(s.lower() for s in sources if s)),
         fpl_data=fpl_data,
     )
