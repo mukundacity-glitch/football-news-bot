@@ -2,12 +2,9 @@ name: FPL Vortex Bot
 
 on:
   schedule:
-    - cron: "0 5 * * *"     # 1:00 AM EST
     - cron: "0 8 * * *"     # 4:00 AM EST
-    - cron: "0 11 * * *"    # 7:00 AM EST
-    - cron: "0 14 * * *"    # 10:00 AM EST
-    - cron: "0 17 * * *"    # 1:00 PM EST
-    - cron: "0 20 * * *"    # 4:00 PM EST
+    - cron: "0 13 * * *"    # 9:00 AM EST
+    - cron: "0 18 * * *"    # 2:00 PM EST
     - cron: "0 23 * * *"    # 7:00 PM EST
   workflow_dispatch: {}
 
@@ -55,24 +52,21 @@ jobs:
           X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
           X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          # Live posting is OPT-IN. Set repo Variable ENABLE_AUTOPOST=true to post
-          # to X; leave unset/empty to stay in safe draft-only mode. Optional
-          # overrides (MAX_POSTS_PER_RUN, MAX_POSTS_PER_HOUR, DAILY_POST_LIMIT,
-          # POST_JITTER_MIN_S, POST_JITTER_MAX_S) can also be set as Variables.
-          ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST }}
-          MAX_POSTS_PER_RUN: ${{ vars.MAX_POSTS_PER_RUN }}
-          MAX_POSTS_PER_HOUR: ${{ vars.MAX_POSTS_PER_HOUR }}
-          DAILY_POST_LIMIT: ${{ vars.DAILY_POST_LIMIT }}
+          # Fully automatic — set ENABLE_AUTOPOST=false in repo Variables to pause
+          # without a code change (or set BOT_PAUSED=true above for a hard stop).
+          ENABLE_AUTOPOST: true
+          MAX_POSTS_PER_RUN: 4
+          MAX_POSTS_PER_HOUR: 6
+          DAILY_POST_LIMIT: 15
 
         run: |
           set +e
-          python main.py --allow-rumours
+          python main.py
           code=$?
           if [ $code -ne 0 ]; then
             echo "First attempt failed (exit $code) — retrying once after 30s"
             sleep 30
-            python main.py --allow-rumours
+            python main.py
             code=$?
           fi
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"

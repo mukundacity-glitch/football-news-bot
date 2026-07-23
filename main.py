@@ -9,6 +9,7 @@ import random
 import argparse
 import asyncio
 import requests
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
@@ -25,12 +26,6 @@ from src.entity_guard import (is_postable_player, classify_entity,
 from src import confidence as _conf
 from src import direction as _direction
 from src.verifier import cross_verify
-from src.constants import (
-    CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR, DRAFTS_DIR,
-    JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
-    ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
-    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP
-)
 
 # Shared Canvas Namespace Initialization
 FONT = ImageFont.load_default()
@@ -214,8 +209,9 @@ def hashtag_for(name_or_key: str):
 CLUB_FULL_NAME = {
     "Arsenal": "Arsenal", "Aston_Villa": "Aston Villa", "Bournemouth": "Bournemouth",
     "Brentford": "Brentford", "Brighton": "Brighton", "Burnley": "Burnley",
-    "Chelsea": "Chelsea", "Crystal_Palace": "Crystal Palace", "Everton": "Everton",
-    "Fulham": "Fulham", "Ipswich": "Ipswich Town", "Leeds": "Leeds United",
+    "Chelsea": "Chelsea", "Coventry": "Coventry City", "Crystal_Palace": "Crystal Palace",
+    "Everton": "Everton", "Fulham": "Fulham", "Hull": "Hull City",
+    "Ipswich": "Ipswich Town", "Leeds": "Leeds United",
     "Leicester": "Leicester City", "Liverpool": "Liverpool", "Man_City": "Manchester City",
     "Man_Utd": "Manchester United", "Newcastle": "Newcastle United", "Nottm_Forest": "Nottingham Forest",
     "Southampton": "Southampton", "Spurs": "Tottenham", "Sunderland": "Sunderland",
@@ -712,9 +708,22 @@ def classify_post(story, sources):
 
     # Manager / staff: only a concrete appointment or departure is posted.
     # Pure "linked with the job" speculation returns None — pending, not posted.
+    # All three conditions must hold: concrete action type, reliable source tier,
+    # AND actual confirmation language in the text. An elite reporter saying
+    # "linked with the job" is NOT enough — the appointment must be real.
     if story.get("event") == "manager":
         action = story.get("staff_action")
-        if action in ("appointment", "departure") and (has_official or n_elite >= 1):
+        tl_mgr = (story.get("body", "") + " " + (story.get("headline", "") or "")
+                  + " " + (story.get("raw_text", "") or "")).lower()
+        _MGR_CONFIRM_CUES = (
+            "appointed", "confirmed", "official", "announced", "signed",
+            "here we go", "completed", "agreed", "sacked", "dismissed",
+            "left the club", "departure confirmed", "leaves as",
+        )
+        has_mgr_confirm = any(c in tl_mgr for c in _MGR_CONFIRM_CUES)
+        if (action in ("appointment", "departure")
+                and (has_official or n_elite >= 1)
+                and has_mgr_confirm):
             return "confirmed"
         return None
 
@@ -794,6 +803,31 @@ def validate_story(story, fpl_data=None, sources=None):
     _plow = player.lower()
     if ev != "manager" and (_plow in MANAGER_SURNAMES or any(m in _plow for m in MANAGER_SURNAMES)): return False, "player_is_manager_name"
     if ev == "manager" and len(_ptokens) < 2: return False, "manager_name_single_token"
+
+    # MANAGER SPECULATION GATE: pure speculation without actual appointment/departure
+    # language is blocked here rather than waiting for classify_post(). "Linked with",
+    # "frontrunner", "in the frame" etc. from even elite sources must NOT auto-post —
+    # the appointment itself must be real. This killed the Iraola-to-Liverpool false post
+    # where speculation language ("linked with") yielded staff_action="appointment".
+    if ev == "manager":
+        _mgr_blob = (story.get("raw_text", "") + " " + story.get("body", "") + " "
+                     + (story.get("headline") or "")).lower()
+        _MGR_SPEC_CUES = (
+            "linked with", "could be appointed", "in the frame", "in contention",
+            "shortlisted", "being considered", "candidate for",
+            "frontrunner", "favourite for the job", "interviewed for",
+            "could take charge", "being lined up", "lined up as",
+            "set to hold talks", "approach made", "interest in",
+        )
+        _MGR_CONFIRM_CUES = (
+            "appointed", "confirmed", "signed", "official", "announced",
+            "here we go", "completed", "agreed", "left the club", "sacked",
+            "dismissed", "departure confirmed", "leaves as",
+        )
+        if (any(c in _mgr_blob for c in _MGR_SPEC_CUES)
+                and not any(c in _mgr_blob for c in _MGR_CONFIRM_CUES)):
+            return False, "manager_speculation_language"
+
     if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
 
@@ -1038,7 +1072,7 @@ def status_label(story, mode):
 # ── HASHTAGS ─────────────────────────────────────────────────────────────
 
 def build_hashtags(story):
-    """Exactly 3 SEO hashtags: primary club, event type, #FPL."""
+    """Exactly 3 SEO hashtags: primary club (or player name), event type, #FPL."""
     ev = story["event"]
     out = []
     # 1. One primary club hashtag (destination club preferred over origin).
@@ -1048,6 +1082,11 @@ def build_hashtags(story):
         if ht:
             out.append(ht)
             break
+    # Player-name fallback when no club hashtag is found (e.g. free agent news).
+    if not out:
+        player = (story.get("display_name") or story.get("player") or "").strip()
+        if player:
+            out.append("#" + re.sub(r"[^A-Za-z0-9]", "", player))
     # 2. Event type hashtag.
     if ev in ("injury", "suspension"): etag = "#InjuryNews"
     elif ev in ("transfer", "loan", "loan_option"): etag = "#TransferNews"
@@ -1135,8 +1174,8 @@ def build_tweet_body(story, sources, mode) -> str:
             details.append(f"📅 STATUS — {_avail_text(story.get('stage', 1))}")
         else:
             headline = f"🚑 INJURY- {player}{club_part} {_avail_text(story.get('stage', 1))}."
-            details.append(f"🏥 DIAGNOSIS — {story['diagnosis'] if story.get('diagnosis') else 'Details awaited'}")
-            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'Timeline to be confirmed'}")
+            details.append(f"🏥 DIAGNOSIS — {story['diagnosis'] if story.get('diagnosis') else 'Injury confirmed — full assessment pending'}")
+            details.append(f"⏱️ RETURN — {story.get('expected_return') or 'Exact return date to be announced'}")
 
     elif ev in ("renewal", "stay"):
         club = (from_full or to_full).upper()
@@ -1197,8 +1236,6 @@ def trim_for_twitter(body: str, limit: int = 278) -> str:
     return out.rstrip() + "…"
 
 
-
-from src.renderer import create_transfer_image, create_injury_image, _create_fallback_card
 
 # ── QUEUE ARCHIVE MANAGEMENT ─────────────────────────────────────────────
 
@@ -1431,37 +1468,156 @@ async def post_item(post_client, item, data):
   # ── SCRAPER CORE (100% FREE RSS) ─────────────────────────────────────────
 MAX_TWEET_AGE_DAYS = 3
 
-RSS_FEEDS = {
-    # ── TIER 3: Trusted media ─────────────────────────────────────────────
-    # Source key must normalise (strip non-alnum) to a handle in TRUSTED_MEDIA
-    # so source_tier() assigns tier-3 credit (+5 trusted_source signal).
-    "BBC_Sport":      "https://feeds.bbci.co.uk/sport/football/premier-league/rss.xml",
-    "Transfermarkt":  "https://www.transfermarkt.com/rss/news",
-    "SkySports":      "https://www.skysports.com/rss/12040",
-    "guardian_sport": "https://www.theguardian.com/football/transfers/rss",
-
-    # ── TIER 2: Elite journalists monitored via Google News ───────────────
-    # Google News aggregates every article that cites Romano / Ornstein, so
-    # their breaking "Here We Go" items surface here within minutes. The feed
-    # key normalises to the handle in ELITE_TRUSTED → elite_source (+5 bonus).
-    "FabrizioRomano": (
-        "https://news.google.com/rss/search?q=%22Fabrizio+Romano%22"
-        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
-    ),
-    "David_Ornstein": (
-        "https://news.google.com/rss/search?q=%22David+Ornstein%22"
-        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
-    ),
-
+# List of (source_name, url) tuples — list not dict so we can have multiple
+# entries sharing the same source_name (e.g. two premierleague search feeds).
+RSS_FEEDS = [
     # ── TIER 1: Official Premier League announcements ─────────────────────
-    # Site-scoped Google News captures official club signing announcements
-    # published on premierleague.com. Key normalises to "premierleague" which
-    # is in OFFICIAL_ACCOUNTS → official_source (+15 bonus, always AUTO_POST).
-    "premierleague": (
+    # Site-scoped Google News captures official signing announcements on
+    # premierleague.com. Key → "premierleague" ∈ OFFICIAL_ACCOUNTS
+    # → official_source (+15 bonus, always AUTO_POST).
+    ("premierleague", (
         "https://news.google.com/rss/search?q=site%3Apremierleague.com"
         "+transfer+OR+signs+OR+joined&hl=en-GB&gl=GB&ceid=GB:en"
-    ),
-}
+    )),
+    ("premierleague", (
+        "https://news.google.com/rss/search?q=site%3Apremierleague.com"
+        "+injur+OR+suspended+OR+ruled+out&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+
+    # ── TIER 2: Elite journalists monitored via Google News ───────────────
+    ("FabrizioRomano", (
+        "https://news.google.com/rss/search?q=%22Fabrizio+Romano%22"
+        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("David_Ornstein", (
+        "https://news.google.com/rss/search?q=%22David+Ornstein%22"
+        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("BenDinnery", (
+        "https://news.google.com/rss/search?q=%22Ben+Dinnery%22"
+        "+injur+OR+fitness+OR+ruled+out&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+
+    # ── TIER 3: Trusted media ─────────────────────────────────────────────
+    ("BBC_Sport",      "https://feeds.bbci.co.uk/sport/football/premier-league/rss.xml"),
+    ("BBC_Sport",      "https://feeds.bbci.co.uk/sport/football/rss.xml"),
+    ("Transfermarkt",  "https://www.transfermarkt.com/rss/news"),
+    ("SkySports",      "https://www.skysports.com/rss/12040"),
+    ("guardian_sport", "https://www.theguardian.com/football/transfers/rss"),
+    ("espn",           "https://www.espn.com/espn/rss/soccer/news"),
+    ("rootwire", (
+        "https://news.google.com/rss/search?q=site%3Arootwiresoccer.com"
+        "+premier+league&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+]
+
+# Bluesky handles to poll via the public AT Protocol API (no auth required).
+# Each entry is (handle, source_name) where source_name normalises to a handle
+# in ELITE_TRUSTED so classify_post() passes the injury check.
+_BLUESKY_HANDLES = [
+    ("premierinjuries.bsky.social", "premierinjuries"),
+    ("bendinnery.bsky.social", "bendinnery"),
+]
+
+def fetch_fpl_injury_news(fpl_data) -> list:
+    """Generate structured injury/suspension items directly from the official FPL API."""
+    if not fpl_data:
+        return []
+    out = []
+    now = datetime.now(timezone.utc)
+    team_map = {t["id"]: t for t in fpl_data.get("teams", [])}
+    status_to_stage = {"d": 2, "i": 3, "u": 3, "n": 3, "s": 4}
+    for el in fpl_data.get("elements", []):
+        status = el.get("status", "a")
+        if status == "a":
+            continue
+        news_text = (el.get("news") or "").strip()
+        if not news_text:
+            continue
+        news_added = el.get("news_added") or ""
+        if news_added:
+            try:
+                dt = datetime.fromisoformat(news_added.replace("Z", "+00:00"))
+                if (now - dt).total_seconds() > MAX_TWEET_AGE_DAYS * 86400:
+                    continue
+            except Exception:
+                pass
+        player_full = f"{el.get('first_name', '')} {el.get('second_name', '')}".strip()
+        if not player_full:
+            continue
+        team = team_map.get(el.get("team", 0), {})
+        club_key = resolve_club_key(
+            f"{team.get('name', '')} {team.get('short_name', '')}".lower()
+        )
+        chance = el.get("chance_of_playing_this_round")
+        event = "suspension" if status == "s" else "injury"
+        stage = status_to_stage.get(status, 2)
+        if event == "injury" and chance is not None:
+            stage = 3 if chance <= 25 else 2
+        tid = "fpl_" + hashlib.md5(
+            f"{el['id']}_{news_text[:40]}".encode()).hexdigest()[:12]
+        text = f"{player_full}: {news_text}"
+        out.append({
+            "id": tid,
+            "text": text,
+            "media_url": None,
+            "created_at": news_added or None,
+            "username": "officialfpl",
+            "_fpl_pre_built": {
+                "player": player_full,
+                "display_name": player_full,
+                "verified_player_code": el.get("code"),
+                "event": event,
+                "stage": stage,
+                "from_key": club_key,
+                "to_key": None,
+                "from_club": club_display(club_key) if club_key else "",
+                "to_club": "",
+                "diagnosis": news_text,
+                "expected_return": None,
+                "fee": None, "contract": None, "is_free": False,
+                "collapsed": False, "historical": False,
+                "headline": text, "body": news_text, "raw_text": text,
+                "from_video": False, "has_written_claim": True,
+                "chance_of_playing": chance,
+                "sources": ["officialfpl"],
+            }
+        })
+    print(f"  [FPL-INJURY] {len(out)} fresh official injury/suspension item(s).")
+    return out
+
+
+def fetch_bluesky_posts() -> list:
+    """Fetch recent posts from Bluesky injury/transfer accounts (public AT Protocol API)."""
+    out = []
+    for handle, source_name in _BLUESKY_HANDLES:
+        try:
+            url = (
+                "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
+                f"?actor={urllib.parse.quote(handle)}&limit=30&filter=posts_no_replies"
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "FPLVortexBot/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            feed_items = (data.get("feed") or [])[:30]
+            for item in feed_items:
+                post = item.get("post", {})
+                record = post.get("record", {})
+                text = (record.get("text") or "").strip()
+                if not text:
+                    continue
+                created_at = record.get("createdAt") or post.get("indexedAt")
+                uri = post.get("uri", "") or text
+                tid = "bsky_" + hashlib.md5(uri.encode()).hexdigest()[:15]
+                out.append({
+                    "id": tid, "text": text, "media_url": None,
+                    "created_at": created_at, "username": source_name,
+                })
+            print(f"  [BLUESKY] @{handle}: {len(feed_items)} post(s) fetched.")
+        except Exception as e:
+            print(f"  [BLUESKY] @{handle}: {e}")
+    return out
+
 
 def clean_html(raw_html):
     """Strips HTML tags from RSS summaries."""
@@ -1469,10 +1625,19 @@ def clean_html(raw_html):
     return re.sub(cleanr, ' ', raw_html).strip()
 
 def _parse_rss_date(raw):
+    """Parse a date string in RFC 2822 (RSS) or ISO 8601 (FPL API, Bluesky) format."""
     if not raw: return None
+    # RFC 2822 — standard RSS/Atom pubDate: "Mon, 23 Jul 2026 10:00:00 +0000"
     try:
         from email.utils import parsedate_to_datetime
         dt = parsedate_to_datetime(raw)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        pass
+    # ISO 8601 — FPL bootstrap-static news_added, Bluesky createdAt:
+    # "2026-07-23T10:00:00Z" / "2026-07-23T10:00:00.123Z" / "2026-07-23T10:00:00+00:00"
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except Exception:
         return None
@@ -1489,62 +1654,75 @@ def tweet_too_old(created_at, max_days=MAX_TWEET_AGE_DAYS, unknown_is_old=True):
 item_too_old = tweet_too_old
 
 async def fetch_rss_news():
-    """Replaces Twikit/Nitter with free, reliable RSS feeds."""
+    """Fetch RSS feeds and Bluesky posts; returns a unified list of items."""
     out = []
-    for source_name, url in RSS_FEEDS.items():
+    seen_ids: set = set()
+    for source_name, url in RSS_FEEDS:
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:20]:
-                tid = hashlib.md5(entry.link.encode('utf-8')).hexdigest()[:15]
-                
-                # Combine Title + Summary to mimic a tweet's text structure
-                summary = clean_html(entry.get('summary', ''))
+                link = (entry.get("link") or entry.get("id")
+                        or (entry.get("title", "") + str(entry.get("published", ""))))
+                tid = hashlib.md5(link.encode("utf-8")).hexdigest()[:15]
+                if tid in seen_ids:
+                    continue
+                seen_ids.add(tid)
+                summary = clean_html(entry.get("summary", ""))
                 text = f"{entry.title}. {summary}"
-                
                 media_url = None
-                if 'media_content' in entry and len(entry.media_content) > 0:
-                    media_url = entry.media_content[0].get('url')
-                
-                created_at = entry.get('published', None)
-                
+                if "media_content" in entry and entry.media_content:
+                    media_url = entry.media_content[0].get("url")
+                created_at = entry.get("published", None)
                 if text:
                     out.append({
-                        "id": tid, 
-                        "text": text, 
-                        "media_url": media_url, 
+                        "id": tid,
+                        "text": text,
+                        "media_url": media_url,
                         "created_at": created_at,
-                        "username": source_name
+                        "username": source_name,
                     })
         except Exception as e:
             print(f"  [READ] {source_name} feed error: {e}")
-            
+
+    for item in fetch_bluesky_posts():
+        if item["id"] not in seen_ids:
+            seen_ids.add(item["id"])
+            out.append(item)
+
     return out
 
 async def scrape(data):
     fpl = fetch_fpl_data()
     story_map = {}
     seen = skipped = 0
-    
+
     rss_items = await fetch_rss_news()
-    if not rss_items:
+    fpl_injury_items = fetch_fpl_injury_news(fpl_data=fpl)
+
+    if not rss_items and not fpl_injury_items:
         print("  [WARN] Zero news items fetched. Check internet or feed URLs.")
     else:
-        print(f"  [READ] Fetched {len(rss_items)} articles from RSS.")
-        
-    for t in rss_items:
+        print(f"  [READ] {len(rss_items)} RSS/Bluesky items + {len(fpl_injury_items)} FPL injury items.")
+
+    for t in rss_items + fpl_injury_items:
         tid, text, username = t["id"], t["text"], t["username"]
         if tid in data["posted_ids"]: continue
         if not any(k in text.lower() for k in FOOTBALL_KW): continue
-        
+
         if item_too_old(t.get("created_at")):
             skipped += 1
             print(f"   skip (older_than_{MAX_TWEET_AGE_DAYS}d): {text[:70]!r}")
             continue
-            
+
         seen += 1
-        
-        if tid in data["extracted"]: 
+
+        if tid in data["extracted"]:
             story = dict(data["extracted"][tid])
+        elif "_fpl_pre_built" in t:
+            story = dict(t["_fpl_pre_built"])
+            story["media_url"] = None
+            story["created_at"] = t.get("created_at")
+            data["extracted"][tid] = dict(story)
         else:
             story = build_story(text, fpl)
             story["media_url"] = t.get("media_url")
@@ -1620,9 +1798,10 @@ async def scrape(data):
 
     print(f"  [SCRAPE] {seen} football items seen, {skipped} skipped, {len(story_map)} candidate stories")
     
+    _feed_count = len(RSS_FEEDS) + len(_BLUESKY_HANDLES)
     data["last_read_health"] = {
-        "accounts_total": len(RSS_FEEDS),
-        "accounts_failed": 0 if rss_items else len(RSS_FEEDS),
+        "accounts_total": _feed_count,
+        "accounts_failed": 0 if rss_items else _feed_count,
         "fail_ratio": 0.0 if rss_items else 1.0,
         "at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1678,6 +1857,16 @@ async def scrape(data):
         st["confidence_score"] = _final_cres["score"]
         st["confidence_decision"] = _final_cres["decision"]
 
+        # FINAL AGE HARD-GATE: stories can sit in pending accumulating sources for
+        # days. If the original source item is now stale (> 3 days old), never
+        # publish — the news is too old regardless of confidence score. Remove from
+        # pending so it doesn't block queue and wastes no further verification effort.
+        _final_created = st.get("created_at")
+        if _final_created and tweet_too_old(_final_created, unknown_is_old=False):
+            print(f"   [BLOCK] {st.get('player')!r}: source item stale ({_final_created}) — skipping")
+            data["pending"].pop(key, None)
+            continue
+
         if not st.get("contradicted") and st.get("event") in ("transfer", "loan", "loan_option"):
             _pnorm = (st.get("player") or "").lower().strip()
             _new_dest = _norm_text(st.get("to_key") or st.get("to_club") or "")
@@ -1691,6 +1880,24 @@ async def scrape(data):
                             print(f"   [BLOCK] {st.get('player')!r}: already confirmed "
                                   f"(stage {_prev['stage']}) to {_prev_dest!r}; "
                                   f"new story says {_new_dest!r} — marking contradicted")
+                            st["contradicted"] = True
+                            break
+
+        # MANAGER ALREADY-AT-CLUB GUARD: if we already have a confirmed (stage≥4)
+        # posting of this manager at the SAME destination club, suppress the
+        # duplicate. Parallel to the transfer already-confirmed guard above.
+        if not st.get("contradicted") and st.get("event") == "manager":
+            _mgr_name_n = (st.get("player") or "").lower().strip()
+            _mgr_dest_n = _norm_text(st.get("to_key") or st.get("to_club") or "")
+            if _mgr_name_n and _mgr_dest_n:
+                for _prev in data.get("stories", {}).values():
+                    if ((_prev.get("player") or "").lower().strip() == _mgr_name_n
+                            and _prev.get("event") == "manager"
+                            and _prev.get("stage", 0) >= 4):
+                        _prev_dest_n = _norm_text(_prev.get("to_key") or _prev.get("to_club") or "")
+                        if _prev_dest_n and _prev_dest_n == _mgr_dest_n:
+                            print(f"   [BLOCK] {st.get('player')!r}: already confirmed manager "
+                                  f"at {_mgr_dest_n!r} (stage {_prev['stage']}) — suppressing duplicate")
                             st["contradicted"] = True
                             break
 
@@ -1764,30 +1971,28 @@ async def build_draft(item, data, fpl):
         return None
         
     body = trim_for_twitter(build_tweet_body(item, item["sources"], mode), limit=278)
-    save_draft(item, body, image_path)
-    
+    if SAVE_DRAFTS_TO_DISK:
+        save_draft(item, body, image_path)
+
     item["draft_caption"] = body
     item["draft_image"] = str(image_path)
-    
-    print(f"  DRAFT READY [{label}]: {item['player']} — {item['event']} "
+
+    print(f"  QUEUED [{label}]: {item['player']} — {item['event']} "
           f"(stage {item['stage']}, {len(item['sources'])} src) -> {image_path.name}")
     return item
 
 # ── MAIN ─────────────────────────────────────────────────────────────────
 
 # ================== AUTO-POST SAFETY CONFIG ==================
-# Auto-posting is OPT-IN. It stays OFF (draft-only) unless you explicitly set
-# the env var ENABLE_AUTOPOST=true. The GitHub Actions BOT_PAUSED repo variable
-# remains a separate, independent kill switch.
+# ENABLE_AUTOPOST defaults ON — the bot is fully hands-free by default.
+# To pause posting without a code change, set repo env var ENABLE_AUTOPOST=false.
+# To force draft-only for a single run, pass --draft-only on the CLI.
 #
 # Policy: NEVER getting flagged is the priority. Posts go out one at a time,
-# well spaced (the jitter below is the real anti-flag mechanism), highest-value
-# PLAYER news first (see EVENT_PRIORITY). On a normal day every story posts; on
-# a freak flood the per-run/hour caps defer the least important items to the
-# next run rather than bursting. If X ever pushes back, the cooldown engages.
-#
-# Auto-post defaults ON so it's set-and-forget after merge. To pause without a
-# code change, set repo Variable ENABLE_AUTOPOST=false (or BOT_PAUSED=true).
+# spaced by human-like jitter (the real anti-flag mechanism). Highest-value
+# PLAYER news posts first (see EVENT_PRIORITY). Per-run and per-hour caps
+# defer overflow items to the next run rather than bursting. If X flags us,
+# the cooldown engages and blocks all posting until the back-off window clears.
 ENABLE_AUTOPOST = ((os.getenv("ENABLE_AUTOPOST") or "true").strip().lower() == "true")
 MAX_POSTS_PER_RUN = _env_int("MAX_POSTS_PER_RUN", 10)
 MAX_POSTS_PER_HOUR = _env_int("MAX_POSTS_PER_HOUR", 12)
@@ -1801,9 +2006,10 @@ POST_JITTER_RANGE_S = (
 COOLDOWN_FLAGGED_MIN = _env_int("COOLDOWN_FLAGGED_MIN", 180)     # 3h after 226/326
 COOLDOWN_RATELIMIT_MIN = _env_int("COOLDOWN_RATELIMIT_MIN", 30)  # 30m after 429
 
-# Draft saving settings
-SAVE_DRAFTS_TO_DISK = True
-DRAFTS_FOLDER = "fpl_drafts"        # All drafts will be saved here
+# Set SAVE_DRAFTS_TO_DISK=False to skip writing draft files to fpl_drafts/
+# (images in queue/pending/ are always kept — they are needed for posting).
+SAVE_DRAFTS_TO_DISK = ((os.getenv("SAVE_DRAFTS_TO_DISK") or "true").strip().lower() != "false")
+DRAFTS_FOLDER = "fpl_drafts"
 # ============================================================
 
 # Posting order when there's a queue — PLAYER news goes out first so the most
@@ -1916,8 +2122,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
         print("[DRY-RUN] FAIL: some images did not render — investigate above.")
 
 
-# 1. Unindent main to the absolute left edge (module level)
-async def main(post: bool = True, allow_rumours: bool = False):
+async def main(post: bool = True):
     # ================== POSTING MODE ==================
     # Live posting only when ENABLE_AUTOPOST=true AND the run wasn't forced to
     # draft-only (--draft-only). Otherwise we save drafts and post nothing.
@@ -1943,8 +2148,6 @@ async def main(post: bool = True, allow_rumours: bool = False):
         print(f"[BOT] X safety cooldown active until {data.get('cooldown_until')} — "
               f"not posting this run.")
         post = False
-    
-    # ... rest of your main() logic
 
     if not check_daily_limit(data):
         print("[BOT] Daily limit reached — nothing will post today.")
@@ -1954,11 +2157,11 @@ async def main(post: bool = True, allow_rumours: bool = False):
     if not queue:
         rh = data.get("last_read_health", {})
         if rh.get("fail_ratio", 0) >= 0.15:
-            print("[BOT] No drafts — but over half of sources failed to read. "
-                  "Likely a READ/access problem, not a quiet news day. "
-                  "Verify X cookies and Nitter, then re-run.")
+            print("[BOT] No postable stories — but many sources failed to read. "
+                  "Likely a network/cookie issue, not a quiet news day. "
+                  "Check Nitter availability and RSS feeds, then re-run.")
         else:
-            print("[BOT] Quiet run. No new stories found (sources read OK).")
+            print("[BOT] Quiet run — no new stories cleared all gates (sources read OK).")
         save_data(data)
         return
 
@@ -1968,48 +2171,40 @@ async def main(post: bool = True, allow_rumours: bool = False):
         if built is not None:
             drafts.append(built)
     save_data(data)
-    print(f"\n[BOT] {len(drafts)} draft(s) written to {PENDING_DIR}/.")
 
     if not post:
-        print("[BOT] DRAFT-ONLY run. Review drafts in queue/pending/ and re-run "
-              "with --post to publish.")
+        print(f"\n[BOT] DRAFT-ONLY mode — {len(drafts)} item(s) prepared. "
+              f"Images in {PENDING_DIR}/"
+              + (f", text in {DRAFTS_FOLDER}/" if SAVE_DRAFTS_TO_DISK else "")
+              + ". Set ENABLE_AUTOPOST=true to enable live posting.")
+        return
+
+    if not drafts:
+        print("[BOT] No items passed all validation gates this run.")
         return
 
     if not (X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN):
-        print("[BOT] --post set but no posting cookies. "
-              "Set X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN. Nothing posted.")
+        print("[BOT] ENABLE_AUTOPOST=true but posting credentials are missing. "
+              "Set X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN. Nothing was posted.")
         return
 
-    # Accuracy safety: by default only fully CONFIRMED/OFFICIAL stories go live.
-    # Lower-confidence RUMOURs are posted only when explicitly opted in.
-    modes_ok = {"confirmed"} | ({"rumour"} if allow_rumours else set())
+    print(f"\n[BOT] {len(drafts)} item(s) prepared — evaluating for live post…")
 
-    # Confidence gate: only AUTO_POST (score >= 90) publishes live, ALWAYS,
-    # with no flag able to bypass it. "mode" (rumour vs confirmed) and
-    # "confidence_decision" (REVIEW vs AUTO_POST) answer two different
-    # questions — --allow-rumours governs whether an ACCURATELY-extracted but
-    # factually-unconfirmed event (a genuine transfer rumour) may post; it
-    # must never also unlock a story the confidence engine itself could only
-    # score to REVIEW, because REVIEW means the pipeline isn't sure the
-    # extraction (player/club/direction/entity) is even right. That is a
-    # "don't guess" situation, not a rumour-vs-confirmed judgement call, so it
-    # is never bypassable. REVIEW-tier stories are NOT published this run;
-    # they are automatically re-scraped and re-cross-verified on every later
-    # run, so as soon as enough reliable outlets corroborate the story it
-    # clears AUTO_POST and publishes by itself — no manual step anywhere.
+    # Only fully CONFIRMED stories post live. classify_post() returns "confirmed"
+    # or None — there is no rumour path in the automated pipeline.
+    # REVIEW-tier stories (confidence 75-89) are held back and re-verified
+    # automatically on the next scheduled run; no manual step needed.
     def _conf_ok(d):
         return d.get("confidence_decision", "AUTO_POST") == _conf.AUTO_POST
 
-    postable = [d for d in drafts if d.get("mode") in modes_ok and _conf_ok(d)]
-    _held = [d for d in drafts if d.get("mode") in modes_ok and not _conf_ok(d)]
+    postable = [d for d in drafts if d.get("mode") == "confirmed" and _conf_ok(d)]
+    _held = [d for d in drafts if d.get("mode") == "confirmed" and not _conf_ok(d)]
     if _held:
-        print(f"[BOT] {len(_held)} story(ies) not yet corroborated by enough "
-              f"reliable sources (confidence 75-89) — held back and will be "
-              f"re-cross-verified automatically on the next scheduled run.")
+        print(f"[BOT] {len(_held)} story(ies) need more corroboration (confidence "
+              f"75-89) — held, will re-verify automatically on the next run.")
 
     if not postable:
-        print("[BOT] No postable stories this run "
-              f"(modes allowed: {sorted(modes_ok)}).")
+        print("[BOT] No confirmed stories cleared all gates this run.")
         return
 
     postable.sort(key=lambda s: (
@@ -2092,8 +2287,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FPL VORTEX news bot.")
     parser.add_argument("--draft-only", action="store_true",
                         help="Force draft-only mode (no posting). Default is LIVE.")
-    parser.add_argument("--allow-rumours", action="store_true",
-                        help="Also auto-post RUMOUR-labelled stories (NOT recommended).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Offline test: run fixtures through the full pipeline.")
     parser.add_argument("--fixtures", default="fixtures/tweets.json",
@@ -2104,4 +2297,4 @@ if __name__ == "__main__":
     if args.dry_run:
         asyncio.run(run_dry_run(fixtures_path=args.fixtures, runs=args.runs))
     else:
-        asyncio.run(main(post=not args.draft_only, allow_rumours=args.allow_rumours))
+        asyncio.run(main(post=not args.draft_only))

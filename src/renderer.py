@@ -5,9 +5,11 @@ Handles generation of cinematic transfer and injury cards via PIL and Playwright
 
 import os
 import re
+import json
 import base64
 import hashlib
 import urllib.request
+import urllib.parse
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -125,7 +127,9 @@ def _data_uri(path: Path, min_size: int = 500) -> str:
     """Return a base64 data-URI for an image file, or '' if missing/too small."""
     try:
         if path.exists() and path.stat().st_size >= min_size:
-            return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+            ext = path.suffix.lower()
+            mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+            return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
     except Exception:
         pass
     return ""
@@ -163,7 +167,8 @@ def _img_assets(story):
         photo_uri = _data_uri(pp)
     if not photo_uri and story.get("media_url"):
         murl = story["media_url"]
-        mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ".png")
+        ext = ".jpg" if any(x in murl.lower() for x in (".jpg", ".jpeg")) else ".png"
+        mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ext)
         if not mp.exists():
             _download_asset(murl, mp)
         photo_uri = _data_uri(mp)
@@ -175,16 +180,14 @@ def _img_assets(story):
         pname = story.get("player", "")
         if pname:
             try:
-                import urllib.parse as _up
                 wiki_api = ("https://en.wikipedia.org/api/rest_v1/page/summary/"
-                            + _up.quote(pname.replace(" ", "_")))
+                            + urllib.parse.quote(pname.replace(" ", "_")))
                 req = urllib.request.Request(
                     wiki_api,
                     headers={"User-Agent": "FPLVortexBot/1.0 (football-news-bot)"}
                 )
                 with urllib.request.urlopen(req, timeout=8) as resp:
-                    import json as _json
-                    wdata = _json.loads(resp.read().decode("utf-8"))
+                    wdata = json.loads(resp.read().decode("utf-8"))
                 thumb = wdata.get("thumbnail", {}).get("source", "")
                 if thumb:
                     wp = Path("players/wiki_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".jpg")
@@ -196,36 +199,92 @@ def _img_assets(story):
             except Exception as _we:
                 print(f"  [PHOTO] Wikipedia lookup failed for {pname!r}: {_we}")
 
+    # ESPN fallback: search the ESPN athletes API and fetch their headshot.
+    if not photo_uri:
+        pname = story.get("player", "")
+        if pname:
+            try:
+                espn_url = ("https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1"
+                            "/athletes?search=" + urllib.parse.quote(pname) + "&limit=5")
+                req = urllib.request.Request(
+                    espn_url,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    edata = json.loads(resp.read().decode("utf-8"))
+                athletes = edata.get("athletes") or []
+                for ath in athletes[:3]:
+                    ath_id = str(ath.get("id") or "")
+                    if not ath_id:
+                        continue
+                    img_url = (f"https://a.espncdn.com/combiner/i?img=/i/headshots/soccer"
+                               f"/players/full/{ath_id}.png&w=350&h=254")
+                    ep = Path("players/espn_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".png")
+                    if not ep.exists():
+                        _download_asset(img_url, ep)
+                    if ep.exists() and ep.stat().st_size > 500:
+                        photo_uri = _data_uri(ep)
+                        print(f"  [PHOTO] ESPN image found for {pname!r} (id={ath_id})")
+                        break
+            except Exception as _ee:
+                print(f"  [PHOTO] ESPN lookup failed for {pname!r}: {_ee}")
+
+    # BBC Sport fallback: scrape the og:image from the player's BBC Sport page.
+    if not photo_uri:
+        pname = story.get("player", "")
+        if pname:
+            try:
+                slug = re.sub(r"[^a-z0-9]+", "-", pname.lower()).strip("-")
+                bbc_url = f"https://www.bbc.co.uk/sport/football/players/{slug}"
+                req = urllib.request.Request(
+                    bbc_url,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    html = resp.read().decode("utf-8", errors="replace")
+                m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
+                if not m:
+                    m = re.search(r'content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html)
+                if m:
+                    img_url = m.group(1)
+                    ext = ".jpg" if any(x in img_url.lower() for x in (".jpg", ".jpeg")) else ".png"
+                    bp = Path("players/bbc_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ext)
+                    if not bp.exists():
+                        _download_asset(img_url, bp)
+                    if bp.exists() and bp.stat().st_size > 500:
+                        photo_uri = _data_uri(bp)
+                        print(f"  [PHOTO] BBC Sport image found for {pname!r}")
+            except Exception as _be:
+                pass
+
     # FotMob fallback: search FotMob for the player and fetch their photo.
     # FotMob has the most comprehensive photo database for active football players.
     if not photo_uri:
         pname = story.get("player", "")
         if pname:
             try:
-                import json as _json
-                import urllib.parse as _up
                 fotmob_url = ("https://www.fotmob.com/api/search?term="
-                              + _up.quote(pname) + "&lang=en")
+                              + urllib.parse.quote(pname) + "&lang=en")
                 req = urllib.request.Request(
                     fotmob_url,
                     headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)",
                              "Accept": "application/json"}
                 )
                 with urllib.request.urlopen(req, timeout=8) as resp:
-                    fdata = _json.loads(resp.read().decode("utf-8"))
+                    fdata = json.loads(resp.read().decode("utf-8"))
                 players = fdata.get("squad") or fdata.get("players") or []
                 for entry in players[:3]:
-                    pid = str(entry.get("id") or "")
-                    if not pid:
+                    fid = str(entry.get("id") or "")
+                    if not fid:
                         continue
                     img_url = (entry.get("imageUrl") or
-                               f"https://images.fotmob.com/image_resources/playerimages/{pid}.png")
+                               f"https://images.fotmob.com/image_resources/playerimages/{fid}.png")
                     fp = Path("players/fm_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".png")
                     if not fp.exists():
                         _download_asset(img_url, fp)
                     if fp.exists() and fp.stat().st_size > 500:
                         photo_uri = _data_uri(fp)
-                        print(f"  [PHOTO] FotMob image found for {pname!r} (id={pid})")
+                        print(f"  [PHOTO] FotMob image found for {pname!r} (id={fid})")
                         break
             except Exception as _fe:
                 print(f"  [PHOTO] FotMob lookup failed for {pname!r}: {_fe}")
@@ -390,7 +449,15 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         rows.append(("ROLE", "#f5c518",
                      (role.upper() if role and role.lower() != "staff" else "MANAGER"), ""))
     else:
-        fee_value = story.get("fee") or "TBD"   # matches the tweet body
+        raw_fee = story.get("fee")
+        if raw_fee:
+            fee_value = raw_fee
+        elif ev in ("loan", "loan_option"):
+            fee_value = "LOAN DEAL"
+        elif story.get("is_free"):
+            fee_value = "FREE TRANSFER"
+        else:
+            fee_value = "UNDISCLOSED"
         rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
 
     source_text = " · ".join(f"@{s}" for s in sources[:2])

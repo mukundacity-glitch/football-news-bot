@@ -217,8 +217,15 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     if event == "transfer" and _loan_anywhere:
         event = "loan"
 
+    _STAGE3_CUES = [
+        "personal terms agreed", "terms agreed", "set to sign", "all but done",
+        "close to completing", "medical booked", "formalities", "final details",
+        "green light", "paperwork", "await", "awaiting signing",
+    ]
     stage = 4 if has_word(STRONG_OFFICIAL_CUES, tl) else \
-            2 if has_word(["agreement", "agreed", "advanced", "personal terms"], tl) else 1
+            3 if has_word(_STAGE3_CUES, tl) else \
+            2 if has_word(["agreement", "agreed", "advanced", "personal terms",
+                           "advanced talks", "in talks", "verbal agreement"], tl) else 1
 
     name = None
     for m in re.findall(r'\b([A-ZÀ-ÖØ-Þ][a-zà-ÿ]+(?:\s+(?:(?:van|de|da|dos|del|el|la|le|di|du|den|der|ten|ter|von|zu)\s+)?[A-ZÀ-ÖØ-Þ][a-zà-ÿ]+)+)\b', cleaned):
