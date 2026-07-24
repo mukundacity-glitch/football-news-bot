@@ -15,7 +15,20 @@ DRAFTS_DIR = Path("fpl_drafts")
 
 # Target Scrape Accounts
 JOURNALISTS = [
-    "FabrizioRomano", "David_Ornstein", "BenDinnery",
+    # Gold Standard
+    "David_Ornstein",    # The Athletic – most reliable PL source
+    "sistoney67",        # Simon Stone – BBC Sport
+    "JamesPearceEcho",  # James Pearce – The Athletic (Liverpool)
+    "lauriewhitwell",   # Laurie Whitwell – The Athletic (Man Utd)
+    "_pauljoyce",        # Paul Joyce – The Times (Liverpool/national)
+    # High Reliability
+    "FabrizioRomano",   # Global "Here We Go" confirmations
+    "JacobsBen",        # Ben Jacobs – Chelsea / complex intl deals
+    "SamiMokbel",       # Sami Mokbel – Arsenal, Spurs (Mail Sport)
+    "SimonPeach",       # Simon Peach – Newcastle / PA
+    "James_Ducker",     # James Ducker – Telegraph exclusives
+    # Injury specialists
+    "BenDinnery",
 ]
 
 NITTER_INSTANCES = [
@@ -46,10 +59,19 @@ OFFICIAL_INJURY_ACCOUNTS = OFFICIAL_ACCOUNTS | {
 }
 
 ELITE_TRUSTED = {
-    "fabrizioromano", "david_ornstein",
-    # Premier Injuries (injury specialist) + Ben Dinnery (BBC Sport injury correspondent)
-    # added to ELITE_TRUSTED so classify_post() passes the injury check (has_official
-    # or n_elite >= 1) and stories from these accounts can auto-post.
+    # Gold Standard journalists (tier-2)
+    "david_ornstein",    # The Athletic – most reliable PL source
+    "sistoney67",        # Simon Stone – BBC Sport
+    "jamespearceecho",  # James Pearce – The Athletic (Liverpool)
+    "lauriewhitwell",   # Laurie Whitwell – The Athletic (Man Utd)
+    "pauljoyce",         # Paul Joyce – The Times (_pauljoyce on X, underscore stripped)
+    # High Reliability journalists (tier-2)
+    "fabrizioromano",   # Global "Here We Go" confirmations
+    "jacobsben",         # Ben Jacobs – Chelsea / complex intl deals
+    "samimokbel",        # Sami Mokbel – Arsenal, Spurs (Mail Sport)
+    "simonpeach",        # Simon Peach – Newcastle / PA
+    "jamesducker",       # James Ducker – Telegraph (James_Ducker on X)
+    # Injury specialists (tier-2 so injury posts clear classify_post())
     "premierinjuries", "bendinnery",
 }
 
@@ -61,6 +83,7 @@ TRUSTED_MEDIA = {
     "espn", "espnsoccer", "espnfc",
     "rootwire", "rootwiresoccer",
     "newsnow",
+    "thetimes", "mailsport",
 }
 
 # ── AUTOMATIC CROSS-VERIFICATION SOURCES ─────────────────────────────────
@@ -117,6 +140,10 @@ TRUSTED_MEDIA_DOMAINS = {
     "espnfc.com":          "espn",
     "rootwiresoccer.com":  "rootwire",
     "newsnow.co.uk":       "newsnow",
+    "thetimes.co.uk":      "thetimes",
+    "times.co.uk":         "thetimes",
+    "mailsport.co.uk":     "mailsport",
+    "dailymail.co.uk":     "mailsport",
 }
 
 # Single source of truth for "this reads as an officially completed deal"

@@ -1500,14 +1500,49 @@ RSS_FEEDS = [
     )),
 
     # ── TIER 2: Elite journalists monitored via Google News ───────────────
-    ("FabrizioRomano", (
-        "https://news.google.com/rss/search?q=%22Fabrizio+Romano%22"
-        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
-    )),
+    # Gold Standard
     ("David_Ornstein", (
         "https://news.google.com/rss/search?q=%22David+Ornstein%22"
         "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
     )),
+    ("sistoney67", (                          # Simon Stone – BBC Sport
+        "https://news.google.com/rss/search?q=%22Simon+Stone%22"
+        "+football+transfer+OR+signing&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("JamesPearceEcho", (                    # James Pearce – The Athletic (Liverpool)
+        "https://news.google.com/rss/search?q=%22James+Pearce%22"
+        "+Liverpool+transfer+OR+signing&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("lauriewhitwell", (                     # Laurie Whitwell – The Athletic (Man Utd)
+        "https://news.google.com/rss/search?q=%22Laurie+Whitwell%22"
+        "+football+transfer+OR+signing&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("_pauljoyce", (                         # Paul Joyce – The Times
+        "https://news.google.com/rss/search?q=%22Paul+Joyce%22"
+        "+football+transfer+OR+signing&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    # High Reliability
+    ("FabrizioRomano", (
+        "https://news.google.com/rss/search?q=%22Fabrizio+Romano%22"
+        "+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("JacobsBen", (                          # Ben Jacobs – Chelsea / intl deals
+        "https://news.google.com/rss/search?q=%22Ben+Jacobs%22"
+        "+football+transfer+OR+signing&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("SamiMokbel", (                         # Sami Mokbel – Arsenal, Spurs (Mail Sport)
+        "https://news.google.com/rss/search?q=%22Sami+Mokbel%22"
+        "+football+transfer+OR+signing&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("SimonPeach", (                         # Simon Peach – Newcastle / PA
+        "https://news.google.com/rss/search?q=%22Simon+Peach%22"
+        "+football+transfer+OR+signing&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("James_Ducker", (                       # James Ducker – Telegraph exclusives
+        "https://news.google.com/rss/search?q=%22James+Ducker%22"
+        "+football+transfer+OR+signing&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    # Injury specialist
     ("BenDinnery", (
         "https://news.google.com/rss/search?q=%22Ben+Dinnery%22"
         "+injur+OR+fitness+OR+ruled+out&hl=en-GB&gl=GB&ceid=GB:en"
