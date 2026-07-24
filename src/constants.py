@@ -60,6 +60,7 @@ TRUSTED_MEDIA = {
     "fotmob", "transfermarkt",
     "espn", "espnsoccer", "espnfc",
     "rootwire", "rootwiresoccer",
+    "newsnow",
 }
 
 # ── AUTOMATIC CROSS-VERIFICATION SOURCES ─────────────────────────────────
@@ -115,6 +116,7 @@ TRUSTED_MEDIA_DOMAINS = {
     "espn.com":            "espn",
     "espnfc.com":          "espn",
     "rootwiresoccer.com":  "rootwire",
+    "newsnow.co.uk":       "newsnow",
 }
 
 # Single source of truth for "this reads as an officially completed deal"

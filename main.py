@@ -698,17 +698,22 @@ def classify_post(story, sources):
     tiers = [source_tier(s) for s in sources]
     has_official = 1 in tiers
     n_elite = sum(1 for t in tiers if t == 2)
-    has_media = 3 in tiers
+    n_trusted = sum(1 for t in tiers if t == 3)
+    has_media = n_trusted > 0
     tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
     # strong_cue: one of the confirmation phrases appears in the story text.
-    # strong_words: True ONLY when stage=4 (paperwork done), OR when a
-    # confirmation cue is present AND the source is official/elite (tier 1/2).
-    # This stops tier-3 media (BBC, Sky Sports) using speculative "signs/joins"
-    # language from triggering a CONFIRMED post — the Trafford false-positive was
-    # caused by Sky Sports headlining "Trafford signs for Leeds" while the deal
-    # was still just "in talks". Tier-3 media language alone is never confirmation.
+    # strong_words paths (any one is sufficient):
+    #   1. stage=4 — paperwork signed/announced, strongest signal
+    #   2. strong_cue + elite/official source (tier 1 or 2)
+    #   3. strong_cue + 2+ independent tier-3 outlets + stage >= 3
+    #      (BBC + Sky Sports both confirming a done deal counts; "in talks"
+    #       at stage 2 does not — blocks the Trafford false-positive)
     strong_cue = any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
-    strong_words = story["stage"] >= 4 or (strong_cue and (has_official or n_elite >= 1))
+    strong_words = (
+        story["stage"] >= 4
+        or (strong_cue and (has_official or n_elite >= 1))
+        or (strong_cue and n_trusted >= 2 and story.get("stage", 0) >= 3)
+    )
 
     if story["event"] == "injury":
         if has_official or n_elite >= 1: return "confirmed"
@@ -1515,6 +1520,23 @@ RSS_FEEDS = [
     ("SkySports",      "https://www.skysports.com/rss/12040"),
     ("guardian_sport", "https://www.theguardian.com/football/transfers/rss"),
     ("espn",           "https://www.espn.com/espn/rss/soccer/news"),
+    ("espn", (
+        "https://news.google.com/rss/search?q=site%3Aespn.com+premier+league"
+        "+transfer+OR+signs+OR+confirmed&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    ("fotmob", (
+        "https://news.google.com/rss/search?q=site%3Afotmob.com+premier+league"
+        "+transfer+OR+confirmed+OR+signed&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
+    # NewsNow PL Transfer Watch — aggregates confirmed deals from reliable outlets.
+    ("newsnow", (
+        "https://www.newsnow.co.uk/h/Sport/Football/Premier+League/Transfers"
+        "?type=ln&format=rss"
+    )),
+    ("newsnow", (
+        "https://news.google.com/rss/search?q=site%3Anewsnow.co.uk+premier+league"
+        "+transfer+OR+signed+OR+confirmed&hl=en-GB&gl=GB&ceid=GB:en"
+    )),
     ("rootwire", (
         "https://news.google.com/rss/search?q=site%3Arootwiresoccer.com"
         "+premier+league&hl=en-GB&gl=GB&ceid=GB:en"
