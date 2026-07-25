@@ -163,12 +163,12 @@ def _cue_pos(words_list, text):
 def _is_bad_name(low: str, event: str) -> bool:
     if event != "manager" and (low in MANAGER_SURNAMES or any(m in low for m in MANAGER_SURNAMES)): 
         return True
-        
+
     FILLER = {"excl", "exclusive", "breaking", "official", "understand", "update", "deal", "medical", "source"}
     ROLE_WORDS = POSITION_WORDS.copy()
     for phrase in STAFF_BLOCK_KW:
         ROLE_WORDS.update([w for w in phrase.split() if len(w) > 3])
-        
+
     words = low.split()
     if any(w in FILLER for w in words): return True
     if any(w in CLUB_WORD_FRAGMENTS for w in words): return True
@@ -232,7 +232,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         if not _is_bad_name(m.lower(), event):
             name = m
             break
-            
+
     if not name and fpl_data:
         for m in re.findall(r'\b([A-ZÀ-ÖØ-Þ][a-zà-ÿ]{2,})\b', cleaned):
             if _is_bad_name(m.lower(), event): continue
@@ -261,6 +261,34 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
 
     fpl_player_el = find_player_in_fpl(name, fpl_data) if name and fpl_data else None
     actual_current_club_key = fpl_team_key(fpl_player_el, fpl_data) if fpl_player_el else None
+
+    # CLAUSE-SCOPING GUARD: an article naming two separate transfers in one
+    # SENTENCE must not let the second player's destination club get attached
+    # to the first player's name. Transfer journalism routinely joins two
+    # distinct moves with a comma + conjunction in a single sentence (e.g.
+    # "X signs for A, while Y joins B in a separate deal") with no period
+    # between them, so the clause boundary must include these conjunctions,
+    # not just hard sentence-enders. This is name/club-agnostic — it works on
+    # sentence structure, not on any specific player or club.
+    _CLAUSE_BREAK_RE = re.compile(
+        r'[.;!?\n]|\bwhile\b|\bmeanwhile\b|\bseparately\b|\belsewhere\b|'
+        r'\bas\s+(?:for|part\s+of)?\s*[A-ZÀ-ÖØ-Þ]'
+    )
+
+    def _same_clause(text: str, pos_a: int, pos_b: int) -> bool:
+        lo, hi = sorted((pos_a, pos_b))
+        return not _CLAUSE_BREAK_RE.search(text[lo:hi])
+
+    _name_pos = tl.find((name or "").lower()) if name else -1
+    if _name_pos != -1:
+        clauses_clubs = {
+            k: pos for k, pos in club_pos.items()
+            if _same_clause(tl, _name_pos, pos)
+        }
+        # Fall back to the full club pool only if clause-scoping finds nothing
+        # at all — keeps ordinary single-transfer articles working unchanged.
+        clubs = (sorted(clauses_clubs, key=lambda k: clauses_clubs[k])
+                 if clauses_clubs else clubs)
 
     from_key = actual_current_club_key
     to_key = None
@@ -297,7 +325,7 @@ def detect_historical(text: str) -> bool:
     tl = (text or "").lower()
     _FRESH_CUE = re.compile(r"\b(today|tonight|tomorrow|breaking|here we go|confirmed|official|now|signed)\b", re.I)
     _HISTORICAL_MARKERS = re.compile(r"\b(on this day|otd|\d+\s+years?\s+ago|throwback|#tbt|remember when)\b", re.I)
-    
+
     if _HISTORICAL_MARKERS.search(tl) and not _FRESH_CUE.search(tl):
         return True
     return False
@@ -309,12 +337,12 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None, source_tier_func
     """
     sources = sources or []
     tl = (raw_text or "").lower()
-    
+
     if story.get("historical"): return False, "historical_news"
     if not story.get("player"): return False, "no_player"
 
     tiers = [source_tier_func(s) for s in sources] if source_tier_func else [0]
-    
+
     pl_player = find_player_in_fpl(story["player"], fpl_data) is not None
 
     # INJURY & SUSPENSION SAFETY LOCK
@@ -330,7 +358,21 @@ def passes_safety_gate(story, raw_text, fpl_data, sources=None, source_tier_func
         return False, f"{story['event']}_not_pl_player"
 
     # TRANSFER SAFETY LOCK
-    pl_club = bool(story.get("to_key") or story.get("from_key"))
+    # A resolved club key alone is not enough — "to_key"/"from_key" can hold
+    # a NON-Premier-League club (e.g. Celtic, Real Madrid) whenever the OTHER
+    # side of a move is a PL club, since direction resolution fills both
+    # slots regardless of which league each club is in. This must check that
+    # the resolved club is actually IN the current PL set (CLUB_ALIASES
+    # values — the same 20-club source of truth used everywhere else in this
+    # file), not merely that a club name was resolved at all. Real, accurate
+    # news involving two non-PL clubs (Celtic buying from Bodo/Glimt, say)
+    # is correctly out of scope for a Premier-League-focused bot and should
+    # not post here, however well-sourced it is.
+    _CURRENT_PL_CLUBS = set(CLUB_ALIASES.values())
+    pl_club = bool(
+        (story.get("to_key") in _CURRENT_PL_CLUBS) or
+        (story.get("from_key") in _CURRENT_PL_CLUBS)
+    )
     if not (pl_player or pl_club):
         return False, "not_pl_relevant"
 
