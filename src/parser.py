@@ -9,7 +9,7 @@ from src.fpl_feed import find_player_in_fpl, fpl_team_key
 from src.constants import (
     FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES, CLUB_ALIASES,
     POSITION_WORDS, NATIONALITY_ADJECTIVES, OFFICIAL_INJURY_ACCOUNTS,
-    STRONG_OFFICIAL_CUES
+    STRONG_OFFICIAL_CUES, TRANSFER_DONE_RE
 )
 
 # Sort aliases by length descending
@@ -222,7 +222,7 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
         "close to completing", "medical booked", "formalities", "final details",
         "green light", "paperwork", "await", "awaiting signing",
     ]
-    stage = 4 if has_word(STRONG_OFFICIAL_CUES, tl) else \
+    stage = 4 if (has_word(STRONG_OFFICIAL_CUES, tl) or TRANSFER_DONE_RE.search(tl)) else \
             3 if has_word(_STAGE3_CUES, tl) else \
             2 if has_word(["agreement", "agreed", "advanced", "personal terms",
                            "advanced talks", "in talks", "verbal agreement"], tl) else 1

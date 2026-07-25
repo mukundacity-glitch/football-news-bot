@@ -108,7 +108,8 @@ from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
     ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
-    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP, STRONG_OFFICIAL_CUES
+    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP, STRONG_OFFICIAL_CUES,
+    TRANSFER_DONE_RE
 )
 
 # Tier sets are compared on a normalised (alphanumeric-only) form so feed
@@ -700,7 +701,16 @@ def classify_post(story, sources):
     n_elite = sum(1 for t in tiers if t == 2)
     has_media = 3 in tiers
     tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    strong_words = story["stage"] >= 4 or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
+    # A completed/confirmed transfer is often written without any of the exact
+    # STRONG_OFFICIAL words ("Newcastle SIGN Bamba from Monaco", "COMPLETES his
+    # move", "HAVE SIGNED..."). TRANSFER_DONE_RE catches that done-deal phrasing
+    # (across body/headline/raw_text) so a single trusted source can post it,
+    # while still not matching speculation. See src.constants.TRANSFER_DONE_RE.
+    _done_blob = (story.get("body", "") + " " + (story.get("headline", "") or "")
+                  + " " + (story.get("raw_text", "") or ""))
+    strong_words = (story["stage"] >= 4
+                    or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
+                    or bool(TRANSFER_DONE_RE.search(_done_blob)))
 
     if story["event"] == "injury":
         if has_official or n_elite >= 1: return "confirmed"

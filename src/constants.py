@@ -1,4 +1,5 @@
 # src/constants.py
+import re
 from pathlib import Path
 
 # Branding & Channels
@@ -128,6 +129,32 @@ STRONG_OFFICIAL_CUES = [
     "here we go", "official", "confirmed", "completed", "done deal",
     "sealed", "unveiled", "joins", "joined", "signs", "signed", "medical",
 ]
+
+# A completed / officially-confirmed transfer is often reported WITHOUT any of
+# the exact single words above — e.g. "Newcastle SIGN Bamba from Monaco",
+# "Bamba COMPLETES his move", "Garnacho SEALS loan switch", "Liverpool HAVE
+# SIGNED the keeper". This regex recognises those done-deal phrasings so a
+# single trusted source can post them, while deliberately NOT matching
+# speculation ("keen to sign", "want to complete a deal", "linked with",
+# "set to sign", "hoping to land"). Precision over recall: it only fires on
+# language that states the move as already done/agreed, never on a rumour.
+# Shared by parser stage-grading and main.classify_post so both layers agree.
+TRANSFER_DONE_RE = re.compile(
+    r'(?i)(?:'
+    r'here we go'
+    r'|done deal'
+    r'|(?:have|has|had)\s+(?:now\s+|just\s+|officially\s+)?(?:signed|joined|sealed|completed)'
+    r'|(?:completes|seals|finalises|finalizes)\s+(?:a\s+|his\s+|the\s+|their\s+)?'
+        r'(?:move|switch|transfer|loan|signing|deal)'
+    r'|(?:sign|signs|signed|lands|landed)\s+\S+(?:\s+\S+){0,2}\s+'
+        r'(?:from\s+\w|on\s+(?:a\s+|an\s+|the\s+)?(?:permanent\s+|season[-\s]long\s+)?loan)'
+    r'|officially\s+(?:sign|signs|signed|join|joins|joined|complete|completed|announce|announced|confirm|confirmed)'
+    r'|announce[sd]?\s+the\s+(?:signing|arrival|capture|completion)\s+of'
+    r'|unveil(?:s|ed|ing)?'
+    r'|new\s+signing'
+    r'|medical\s+(?:completed|passed|done)'
+    r')'
+)
 
 # Parsing Keywords
 FOOTBALL_KW = [
