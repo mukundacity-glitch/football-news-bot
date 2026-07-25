@@ -1,7 +1,7 @@
 {
   "daily": {
     "date": "2026-07-25",
-    "count": 8,
+    "count": 10,
     "limit": 15
   },
   "stories": {
@@ -3227,6 +3227,28 @@
         "liverpoolfc"
       ],
       "last_updated": "2026-07-25T14:34:16.217789+00:00"
+    },
+    "james_garner_everton_injury": {
+      "stage": 3,
+      "player": "James Garner",
+      "to_key": null,
+      "event": "injury",
+      "status": "active",
+      "sources": [
+        "officialfpl"
+      ],
+      "last_updated": "2026-07-25T15:14:20.285591+00:00"
+    },
+    "endo_wataru_liverpool_injury": {
+      "stage": 2,
+      "player": "Endo Wataru",
+      "to_key": null,
+      "event": "injury",
+      "status": "active",
+      "sources": [
+        "officialfpl"
+      ],
+      "last_updated": "2026-07-25T15:16:15.324717+00:00"
     }
   },
   "posted_ids": [
@@ -3480,7 +3502,9 @@
     "fpl_1da10b5365fc",
     "fpl_89fe7b956512",
     "fpl_385cb00b61ca",
-    "fpl_5c6a0e527e56"
+    "fpl_5c6a0e527e56",
+    "fpl_8f97f6ebc9da",
+    "fpl_3d9792ff9489"
   ],
   "pending": {
     "samuel_martinez_liverpool_transfer": {
@@ -3713,19 +3737,6 @@
       "contradicted": false,
       "last_seen": "2026-07-24T14:45:50.903752+00:00"
     },
-    "bruno_guimaraes_arsenal_newcastle_transfer": {
-      "sources": [
-        "BBC_Sport",
-        "skysports",
-        "telegraph",
-        "theathleticfc"
-      ],
-      "player": "Bruno Guimaraes",
-      "to_key": "Arsenal",
-      "event": "transfer",
-      "contradicted": false,
-      "last_seen": "2026-07-25T14:28:01.923717+00:00"
-    },
     "elliot_anderson_man_city_man_utd_transfer": {
       "sources": [
         "SkySports",
@@ -3773,7 +3784,7 @@
       "to_key": "Man_City",
       "event": "manager",
       "contradicted": false,
-      "last_seen": "2026-07-25T14:28:01.945341+00:00"
+      "last_seen": "2026-07-25T15:12:24.920608+00:00"
     },
     "janina_leitzig_leicester_man_utd_transfer": {
       "sources": [
@@ -3804,7 +3815,17 @@
       "to_key": "Spurs",
       "event": "manager",
       "contradicted": false,
-      "last_seen": "2026-07-25T14:28:01.918966+00:00"
+      "last_seen": "2026-07-25T15:12:24.888154+00:00"
+    },
+    "eddie_howe_arsenal_manager": {
+      "sources": [
+        "BBC_Sport"
+      ],
+      "player": "Eddie Howe",
+      "to_key": "Arsenal",
+      "event": "manager",
+      "contradicted": false,
+      "last_seen": "2026-07-25T15:12:24.902485+00:00"
     }
   },
   "extracted": {
@@ -7948,6 +7969,59 @@
       "raw_text": "Celtic agree club-record deal for Hogh as Ipswich sign Maeda. Celtic have agreed a club-record fee of &#163;11m plus add-ons to sign striker Kasper Hogh from Bodo/Glimt, while Daizen Maeda has completed his move to Ipswich Town in a &#163;10m deal.",
       "media_url": null,
       "created_at": "Sat, 25 Jul 2026 12:00:00 BST"
+    },
+    "650b384f3fab96b": {
+      "is_football": true,
+      "event": "manager",
+      "is_real_move": false,
+      "player": "Eddie Howe",
+      "from_club": null,
+      "to_club": "Arsenal",
+      "from_key": null,
+      "to_key": "Arsenal",
+      "fee": null,
+      "contract": null,
+      "stage": 1,
+      "collapsed": false,
+      "headline": "Eddie Howe",
+      "body": "Howe unsure over Guimaraes amid Arsenal interest. Newcastle United head coach Eddie Howe says he has had positive discussions with captain Bruno Guimaraes.",
+      "staff_role": "head coach",
+      "staff_action": "appointment",
+      "historical": false,
+      "from_video": false,
+      "has_written_claim": true,
+      "raw_text": "Howe unsure over Guimaraes amid Arsenal interest. Newcastle United head coach Eddie Howe says he has had positive discussions with captain Bruno Guimaraes.",
+      "media_url": null,
+      "created_at": "Sat, 25 Jul 2026 14:54:03 GMT"
+    },
+    "fpl_8f97f6ebc9da": {
+      "player": "James Garner",
+      "display_name": "James Garner",
+      "verified_player_code": 232928,
+      "event": "injury",
+      "stage": 3,
+      "from_key": "Everton",
+      "to_key": null,
+      "from_club": "Everton",
+      "to_club": "",
+      "diagnosis": "Groin injury - Expected back 22 Aug",
+      "expected_return": null,
+      "fee": null,
+      "contract": null,
+      "is_free": false,
+      "collapsed": false,
+      "historical": false,
+      "headline": "James Garner: Groin injury - Expected back 22 Aug",
+      "body": "Groin injury - Expected back 22 Aug",
+      "raw_text": "James Garner: Groin injury - Expected back 22 Aug",
+      "from_video": false,
+      "has_written_claim": true,
+      "chance_of_playing": null,
+      "sources": [
+        "officialfpl"
+      ],
+      "media_url": null,
+      "created_at": "2026-07-25T14:30:10.455878Z"
     }
   },
   "fpl_status": {
@@ -8797,7 +8871,7 @@
     "accounts_total": 14,
     "accounts_failed": 0,
     "fail_ratio": 0.0,
-    "at": "2026-07-25T14:27:40.966551+00:00"
+    "at": "2026-07-25T15:11:34.338208+00:00"
   },
   "posted_hashes": [
     "62e08d6321bb10cc96dc625efcbb7afc842737a49d2158e9c8de4c9d3853de50",
@@ -9011,7 +9085,9 @@
     "7c0ee6009796aa9b8898f41a64010a83d7fce1c4a484ba4279c00fb8711fafdd",
     "cf658a583200ddfc9b14009130db9b770d3542089db5315b8e5d57b81832ee28",
     "2db50b2c303fda18dfc3248deecd87c88257bb31afa046322836db44ab7cdbf1",
-    "c8ebb2ddbcd8ae8e90624b38118bfab6d465b8d6e01c7ad371a03b0344eb65e6"
+    "c8ebb2ddbcd8ae8e90624b38118bfab6d465b8d6e01c7ad371a03b0344eb65e6",
+    "dbfc387ad0469f4586e52b336e26e6d0b920d86a792160e334ce65300aa5025e",
+    "828cf97cc7e2587e363366b5c0e0a29d2d17e5e3f284083c14b45d9798a1914f"
   ],
   "posted_headlines": [
     "hein",
@@ -9237,7 +9313,9 @@
     "emmanuel emegha hamstring injury 75 chance of playing",
     "jack rudoni shoulder injury 75 chance of playing",
     "adam wharton ankle injury 75 chance of playing",
-    "jeremy jacquet shoulder injury 75 chance of playing"
+    "jeremy jacquet shoulder injury 75 chance of playing",
+    "james garner groin injury expected back 22 aug",
+    "endo wataru ankle injury 75 chance of playing"
   ],
   "posted_headlines_staged": [
     [
