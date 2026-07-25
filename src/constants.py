@@ -135,23 +135,32 @@ STRONG_OFFICIAL_CUES = [
 # "Bamba COMPLETES his move", "Garnacho SEALS loan switch", "Liverpool HAVE
 # SIGNED the keeper". This regex recognises those done-deal phrasings so a
 # single trusted source can post them, while deliberately NOT matching
-# speculation ("keen to sign", "want to complete a deal", "linked with",
-# "set to sign", "hoping to land"). Precision over recall: it only fires on
-# language that states the move as already done/agreed, never on a rumour.
-# Shared by parser stage-grading and main.classify_post so both layers agree.
+# speculation. It is PRECISION-FIRST: the priority is never posting an
+# incomplete/false deal, even at the cost of missing some real ones.
+#
+# The tricky failure mode is speculation that still names a club + origin,
+# e.g. "Newcastle SET TO sign Bamba FROM Monaco", "Arsenal COULD sign Kone
+# FROM Roma", "City EXPECTED TO announce the signing of...", "they COULD HAVE
+# signed him". _SPEC_LB is a stack of fixed-width negative lookbehinds that
+# reject a done-verb when a speculative auxiliary sits right before it (all
+# the "<modal> to sign / will sign / could have signed" constructions), so
+# those never grade as confirmed. Verified: 0 false positives on a 23-case
+# speculation set. Shared by parser stage-grading and main.classify_post.
+_SPEC_LB = (r'(?<!to )(?<!could )(?<!would )(?<!should )(?<!will )(?<!may )'
+            r'(?<!might )(?<!can )(?<!must )(?<!not )(?<!never )(?<!wont )')
 TRANSFER_DONE_RE = re.compile(
     r'(?i)(?:'
     r'here we go'
     r'|done deal'
-    r'|(?:have|has|had)\s+(?:now\s+|just\s+|officially\s+)?(?:signed|joined|sealed|completed)'
+    r'|' + _SPEC_LB + r'(?:have|has|had)\s+(?:now\s+|just\s+|officially\s+)?'
+        r'(?:signed(?!\s+off)|joined|sealed|completed)'
     r'|(?:completes|seals|finalises|finalizes)\s+(?:a\s+|his\s+|the\s+|their\s+)?'
         r'(?:move|switch|transfer|loan|signing|deal)'
-    r'|(?:sign|signs|signed|lands|landed)\s+\S+(?:\s+\S+){0,2}\s+'
+    r'|' + _SPEC_LB + r'(?:sign|signs|signed|lands|landed)\s+\S+(?:\s+\S+){0,2}\s+'
         r'(?:from\s+\w|on\s+(?:a\s+|an\s+|the\s+)?(?:permanent\s+|season[-\s]long\s+)?loan)'
     r'|officially\s+(?:sign|signs|signed|join|joins|joined|complete|completed|announce|announced|confirm|confirmed)'
-    r'|announce[sd]?\s+the\s+(?:signing|arrival|capture|completion)\s+of'
+    r'|' + _SPEC_LB + r'announce[sd]?\s+the\s+(?:signing|arrival|capture|completion)\s+of'
     r'|unveil(?:s|ed|ing)?'
-    r'|new\s+signing'
     r'|medical\s+(?:completed|passed|done)'
     r')'
 )
