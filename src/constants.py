@@ -51,10 +51,13 @@ ELITE_TRUSTED = {
     # added to ELITE_TRUSTED so classify_post() passes the injury check (has_official
     # or n_elite >= 1) and stories from these accounts can auto-post.
     "premierinjuries", "bendinnery",
+    # Sky/BBC/Athletic are primary breakers of confirmed transfer news, not
+    # secondary aggregators — moved up from TRUSTED_MEDIA so a single
+    # confirmed report from these outlets can clear AUTO_POST.
+    "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
 }
 
 TRUSTED_MEDIA = {
-    "skysportsnews", "skysports", "bbcsport", "theathleticfc", "theathletic",
     "guardian_sport", "lequipe", "marca", "diarioas", "as", "kicker",
     "alex_crook", "alexcrabb31", "telegraph", "telegraphfootball",
     "fotmob", "transfermarkt",
