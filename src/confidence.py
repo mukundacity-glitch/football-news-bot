@@ -19,8 +19,8 @@ Scoring (additive):
                                       stadium/club/agent/director/executive/unknown)
 
 Decision:
-    score >= 90   -> AUTO_POST
-    75 <= score<90-> REVIEW   (queue, don't auto-publish)
+    score >= 80   -> AUTO_POST
+    75 <= score<80-> REVIEW   (queue, don't auto-publish)
     score < 75    -> SKIP
 
 Pure + testable: score_signals() takes a dict of booleans; evaluate() builds that
@@ -49,7 +49,7 @@ WEIGHTS = {
     "premier_league_relevant": 10,
 }
 ENTITY_REJECT_PENALTY = -100
-AUTO_POST_THRESHOLD = 90
+AUTO_POST_THRESHOLD = 80
 REVIEW_THRESHOLD = 75
 
 AUTO_POST, REVIEW, SKIP = "AUTO_POST", "REVIEW", "SKIP"
@@ -252,6 +252,17 @@ def evaluate(story, *, player_verified=False, official_source=False,
     result = score_signals(signals)
     result["direction_reason"] = dir_reason
     result["signals"] = {k: signals[k] for k in WEIGHTS}
+
+    # OVERRIDE: an elite-tier report (Romano/Ornstein/Sky/BBC/Athletic) using
+    # strong confirmation language auto-posts even if the additive score falls
+    # short — mirrors how the football industry itself treats these sources.
+    strong_language = any(c in text.lower() for c in
+                          ("here we go", "official", "confirmed", "completed",
+                           "medical", "done deal", "signed", "signs"))
+    if (official_source or elite_source) and strong_language and etype == "PLAYER":
+        result["decision"] = AUTO_POST
+        result["override"] = "elite_source_confirmed_language"
+
     return result
 
 
