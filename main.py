@@ -2207,11 +2207,39 @@ async def main(post: bool = True):
         print("[BOT] No confirmed stories cleared all gates this run.")
         return
 
-    postable.sort(key=lambda s: (
-        EVENT_PRIORITY.get(s.get("event"), 5),
-        0 if s.get("collapsed") else 1,
-        -int(s.get("stage", 1)),
-    ))
+    # ROUND-ROBIN CATEGORY SELECTION: a straight priority sort always puts
+    # every injury ahead of every transfer (injuries are structurally tier-0
+    # via the official FPL feed; transfers are structurally tier-1/2 via
+    # journalists). On a busy injury day that starves transfers out of every
+    # slot even when good transfer stories are ready and waiting. Instead,
+    # group by category, rank WITHIN each category by stage/tier as before,
+    # then interleave categories round-robin so limited slots get split
+    # fairly across injury / transfer / suspension rather than one category
+    # eating the whole run.
+    _CATEGORY = {
+        "injury": "injury",
+        "transfer": "transfer", "loan": "transfer", "loan_option": "transfer",
+        "suspension": "suspension",
+        "manager": "manager", "renewal": "manager", "stay": "manager",
+    }
+    _buckets = {}
+    for s in postable:
+        cat = _CATEGORY.get(s.get("event"), "other")
+        _buckets.setdefault(cat, []).append(s)
+    for cat in _buckets:
+        _buckets[cat].sort(key=lambda s: (
+            0 if s.get("collapsed") else 1,
+            -int(s.get("stage", 1)),
+        ))
+    _order = ["injury", "transfer", "suspension", "manager", "other"]
+    _round_robin = []
+    _idx = 0
+    while any(_buckets.get(c) for c in _order):
+        cat = _order[_idx % len(_order)]
+        if _buckets.get(cat):
+            _round_robin.append(_buckets[cat].pop(0))
+        _idx += 1
+    postable = _round_robin
 
     posted_last_hour = _recent_post_count(data, 3600)
     if posted_last_hour >= MAX_POSTS_PER_HOUR:
