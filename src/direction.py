@@ -64,8 +64,8 @@ _STOP = {"fc", "cf", "sc", "ac", "afc", "the", "de", "united", "city", "town"}
 
 
 def _find_clubs(text_norm):
-    """Return [(start_index, canonical, pl_key)] for club mentions, longest-match
-    first, without overlapping a longer match already claimed."""
+    """Return [(start_index, end_index, canonical, pl_key)] for club mentions,
+    longest-match first, without overlapping a longer match already claimed."""
     claimed = [False] * (len(text_norm) + 1)
     hits = []
     for phrase, (canon, key) in _LEXICON:
@@ -75,12 +75,50 @@ def _find_clubs(text_norm):
                 continue
             for i in range(a, b):
                 claimed[i] = True
-            hits.append((a, canon, key))
+            hits.append((a, b, canon, key))
     return sorted(hits)
+
+
+# A club mention immediately followed by a possessive marker ("Monaco's
+# Bamba", normalised to "monaco s bamba" once the apostrophe is stripped)
+# names whose player is being discussed — i.e. that club is the player's
+# CURRENT club, not a party actively signing anyone. Left unguarded, the
+# "last club before the verb" subject-sign heuristic below can walk straight
+# past a real subject and land on this kind of possessive mention instead
+# (e.g. "Newcastle agree a deal for Monaco's Bamba ... to sign a long-term
+# contract" — the nearest club before "sign" is "Monaco", but Monaco isn't
+# the one signing anyone).
+_POSSESSIVE_AFTER = re.compile(r"^\s+s\b")
+
+
+def _is_possessive_mention(text_norm, end_idx):
+    return bool(_POSSESSIVE_AFTER.match(text_norm[end_idx:end_idx + 3]))
 
 
 _ORIGIN_PREP = re.compile(r"\bfrom\s+$")
 _DEST_PREP = re.compile(r"\bto\s+$")
+# A bare "to <club>" is dangerously generic — football prose is full of
+# non-movement "to" phrases ("Champions League final loss to PSG", "reaction
+# to Arsenal's win", "similar to last season", "according to Sky Sports"),
+# and any of them left of a lexicon club would otherwise be misread as a
+# transfer destination. Block the specific word immediately before "to" in
+# these cases; genuine movement grammar ("switch to", "move to", "loan to",
+# "return to") is already covered by _DEST_VERB and unaffected.
+_DEST_PREP_BLOCK_WORDS = {
+    "loss", "lost", "lose", "losing", "defeat", "defeated", "beaten", "beat",
+    "fell", "fall", "reaction", "response", "reply", "similar", "according",
+    "thanks", "due", "prior", "compared", "blow", "boost", "credit",
+    "message", "warning", "warnings", "concern", "concerns", "tribute",
+    "welcome", "close", "next", "up", "back", "unrelated", "irrelevant",
+}
+_WORD_BEFORE_TO_RE = re.compile(r"(\w+)\s+to\s*$")
+
+
+def _word_before_to(before):
+    m = _WORD_BEFORE_TO_RE.search(before)
+    return m.group(1) if m else ""
+
+
 _DEST_VERB = re.compile(
     r"\b(join|joins|joined|joining|sign\s+for|signs\s+for|signed\s+for|"
     r"move\s+to|moves\s+to|moved\s+to|moving\s+to|switch\s+to|"
@@ -191,7 +229,7 @@ def resolve(text):
 
     # ORIGIN: club immediately preceded by "from", or by "agreed a fee/deal/
     # terms with" — the standard phrasing for naming the SELLING club.
-    for start, canon, key in clubs:
+    for start, end, canon, key in clubs:
         before = tn[:start]
         if _ORIGIN_PREP.search(before) or _ORIGIN_AGREE.search(before):
             from_club, from_key = canon, key
@@ -204,22 +242,31 @@ def resolve(text):
             from_club = _clean_raw_club(m.group(1))
 
     # DESTINATION 1: club immediately preceded by a movement verb OR bare "to".
-    for start, canon, key in clubs:
+    # A bare "to" is blocked when the word right before it is a non-movement
+    # collocation (see _DEST_PREP_BLOCK_WORDS) so "loss to PSG" / "reaction to
+    # Arsenal" can't be misread as a transfer destination.
+    for start, end, canon, key in clubs:
         if (canon, key) == (from_club, from_key):
             continue
         before = tn[:start]
-        if _DEST_VERB.search(before) or _DEST_PREP.search(before):
+        if _DEST_VERB.search(before):
+            to_club, to_key = canon, key
+            break
+        if _DEST_PREP.search(before) and _word_before_to(before) not in _DEST_PREP_BLOCK_WORDS:
             to_club, to_key = canon, key
             break
 
     # DESTINATION 2 (subject-signs): "<DEST> sign/complete signing of ...".
     # The destination is the club that is the grammatical SUBJECT doing the
-    # signing — i.e. a club that appears BEFORE a signing verb.
+    # signing — i.e. a club that appears BEFORE a signing verb. A club named
+    # in a possessive ("Monaco's Bamba") is excluded — that names whose
+    # player is being discussed, not who is doing the signing.
     if to_club is None:
         sm = _SUBJECT_SIGN.search(tn)
         if sm:
-            for start, canon, key in clubs:
-                if start < sm.start() and (canon, key) != (from_club, from_key):
+            for start, end, canon, key in clubs:
+                if (start < sm.start() and (canon, key) != (from_club, from_key)
+                        and not _is_possessive_mention(tn, end)):
                     to_club, to_key = canon, key  # last club before the verb wins
 
     # DESTINATION raw fallback: a movement verb followed by a proper noun not

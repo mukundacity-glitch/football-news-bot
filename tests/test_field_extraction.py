@@ -152,6 +152,27 @@ def test_foreign_shorthand_destination_not_overridden_by_rival_club():
     assert s["to_key"] != "Arsenal"
 
 
+# ── Possessive-mention guard (Aladji Bamba / Monaco) ──────────────────────
+# Found while auditing posted_news.json for other instances of the same bug
+# class: "Newcastle agree a deal for Monaco's Bamba" names Newcastle as the
+# buyer, but the destination-heuristic's "last club before any sign verb in
+# the text" fallback used to walk past "to sign a long-term contract" later
+# in the article and land on "Monaco" (a possessive mention of the player's
+# CURRENT club, not the club doing any signing) once build_story started
+# trusting that fallback unconditionally.
+_BAMBA_TEXT = (
+    "Newcastle agree £34m deal for Monaco's Bamba. Midfielder Aladji Bamba "
+    "is due to arrive on Thursday for a medical and to sign a long-term "
+    "contract."
+)
+
+
+def test_possessive_club_mention_not_promoted_to_destination():
+    s = main.build_story(_BAMBA_TEXT, None)
+    assert s["to_club"] == "Newcastle", s["to_club"]
+    assert s["to_club"] != "Monaco"
+
+
 def test_free_agent_still_not_misread_as_agent_role():
     # Regression guard: the "as <role>" filler-word tolerance added for the
     # Marco Rose fix must not let "as a free agent" (an employment status)
