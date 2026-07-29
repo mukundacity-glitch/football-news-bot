@@ -104,6 +104,20 @@ _RAW_ORIGIN = re.compile(
 _RAW_ORIGIN_AGREE = re.compile(
     r"(?i:agree[d]?\s+(?:an?\s+)?[\w.,'£€$()\s]{0,60}?"
     r"(?:fee|deal|terms)\s+with)\s+([A-Z][\w.'-]+(?:\s+[A-Z][\w.'-]+){0,3})")
+# Raw proper-noun DESTINATION after a movement verb, mirroring _RAW_ORIGIN
+# above — captures a destination club our lexicon doesn't know by the short
+# form journalists actually use (e.g. bare "Inter" for Inter Milan, "Bayern"
+# for Bayern Munich). Without this, a real foreign destination named only in
+# its shorthand form is invisible to _find_clubs, and a merely-interested
+# rival club that IS in the lexicon (e.g. a Premier League "hijack risk" side
+# mentioned elsewhere in the same tweet) can wrongly fill the destination
+# slot instead. Verb-agnostic and club-name-agnostic: works for any future
+# unlisted club, not just the ones already in known_clubs.
+_RAW_DEST_VERB = re.compile(
+    r"(?i:\b(?:join|joins|joined|joining|sign\s+for|signs\s+for|signed\s+for|"
+    r"move\s+to|moves\s+to|moved\s+to|moving\s+to|switch\s+to|"
+    r"loan\s+(?:move\s+)?to|heading\s+to|set\s+to\s+join|complete[sd]?\s+move\s+to))\s+"
+    r"([A-Z][\w.'-]+(?:\s+[A-Z][\w.'-]+){0,3})")
 # "<CLUB1> and <CLUB2> have/has reached a (full) agreement (over the transfer)"
 # — standard wire-service phrasing where the BUYING club is named first and the
 # SELLING club second. Used to fill origin/destination when neither the "from"
@@ -207,6 +221,17 @@ def resolve(text):
             for start, canon, key in clubs:
                 if start < sm.start() and (canon, key) != (from_club, from_key):
                     to_club, to_key = canon, key  # last club before the verb wins
+
+    # DESTINATION raw fallback: a movement verb followed by a proper noun not
+    # in our lexicon at all (e.g. "agreed to join Inter on a free transfer").
+    # Only fires when nothing above resolved a destination, so it never
+    # overrides a confident lexicon match.
+    if to_club is None:
+        m = _RAW_DEST_VERB.search(text or "")
+        if m:
+            cand_canon, cand_key = _lookup_club(m.group(1))
+            if cand_canon and (cand_canon, cand_key) != (from_club, from_key):
+                to_club, to_key = cand_canon, cand_key
 
     # ORIGIN/DESTINATION 3 (joint agreement): "<BUYER> and <SELLER> have/has
     # reached a (full) agreement (over the transfer of ...)" — wire-service

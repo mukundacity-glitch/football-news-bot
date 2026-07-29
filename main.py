@@ -376,11 +376,13 @@ def build_story(tweet_text, fpl_data):
     if s.get("event") in ("transfer", "loan", "loan_option"):
         rf, rfk, rt, rtk = _direction.resolve(tweet_text)
         if rt:
-            # Parser's "destination" is actually the resolved ORIGIN => inverted.
-            if s.get("to_key") and rfk and s.get("to_key") == rfk:
-                s["to_club"], s["to_key"] = rt, rtk
-            elif not (s.get("to_key") or s.get("to_club")):
-                s["to_club"], s["to_key"] = rt, rtk
+            # Direction module found the destination via explicit grammar
+            # (movement verb / subject-signs / raw fallback for an unlisted
+            # foreign club) — more reliable than the parser's "first PL club
+            # mentioned" positional guess, which can pick a merely-interested
+            # rival club when the real destination is a club our base PL-only
+            # alias list doesn't recognise (e.g. "Inter" for Inter Milan).
+            s["to_club"], s["to_key"] = rt, rtk
         if rf:
             # Direction module found explicit "from [club]" grammar — more
             # reliable than the parser's "2nd club in tweet" positional guess.

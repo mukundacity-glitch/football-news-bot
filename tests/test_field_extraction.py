@@ -126,6 +126,32 @@ def test_manager_appointment_card_shows_extracted_contract_not_tbd():
     assert "TBD" not in body
 
 
+# ── Foreign destination named only in shorthand (John Stones / Inter) ────
+# Locks a real user-reported failure (29 Jul 2026): the bot repeatedly
+# posted "JOHN STONES ... FREE TRANSFER TO ARSENAL" when the actual, correct
+# story was Stones joining Inter Milan. The source text names the real
+# destination only as bare "Inter" — not in our club lexicon (only the full
+# "Inter Milan" is) — while Arsenal and Chelsea are mentioned in the very
+# same sentence purely as rival "interest". Because the destination-club
+# heuristic in extract_story_fallback only knows Premier League clubs, it
+# silently dropped the true (foreign) destination and promoted the merely-
+# interested Arsenal into the to_key slot, so every stage update kept
+# reposting the same wrong club. build_story must now trust src.direction's
+# grammar-based resolution (which finds "Inter" via a raw fallback for
+# unlisted clubs) over that positional guess.
+_STONES_TEXT = (
+    "Stones verbally agrees Inter move amid Arsenal, Chelsea interest. John "
+    "Stones has verbally agreed to join Inter on a free transfer, according "
+    "to Sky in Italy."
+)
+
+
+def test_foreign_shorthand_destination_not_overridden_by_rival_club():
+    s = main.build_story(_STONES_TEXT, None)
+    assert s["to_club"] == "Inter", s["to_club"]
+    assert s["to_key"] != "Arsenal"
+
+
 def test_free_agent_still_not_misread_as_agent_role():
     # Regression guard: the "as <role>" filler-word tolerance added for the
     # Marco Rose fix must not let "as a free agent" (an employment status)

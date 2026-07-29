@@ -80,6 +80,32 @@ def test_joint_agreement_names_buyer_then_seller():
     assert to == "Newcastle" and tk == "Newcastle"
 
 
+# ── Raw destination fallback for a foreign club named only in shorthand ────
+# Locks the John Stones false-Arsenal-transfer incident (29 Jul 2026): the
+# real destination was Inter Milan, reported in the source text only as bare
+# "Inter" (standard journalism shorthand). "Inter" isn't in our lexicon
+# (only the full "Inter Milan" is), so the destination slot was silently left
+# empty by grammar resolution and the parser's positional fallback promoted
+# Arsenal — a club mentioned only as rival "interest" — into the to_key slot
+# instead. Any future club named only by its common short form should hit
+# this same raw fallback, not just "Inter".
+
+def test_raw_destination_captures_unlisted_club_shorthand():
+    frm, fk, to, tk = resolve(
+        "John Stones has verbally agreed to join Inter on a free transfer, "
+        "according to Sky in Italy.")
+    assert to == "Inter" and tk is None
+
+
+def test_raw_destination_not_confused_by_rival_interest_club():
+    frm, fk, to, tk = resolve(
+        "Stones verbally agrees Inter move amid Arsenal, Chelsea interest. "
+        "John Stones has verbally agreed to join Inter on a free transfer, "
+        "according to Sky in Italy.")
+    assert to == "Inter"
+    assert to != "Arsenal"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
