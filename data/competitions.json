@@ -1,0 +1,28 @@
+{
+  "_comment": "Tournaments, leagues and cup competitions that must NEVER be treated as a PLAYER. Detection mirrors clubs_extended.json: exact normalized name match, OR >=2 significant-token overlap with a known competition's tokenset (so 'France World Cup' matches the 'world cup' tokenset even with an extra word glued on by a misparse), OR a strong single-token competition indicator. NOT a per-failure name list.",
+  "known_competitions": [
+    "world cup", "fifa world cup", "womens world cup", "women's world cup",
+    "under-20 world cup", "u20 world cup", "under-17 world cup", "u17 world cup",
+    "club world cup", "fifa club world cup",
+    "european championship", "euros", "euro 2024", "euro 2028", "uefa euro",
+    "copa america", "africa cup of nations", "afcon", "asian cup", "gold cup",
+    "concacaf gold cup", "nations league", "uefa nations league",
+    "champions league", "uefa champions league", "europa league",
+    "uefa europa league", "europa conference league", "conference league",
+    "uefa super cup", "super cup",
+    "premier league", "english premier league", "epl",
+    "la liga", "laliga", "serie a", "bundesliga", "ligue 1", "ligue un",
+    "eredivisie", "primeira liga", "scottish premiership", "mls",
+    "major league soccer", "saudi pro league", "liga mx",
+    "championship", "efl championship", "league one", "league two",
+    "fa cup", "league cup", "carabao cup", "efl cup", "community shield",
+    "olympics", "olympic games", "olympic football tournament",
+    "under-21 euros", "u21 euros", "european under-21 championship",
+    "world cup qualifiers", "euro qualifiers", "international break"
+  ],
+  "competition_tokens": [
+    "cup", "league", "championship", "eredivisie", "bundesliga", "laliga",
+    "afcon", "euros", "olympics", "conmebol", "concacaf", "uefa", "fifa",
+    "qualifiers", "playoffs"
+  ]
+}

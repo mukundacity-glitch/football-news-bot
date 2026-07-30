@@ -11,6 +11,9 @@ from src.constants import (
     POSITION_WORDS, NATIONALITY_ADJECTIVES, OFFICIAL_INJURY_ACCOUNTS,
     STRONG_OFFICIAL_CUES
 )
+from src.entity_guard import (
+    detect_country_entity, detect_competition_entity, _strip as _eg_strip,
+)
 
 # Sort aliases by length descending
 _SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
@@ -175,6 +178,15 @@ def _is_bad_name(low: str, event: str) -> bool:
     if any(w in NATIONALITY_ADJECTIVES for w in words): return True
     if any(w in ROLE_WORDS for w in words): return True
     if looks_like_club(low): return True
+    # A country or tournament/league name (or a country+tournament fragment
+    # glued together by the capitalized-word regex, e.g. "France World Cup")
+    # is never a player candidate. Rejecting it here means extraction tries
+    # the NEXT capitalized run in the text instead of ever settling on it —
+    # this is the first line of defence, independent of (and in addition to)
+    # the entity_guard hard-reject that also runs downstream in validate_story.
+    _norm = _eg_strip(low)
+    if detect_competition_entity(_norm) or detect_country_entity(_norm):
+        return True
     return False
 
 def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:

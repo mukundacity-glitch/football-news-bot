@@ -26,6 +26,7 @@ from src.entity_guard import (is_postable_player, classify_entity,
 from src import confidence as _conf
 from src import direction as _direction
 from src.verifier import cross_verify
+from src.rejection_log import log_rejection
 
 # Shared Canvas Namespace Initialization
 FONT = ImageFont.load_default()
@@ -182,15 +183,6 @@ def _build_club_word_fragments():
             w = word.lower().strip("'")
             if w and w not in SKIP and len(w) >= 3:
                 CLUB_WORD_FRAGMENTS.add(w)
-
-COUNTRY_NAMES: set = set()
-
-def _build_country_block(fpl_data):
-    global COUNTRY_NAMES
-    if not fpl_data: return
-    for el in fpl_data.get("elements", []):
-        nat = (el.get("nationality") or "").lower().strip()
-        if nat: COUNTRY_NAMES.add(nat)
 
 def looks_like_club(name: str) -> bool:
     if not name: return False
@@ -1733,18 +1725,22 @@ async def scrape(data):
         if not safe:
             skipped += 1
             print(f"   skip ({why}): {text[:70]!r}")
+            log_rejection("safety_gate", story, why, sources=[username], fpl_data=fpl)
             continue
-            
+
         valid, vwhy = validate_story(story, fpl, sources=[username])
         if not valid:
             skipped += 1
             print(f"   invalid ({vwhy}): {text[:70]!r}")
+            log_rejection("validate_story", story, vwhy, sources=[username], fpl_data=fpl)
             continue
 
         _cres = score_confidence(story, fpl, sources=[username])
         if _cres["decision"] == _conf.SKIP:
             skipped += 1
             print(f"   skip (low_confidence:{_cres['score']}): {text[:70]!r}")
+            log_rejection("confidence", story, f"low_confidence_score_{_cres['score']}",
+                          sources=[username], confidence=_cres, fpl_data=fpl)
             continue
         story["confidence_score"] = _cres["score"]
         story["confidence_decision"] = _cres["decision"]
@@ -1903,6 +1899,12 @@ async def scrape(data):
 
         mode = None if st.get("contradicted") else classify_post(st, st["sources"])
         if mode is None:
+            if st.get("contradicted"):
+                # A genuine rejection (independent sources disagree on the
+                # club, or a fresher confirmed story supersedes it) — not
+                # merely "not yet confirmed" — so it's worth a durable record.
+                log_rejection("contradiction", st, "contradicted_by_source_or_prior_story",
+                              sources=st["sources"], confidence=_final_cres, fpl_data=fpl)
             data["pending"][key] = {
                 "sources": st["sources"], "player": st["player"],
                 "to_key": st.get("to_key"), "event": st["event"],
@@ -1926,6 +1928,8 @@ async def build_draft(item, data, fpl):
     valid, why = validate_story(item, fpl)
     if not valid:
         print(f"  VALIDATION FAILED ({why}) — not drafting: {item.get('player')!r}")
+        log_rejection("validate_story_predraft", item, why,
+                      sources=item.get("sources"), fpl_data=fpl)
         if item.get("id") and item["id"] not in data["posted_ids"]:
             data["posted_ids"].append(item["id"])
         return None
@@ -1948,6 +1952,8 @@ async def build_draft(item, data, fpl):
         print(f"           {line}")
     if not ok:
         print(f"  VERIFY FAILED ({why}) — card NOT created: {item.get('player')!r}")
+        log_rejection("verify_card_data", item, why,
+                      sources=item.get("sources"), fpl_data=fpl)
         if item.get("id") and item["id"] not in data["posted_ids"]:
             data["posted_ids"].append(item["id"])
         return None

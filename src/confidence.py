@@ -256,10 +256,19 @@ def evaluate(story, *, player_verified=False, official_source=False,
     # OVERRIDE: an elite-tier report (Romano/Ornstein/Sky/BBC/Athletic) using
     # strong confirmation language auto-posts even if the additive score falls
     # short — mirrors how the football industry itself treats these sources.
+    # HARD INVARIANT: this override can NEVER fire when the entity gate
+    # penalised the story (entity_penalty != 0) — no source tier and no
+    # amount of "confirmed"/"official" wording ever promotes a country,
+    # competition, club, journalist, agent, etc. into a postable player.
+    # Checking `etype == "PLAYER"` alone previously guarded this; the
+    # explicit penalty check is redundant-by-design so this can never
+    # silently regress if a new hard-reject type is added upstream without
+    # also being wired into every override condition.
     strong_language = any(c in text.lower() for c in
                           ("here we go", "official", "confirmed", "completed",
                            "medical", "done deal", "signed", "signs"))
-    if (official_source or elite_source) and strong_language and etype == "PLAYER":
+    entity_ok = etype == "PLAYER" and not signals.get("entity_penalty")
+    if (official_source or elite_source) and strong_language and entity_ok:
         result["decision"] = AUTO_POST
         result["override"] = "elite_source_confirmed_language"
 

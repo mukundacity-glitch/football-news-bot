@@ -199,3 +199,117 @@ wasn't asked for and is easy to get wrong silently).
 - `tests/test_dedup.py` — added a genuinely-conflicting-clubs contradiction case
   alongside the existing direction-flip dedup tests.
 - Full suite: 66/66 passing (`python -m pytest tests/`).
+
+## 7. Missing entity taxonomy: COUNTRY / COMPETITION (2026-07-30)
+
+Real false post that reached publish:
+
+> 🔵 TRANSFER - FRANCE WORLD CUP CONFIRMED PERMANENT TRANSFER FROM CRYSTAL
+> PALACE TO CHELSEA. 💰 FEE — £52M 📊 STAGE — IN PROGRESS
+
+### Root cause
+
+`src/entity_guard.py`'s taxonomy (the single gate every extracted "player"
+name passes through) had **no COUNTRY or COMPETITION category at all** —
+only PLAYER / COACH / MANAGER / DIRECTOR / EXECUTIVE / AGENT / JOURNALIST /
+MEDIA / COMPANY / BRAND / SPONSOR / STADIUM / CLUB / UNKNOWN. A capitalized
+run of words that wasn't a club, journalist, staff role, company, or known
+junk fragment fell through to the `PLAYER` default at the bottom of
+`classify_entity_detailed` — exactly what happened to "France World Cup", a
+country name and a tournament name glued into one fragment by the
+capitalized-word-sequence extractor in `src/parser.py`.
+
+A dead, never-wired attempt at the same problem already existed in
+`main.py` (`COUNTRY_NAMES` / `_build_country_block`, built from FPL player
+nationalities) — defined, populated, and never called from anywhere. Removed
+as part of this fix; it was strictly weaker than the new mechanism anyway
+(only covered nationalities of currently-rostered FPL players, not
+countries/tournaments in general, and had no COMPETITION concept at all).
+
+Once classified as `PLAYER` by default, the story sailed through every
+downstream gate that *should* have caught it, because they all check
+"is this a real club/does the fee look right", never "is the subject
+actually a person":
+- `clubs_verified` / `validate_direction` (`src/confidence.py`) passed —
+  Crystal Palace and Chelsea are both real, resolvable PL clubs.
+- The confidence engine's `elite_source_confirmed_language` **override**
+  (`src/confidence.py: evaluate()`) then bypassed the additive score
+  entirely: any official/elite source + "confirmed"/"official"/"here we
+  go" wording + `etype == "PLAYER"` force-set the decision to `AUTO_POST`,
+  regardless of the actual score. A tournament reference worded like an
+  official announcement (as this one was) is exactly the shape that
+  triggers it.
+
+### Fix — three independent, non-bypassable layers
+
+No part of this fix names "France", "World Cup", or the specific incident
+text anywhere in code — it is entirely knowledge/taxonomy-based, the same
+pattern already used for clubs/journalists/media/stadiums, so it covers
+every country and every tournament/league, past and future.
+
+1. **New knowledge bases**: `data/countries.json` (country/national-team
+   names, ~100 entries) and `data/competitions.json` (tournaments/leagues/
+   cups, exact names + significant tokens), following the exact structure
+   of the existing `data/clubs_extended.json`.
+2. **New taxonomy entries** (`src/entity_guard.py`): `COUNTRY` and
+   `COMPETITION` join the hard-reject set (`_HARD_REJECT`), checked
+   *before* the `PLAYER` default via `detect_country_entity()` /
+   `detect_competition_entity()` — exact match for countries (never a
+   substring, so a real surname sharing a fragment with a country name is
+   never caught by accident), exact match OR ≥2-significant-token-overlap
+   OR a strong single-token indicator for competitions (mirrors
+   `detect_club_entity`'s existing strategy, and is what catches "France
+   World Cup" — tokens `{france, world, cup}` hit the `world cup`
+   tokenset/the `cup` token directly, no matter what else is glued to it).
+3. **Extraction-time defence** (`src/parser.py: _is_bad_name`): a
+   country/competition candidate is rejected *before* it is ever assigned
+   to `story["player"]`, so extraction tries the next capitalized run in
+   the text instead of settling on the bad one. For the reported post there
+   was no other candidate, so `player` correctly comes back `None` and
+   `validate_story` discards the story as `missing_player` — never a guess.
+4. **Confidence override hardened** (`src/confidence.py: evaluate()`): the
+   `elite_source_confirmed_language` override now requires `etype ==
+   "PLAYER"` **and** a zero `entity_penalty`, not `etype == "PLAYER"` alone
+   — so no future hard-reject category can silently re-open this exact
+   bypass by being added to `_HARD_REJECT` without also being wired into
+   every override condition individually.
+5. **Missing-name no longer defaults to PLAYER**: `classify_entity_detailed("")`
+   previously returned `("PLAYER", "empty_name")` "for downstream checks to
+   handle" — itself a guess-when-missing bug. It now returns `UNKNOWN` (hard
+   reject), closing the same class of failure for any code path that scores
+   confidence before (or without) a `validate_story` call.
+
+### Rejection audit logging (new: `src/rejection_log.py`)
+
+Every hard rejection now writes a durable, structured record — not just a
+console `print()` — to `queue/debug/rejections.jsonl` (append-only, capped
+at 5,000 lines) and `queue/debug/rejected_latest.json` (rolling snapshot of
+the last 300). Each record carries exactly what's needed to debug a
+rejection after the fact without re-running anything by hand: the original
+source text verbatim, every field the extractor produced, the entity
+classification (type + reason) for the subject, the confidence
+score/breakdown when one was computed, and the exact gate + reason string
+that rejected it. Wired into all four rejection points: `passes_safety_gate`
+and `validate_story` failures and confidence `SKIP` in `scrape()`, genuine
+(not merely unconfirmed) `contradiction` holds, and the pre-draft
+`validate_story`/`verify_card_data` double-check in `build_draft()`.
+Logging is best-effort by design (wrapped, never raises) so a disk/logging
+fault can never block or crash the posting pipeline it audits.
+
+### Test coverage added this pass
+
+- `tests/test_false_news_prevention.py` — the exact reported post end-to-end
+  (extraction → `validate_story` → confidence override), the COUNTRY/
+  COMPETITION taxonomy on ~15 country/tournament names, a real-player
+  false-positive sanity check, five *different* country+competition
+  fragments (Brazil/Copa America, England/Euros, Premier League, Champions
+  League, Ivory Coast/AFCON) to prove this generalizes rather than
+  pattern-matching the one incident, and the empty-name-is-never-PLAYER fix.
+- `tests/test_rejection_log.py` — required-field coverage of a rejection
+  record, append-not-overwrite behavior, and "logging never raises."
+- Full suite: 88/90 passing (`python -m pytest tests/`) — the 2 failures
+  (`test_gates.py::test_manager_appointment_can_confirm`,
+  `test_parser.py::test_genuine_second_club_still_captured_when_not_interest_only`)
+  pre-exist this change (confirmed by running the suite before touching any
+  file) and are unrelated to entity classification; left as-is, out of scope
+  for a false-news-prevention pass.
