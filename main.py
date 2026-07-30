@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageChops
 from pilmoji import Pilmoji
 
 # Connected to Core Engines & Ground Truth Caches
-from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key, is_big_player
+from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key
 from src.renderer import create_transfer_image, create_injury_image, _create_fallback_card
 from src.parser import extract_story_fallback, detect_historical, passes_safety_gate, _clean_source_text
 from src.entity_guard import (is_postable_player, classify_entity,
@@ -109,7 +109,8 @@ from src.constants import (
     CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR,
     JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
     ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
-    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP, STRONG_OFFICIAL_CUES
+    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP, STRONG_OFFICIAL_CUES,
+    TRANSFER_CONFIRM_CUES,
 )
 
 # Tier sets are compared on a normalised (alphanumeric-only) form so feed
@@ -148,9 +149,6 @@ POSITION_WORDS = {
     "forward", "keeper", "playmaker", "captain", "international",
 }
 
-def is_big_name_player(name: str) -> bool:
-    return False
-
 # ── CLUBS_CACHE WIRING ───────────────────────────────────────────────────
 CLUB_NAME_SET = set()
 CLUB_HASHTAGS = {}
@@ -162,11 +160,6 @@ def resolve_club_key(name: str):
         if re.search(r'(?<![a-z])' + re.escape(alias) + r'(?![a-z])', n):
             return CLUB_ALIASES[alias]
     return None
-
-BIG_NAMES_NON_FPL: set = set()
-
-def is_big_club_name(name: str) -> bool:
-    return False
 
 def init_club_data():
     global CLUB_NAME_SET, CLUB_HASHTAGS, PL_CLUB_NAMES
@@ -289,18 +282,6 @@ def increment_daily(data: dict):
     data["daily"]["count"] += 1
 
 
-
-def is_big_player(player, fpl_data) -> bool:
-    el = find_player_in_fpl(player, fpl_data)
-    if not el: return False
-    return el.get("now_cost", 0) >= 65 or el.get("total_points", 0) >= 90
-
-def fpl_team_key(el, fpl_data):
-    if not el or not fpl_data: return None
-    for t in fpl_data.get("teams", []):
-        if t.get("id") == el.get("team"):
-            return resolve_club_key((t.get("name", "") + " " + t.get("short_name", "")).lower())
-    return None
 
 def _summarise(name, event, from_key, to_key, stage, collapsed):
     who = name or "The player"
@@ -692,7 +673,14 @@ def classify_post(story, sources):
     n_elite = sum(1 for t in tiers if t == 2)
     has_media = 3 in tiers
     tl = (story.get("body", "") + " " + (story.get("headline", "") or "")).lower()
-    strong_words = story["stage"] >= 4 or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
+    # NOTE: this is read ONLY by the transfer/loan branch below — the injury
+    # branch immediately above returns before ever consulting it, and
+    # parser.py's `stage` field (injury's own wording source) is untouched by
+    # TRANSFER_CONFIRM_CUES. Broadening transfer-confirmation recall here can
+    # never change injury classification or wording.
+    strong_words = (story["stage"] >= 4
+                     or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in STRONG_OFFICIAL)
+                     or any(re.search(r'\b' + re.escape(w) + r'\b', tl) for w in TRANSFER_CONFIRM_CUES))
 
     if story["event"] == "injury":
         if has_official or n_elite >= 1: return "confirmed"
@@ -879,6 +867,7 @@ def validate_story(story, fpl_data=None, sources=None):
                 "keen to sign", "want to sign", "wants to sign",
                 "eyeing a move", "eyeing a swoop", "monitoring",
                 "tracking the", "set to hold talks", "in talks over a move",
+                "% chance", "chance of joining", "chance of a move", "likelihood of",
             )
             _blob = (story.get("raw_text", "") + " " + story.get("body", "")).lower()
             if any(c in _blob for c in _SPEC_CUES):
@@ -1104,6 +1093,19 @@ def tweet_player_name(story) -> str:
 def _avail_text(stage) -> str:
     return {4: "FIT AGAIN", 3: "RULED OUT", 2: "MAJOR DOUBT", 1: "BEING ASSESSED"}.get(stage, "BEING ASSESSED")
 
+def _source_line(sources, source_url) -> str:
+    """One 'SOURCE — @handle (+N more) [link]' line for transfer/loan posts.
+    Always renders a source even with no URL (a URL isn't always available —
+    e.g. a Bluesky post the AT-URI couldn't be parsed for); never fabricates
+    one that wasn't actually captured from the feed."""
+    names = [s for s in (sources or []) if s]
+    if not names:
+        return "📡 SOURCE — Unverified"
+    label = "@" + names[0].lstrip("@")
+    if len(names) > 1:
+        label += f" +{len(names) - 1} more"
+    return f"📡 SOURCE — {label} {source_url}" if source_url else f"📡 SOURCE — {label}"
+
 def build_tweet_body(story, sources, mode) -> str:
     ev = story.get("event")
     player = tweet_player_name(story).upper()
@@ -1142,6 +1144,10 @@ def build_tweet_body(story, sources, mode) -> str:
                 route = ""
             prefix = "LOAN" if move == "LOAN MOVE" else "TRANSFER"
             headline = f"{emoji} {prefix}- {player} {status} {move}{route}."
+        # Unambiguous machine- and human-readable status, independent of the
+        # headline wording above (which varies by stage/label) — a reader
+        # scanning only this line always sees exactly CONFIRMED or RUMOUR.
+        details.append("✅ STATUS — CONFIRMED" if mode == "confirmed" else "🔄 STATUS — RUMOUR")
         # Always exactly 2 detail lines (no "undisclosed" filler).
         fee_text = story.get("fee")
         contract_text = story.get("contract")
@@ -1156,6 +1162,7 @@ def build_tweet_body(story, sources, mode) -> str:
             details.append(f"📝 CONTRACT — {contract_text}")
         else:
             details.append(f"📊 STAGE — {stage_text}")
+        details.append(_source_line(sources, story.get("source_url")))
 
     elif ev in ("injury", "suspension"):
         club = (to_full or from_full).upper()
@@ -1460,6 +1467,41 @@ async def post_item(post_client, item, data):
   # ── SCRAPER CORE (100% FREE RSS) ─────────────────────────────────────────
 MAX_TWEET_AGE_DAYS = 3
 
+# SETTLE-TIME GATE: a transfer/loan story from a non-official/non-elite
+# source (tier 3 trusted media or an unrecognized account) must have been
+# sitting in the pipeline for at least this long before it's allowed to
+# actually post, even once classify_post() calls it "confirmed" — many
+# reported deals get denied within the hour, and this gives that a chance
+# to happen before publishing rather than after. Official (tier 1) and
+# elite (tier 2: Romano/Ornstein/Sky/BBC/Athletic) sources bypass this —
+# their "here we go"/official wording is already about as final as
+# football reporting gets, so an artificial delay adds latency without
+# reducing the false-positive rate for those tiers specifically.
+MIN_CONFIRM_SETTLE_MINUTES = _env_int("MIN_CONFIRM_SETTLE_MINUTES", 45)
+
+def _age_minutes(first_seen) -> float:
+    """Minutes since `first_seen` (an ISO timestamp), or 0 if unparseable —
+    fails toward "not yet settled" (0 minutes old), never toward posting."""
+    dt = _parse_rss_date(first_seen)
+    if dt is None:
+        return 0.0
+    return (datetime.now(timezone.utc) - dt).total_seconds() / 60
+
+
+def settle_time_ok(story: dict) -> bool:
+    """True if a 'confirmed' transfer/loan story is allowed to actually post
+    right now. Official (tier 1) and elite (tier 2) sources bypass the wait
+    entirely; everything else must have been seen for at least
+    MIN_CONFIRM_SETTLE_MINUTES first — see the constant's docstring for why.
+    Non-transfer/loan events (injury, manager, renewal, ...) are untouched by
+    this gate and always return True."""
+    if story.get("event") not in ("transfer", "loan", "loan_option"):
+        return True
+    tiers = [source_tier(s) for s in (story.get("sources") or [])]
+    if any(t in (1, 2) for t in tiers):
+        return True
+    return _age_minutes(story.get("first_seen")) >= MIN_CONFIRM_SETTLE_MINUTES
+
 # List of (source_name, url) tuples — list not dict so we can have multiple
 # entries sharing the same source_name (e.g. two premierleague search feeds).
 RSS_FEEDS = [
@@ -1601,9 +1643,16 @@ def fetch_bluesky_posts() -> list:
                 created_at = record.get("createdAt") or post.get("indexedAt")
                 uri = post.get("uri", "") or text
                 tid = "bsky_" + hashlib.md5(uri.encode()).hexdigest()[:15]
+                # Convert the AT-URI (at://did/app.bsky.feed.post/rkey) into a
+                # real clickable bsky.app post link, best-effort.
+                source_url = None
+                _m = re.match(r"at://([^/]+)/[^/]+/([^/]+)$", post.get("uri", ""))
+                if _m:
+                    source_url = f"https://bsky.app/profile/{_m.group(1)}/post/{_m.group(2)}"
                 out.append({
                     "id": tid, "text": text, "media_url": None,
                     "created_at": created_at, "username": source_name,
+                    "source_url": source_url,
                 })
             print(f"  [BLUESKY] @{handle}: {len(feed_items)} post(s) fetched.")
         except Exception as e:
@@ -1665,6 +1714,10 @@ async def fetch_rss_news():
                 if "media_content" in entry and entry.media_content:
                     media_url = entry.media_content[0].get("url")
                 created_at = entry.get("published", None)
+                # Only a REAL link counts as a source URL — `link` falls back to a
+                # title+date string above when the feed entry has none, and that
+                # fallback must never be posted as if it were a clickable source.
+                source_url = link if link.startswith("http") else None
                 if text:
                     out.append({
                         "id": tid,
@@ -1672,6 +1725,7 @@ async def fetch_rss_news():
                         "media_url": media_url,
                         "created_at": created_at,
                         "username": source_name,
+                        "source_url": source_url,
                     })
         except Exception as e:
             print(f"  [READ] {source_name} feed error: {e}")
@@ -1720,7 +1774,9 @@ async def scrape(data):
             story["media_url"] = t.get("media_url")
             story["created_at"] = t.get("created_at")
             data["extracted"][tid] = dict(story)
-            
+
+        story["source_url"] = story.get("source_url") or t.get("source_url")
+
         safe, why = passes_safety_gate(story, text, fpl, sources=[username], source_tier_func=source_tier)
         if not safe:
             skipped += 1
@@ -1786,9 +1842,15 @@ async def scrape(data):
                 prior = list(dict.fromkeys(prior + data["pending"][unk].get("sources", [])))
                 data["pending"].pop(unk, None)
                 
+            # first_seen anchors the settle-time gate (see MIN_CONFIRM_SETTLE_MINUTES):
+            # carried over from a prior pending run for this key so a story's "age"
+            # is measured from when it was FIRST observed, never reset by a re-run.
+            first_seen = (data.get("pending", {}).get(key, {}).get("first_seen")
+                          or datetime.now(timezone.utc).isoformat())
             story.update({
                 "id": tid, "key": key, "text": text,
                 "sources": list(dict.fromkeys(prior + [username])), "reason": reason,
+                "first_seen": first_seen,
             })
             story_map[key] = story
 
@@ -1898,6 +1960,12 @@ async def scrape(data):
                             break
 
         mode = None if st.get("contradicted") else classify_post(st, st["sources"])
+        if mode == "confirmed" and not settle_time_ok(st):
+            print(f"   [SETTLE] {st.get('player')!r}: confirmed by non-elite source only "
+                  f"{_age_minutes(st.get('first_seen')):.0f}m ago "
+                  f"(< {MIN_CONFIRM_SETTLE_MINUTES}m) — holding for re-check next run")
+            mode = None
+
         if mode is None:
             if st.get("contradicted"):
                 # A genuine rejection (independent sources disagree on the
@@ -1909,6 +1977,7 @@ async def scrape(data):
                 "sources": st["sources"], "player": st["player"],
                 "to_key": st.get("to_key"), "event": st["event"],
                 "contradicted": bool(st.get("contradicted")),
+                "first_seen": st.get("first_seen") or datetime.now(timezone.utc).isoformat(),
                 "last_seen": datetime.now(timezone.utc).isoformat(),
             }
             continue
