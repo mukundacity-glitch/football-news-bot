@@ -80,6 +80,69 @@ def test_joint_agreement_names_buyer_then_seller():
     assert to == "Newcastle" and tk == "Newcastle"
 
 
+# ── Raw destination fallback for a foreign club named only in shorthand ────
+# Locks the John Stones false-Arsenal-transfer incident (29 Jul 2026): the
+# real destination was Inter Milan, reported in the source text only as bare
+# "Inter" (standard journalism shorthand). "Inter" isn't in our lexicon
+# (only the full "Inter Milan" is), so the destination slot was silently left
+# empty by grammar resolution and the parser's positional fallback promoted
+# Arsenal — a club mentioned only as rival "interest" — into the to_key slot
+# instead. Any future club named only by its common short form should hit
+# this same raw fallback, not just "Inter".
+
+def test_raw_destination_captures_unlisted_club_shorthand():
+    frm, fk, to, tk = resolve(
+        "John Stones has verbally agreed to join Inter on a free transfer, "
+        "according to Sky in Italy.")
+    assert to == "Inter" and tk is None
+
+
+def test_raw_destination_not_confused_by_rival_interest_club():
+    frm, fk, to, tk = resolve(
+        "Stones verbally agrees Inter move amid Arsenal, Chelsea interest. "
+        "John Stones has verbally agreed to join Inter on a free transfer, "
+        "according to Sky in Italy.")
+    assert to == "Inter"
+    assert to != "Arsenal"
+
+
+# ── Regressions found while auditing posted_news.json (29 Jul 2026) ───────
+# Trusting direction.resolve()'s destination more (the fix above) surfaced
+# two pre-existing weaknesses in the grammar heuristics themselves, which
+# had been silently masked before because build_story rarely trusted this
+# module's destination. Both are locked here so they can't resurface.
+
+def test_subject_sign_ignores_possessive_mention():
+    # "Newcastle agree a deal for Monaco's Bamba ... to sign a long-term
+    # contract" — the nearest club before "sign" is "Monaco", but Monaco
+    # only appears in a possessive ("Monaco's Bamba", i.e. whose player he
+    # currently is), not as the club doing the signing. Newcastle, named via
+    # "agree ... deal for", is the real destination.
+    frm, fk, to, tk = resolve(
+        "Newcastle agree a deal for Monaco's Bamba. Midfielder Aladji Bamba "
+        "is due to arrive on Thursday for a medical and to sign a long-term "
+        "contract.")
+    assert to != "Monaco"
+
+
+def test_bare_to_not_confused_by_result_phrase():
+    # "Champions League final loss to Paris Saint-Germain" is a match result,
+    # not a transfer destination — the bare "to <club>" heuristic must not
+    # fire on "loss to X" / "defeat to X" style phrasing.
+    frm, fk, to, tk = resolve(
+        "Arsenal's Champions League final loss to Paris Saint-Germain in May.")
+    assert to != "Paris Saint Germain"
+
+
+def test_bare_to_still_works_for_genuine_movement_phrasing():
+    # Sanity check: the block list must not swallow legitimate bare "to"
+    # movement grammar that doesn't already have its own verb pattern (e.g.
+    # "transfer to X" — "transfer" isn't a _DEST_VERB verb, so this relies
+    # entirely on the bare "to" fallback still working for real cases).
+    frm, fk, to, tk = resolve("The transfer to Newcastle looks imminent.")
+    assert to == "Newcastle" and tk == "Newcastle"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
