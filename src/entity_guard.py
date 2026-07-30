@@ -12,7 +12,15 @@ Taxonomy (classify_entity_detailed):
     JOURNALIST / MEDIA                       -> rejected
     COMPANY / BRAND / SPONSOR                -> rejected
     STADIUM / CLUB                           -> rejected
+    COUNTRY / COMPETITION / LEAGUE            -> rejected (national team / tournament / league,
+                                                 NEVER a transfer subject — "France World Cup",
+                                                 "Premier League", "Champions League" are not players)
     UNKNOWN                                  -> rejected (junk / RSS fragment / noise)
+
+Hard invariant: an entity classified as COUNTRY or COMPETITION/LEAGUE can NEVER become
+PLAYER. This check runs unconditionally, before the default PLAYER fallback, and is
+NOT bypassable by source tier, confidence override, or confirmation language — a
+"confirmed" or "official" tweet about a tournament is still not a transfer.
 
 Public API (stable):
     classify_entity(name, text="")          -> (coarse_category, reason)
@@ -105,6 +113,22 @@ _KNOWN_CLUB_TOKENSETS = [
     frozenset(t for t in c.split() if t not in _STOP) for c in _KNOWN_CLUBS
 ]
 
+# Country / national-team knowledge base. Exact normalized match ONLY (never a
+# substring) — a real surname that happens to contain a country-like fragment
+# must never be caught by accident.
+_COUNTRIES = {_strip(c) for c in _load("countries.json", "countries", [])}
+
+# Competition / tournament / league knowledge base, for rejecting "France World
+# Cup"-style misparses where a country and a tournament get glued into one
+# capitalized fragment by the extractor. Mirrors the club-detection strategy:
+# exact name match, OR >=2 significant-token overlap with a known competition,
+# OR a strong single-token indicator ("world cup", "champions league", ...).
+_KNOWN_COMPETITIONS = {_strip(c) for c in _load("competitions.json", "known_competitions", [])}
+_COMPETITION_TOKENS = {_strip(t) for t in _load("competitions.json", "competition_tokens", [])}
+_KNOWN_COMPETITION_TOKENSETS = [
+    frozenset(t for t in c.split() if t not in _STOP) for c in _KNOWN_COMPETITIONS
+]
+
 # ── Name-quality (junk / RSS-fragment / social-noise) filter ──────────────
 # Tokens that NEVER appear inside a real footballer's name — they come from RSS
 # fragments, scraper artifacts and social-media chrome ("link click", "watch",
@@ -166,6 +190,36 @@ def detect_club_entity(name_norm) -> bool:
         return True
     tset = set(toks)
     return any(len(tset & cts) >= 2 for cts in _KNOWN_CLUB_TOKENSETS)
+
+
+def detect_country_entity(name_norm) -> bool:
+    """True if the (normalized) name IS a country/national-team name — exact
+    match only (single or multi-word), never a substring. This deliberately
+    does NOT use token-overlap like clubs/competitions: a country name is a
+    single fixed phrase ('south korea', 'ivory coast'), not a family of
+    variant club names, so exact equality is the correct and safest test."""
+    if not name_norm:
+        return False
+    return name_norm in _COUNTRIES
+
+
+def detect_competition_entity(name_norm) -> bool:
+    """True if the (normalized) name is a tournament/league/cup competition —
+    including a country+competition fragment glued together by a misparse
+    (e.g. 'france world cup', 'england euros'). Same strategy as clubs: exact
+    name match, OR >=2 significant-token overlap with a known competition, OR
+    a strong single-token indicator ('cup', 'bundesliga', 'afcon', ...)."""
+    if not name_norm:
+        return False
+    toks = [t for t in name_norm.split() if t not in _STOP]
+    if not toks:
+        return False
+    if name_norm in _KNOWN_COMPETITIONS:
+        return True
+    if any(t in _COMPETITION_TOKENS for t in toks):
+        return True
+    tset = set(toks)
+    return any(len(tset & cts) >= 2 for cts in _KNOWN_COMPETITION_TOKENSETS)
 
 
 def _name_matches(name_norm, blockset) -> bool:
@@ -289,7 +343,11 @@ def classify_entity_detailed(name, text="", fpl_data=None):
     based on surrounding text, no matter what words sit near their name."""
     name_norm = _strip(name)
     if not name_norm:
-        return "PLAYER", "empty_name"  # downstream name-length checks handle it
+        # A missing name must NEVER default to PLAYER — that is exactly the
+        # kind of "guess when data is missing" this gate exists to prevent.
+        # UNKNOWN is a hard reject, so an empty/unresolved subject can never
+        # slip through the confidence engine's PLAYER-only override path.
+        return "UNKNOWN", _reason("UNKNOWN", "unknown_entity")
 
     # 0. GROUND TRUTH FIRST: a name the live FPL feed confirms is a real,
     # rostered player is PLAYER, full stop. This must run before every other
@@ -303,6 +361,19 @@ def classify_entity_detailed(name, text="", fpl_data=None):
     # 1. Junk / RSS fragment / social noise ("link click", "why harry kane", ...).
     if _looks_like_junk_name(name):
         return "UNKNOWN", _reason("UNKNOWN", "unknown_entity")
+
+    # 1. Competition / tournament / league misparsed as a person — checked
+    # BEFORE club detection because a country+competition fragment ("France
+    # World Cup") can also brush a club token by coincidence, and the
+    # competition read is the correct one. This is what stops a national-team
+    # tournament reference from ever being posted as a transfer subject,
+    # regardless of source tier or "confirmed"/"official" wording in the text.
+    if detect_competition_entity(name_norm):
+        return "COMPETITION", _reason("COMPETITION", "competition_entity")
+
+    # 1. Country / national team misparsed as a person.
+    if detect_country_entity(name_norm):
+        return "COUNTRY", _reason("COUNTRY", "country_entity")
 
     # 1. Club misparsed as a person.
     if detect_club_entity(name_norm):
@@ -357,14 +428,16 @@ _COARSE = {
     "DIRECTOR": "DIRECTOR", "EXECUTIVE": "EXECUTIVE", "AGENT": "AGENT",
     "JOURNALIST": "JOURNALIST", "MEDIA": "MEDIA",
     "COMPANY": "COMPANY", "BRAND": "COMPANY", "SPONSOR": "COMPANY",
-    "STADIUM": "STADIUM", "CLUB": "CLUB", "UNKNOWN": "UNKNOWN",
+    "STADIUM": "STADIUM", "CLUB": "CLUB",
+    "COUNTRY": "COUNTRY", "COMPETITION": "COMPETITION", "UNKNOWN": "UNKNOWN",
 }
 
 # Postable staff types → the staff-event pipeline (event == "manager").
 _STAFF_TYPES = {"COACH", "MANAGER", "ASSISTANT_COACH"}
 # Everything below is never a player and never a coach → always rejected.
 _HARD_REJECT = {"JOURNALIST", "MEDIA", "COMPANY", "BRAND", "SPONSOR",
-                "STADIUM", "CLUB", "AGENT", "DIRECTOR", "EXECUTIVE", "UNKNOWN"}
+                "STADIUM", "CLUB", "AGENT", "DIRECTOR", "EXECUTIVE",
+                "COUNTRY", "COMPETITION", "UNKNOWN"}
 
 
 def classify_entity(name, text="", fpl_data=None):

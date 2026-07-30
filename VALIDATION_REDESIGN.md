@@ -199,3 +199,265 @@ wasn't asked for and is easy to get wrong silently).
 - `tests/test_dedup.py` — added a genuinely-conflicting-clubs contradiction case
   alongside the existing direction-flip dedup tests.
 - Full suite: 66/66 passing (`python -m pytest tests/`).
+
+## 7. Missing entity taxonomy: COUNTRY / COMPETITION (2026-07-30)
+
+Real false post that reached publish:
+
+> 🔵 TRANSFER - FRANCE WORLD CUP CONFIRMED PERMANENT TRANSFER FROM CRYSTAL
+> PALACE TO CHELSEA. 💰 FEE — £52M 📊 STAGE — IN PROGRESS
+
+### Root cause
+
+`src/entity_guard.py`'s taxonomy (the single gate every extracted "player"
+name passes through) had **no COUNTRY or COMPETITION category at all** —
+only PLAYER / COACH / MANAGER / DIRECTOR / EXECUTIVE / AGENT / JOURNALIST /
+MEDIA / COMPANY / BRAND / SPONSOR / STADIUM / CLUB / UNKNOWN. A capitalized
+run of words that wasn't a club, journalist, staff role, company, or known
+junk fragment fell through to the `PLAYER` default at the bottom of
+`classify_entity_detailed` — exactly what happened to "France World Cup", a
+country name and a tournament name glued into one fragment by the
+capitalized-word-sequence extractor in `src/parser.py`.
+
+A dead, never-wired attempt at the same problem already existed in
+`main.py` (`COUNTRY_NAMES` / `_build_country_block`, built from FPL player
+nationalities) — defined, populated, and never called from anywhere. Removed
+as part of this fix; it was strictly weaker than the new mechanism anyway
+(only covered nationalities of currently-rostered FPL players, not
+countries/tournaments in general, and had no COMPETITION concept at all).
+
+Once classified as `PLAYER` by default, the story sailed through every
+downstream gate that *should* have caught it, because they all check
+"is this a real club/does the fee look right", never "is the subject
+actually a person":
+- `clubs_verified` / `validate_direction` (`src/confidence.py`) passed —
+  Crystal Palace and Chelsea are both real, resolvable PL clubs.
+- The confidence engine's `elite_source_confirmed_language` **override**
+  (`src/confidence.py: evaluate()`) then bypassed the additive score
+  entirely: any official/elite source + "confirmed"/"official"/"here we
+  go" wording + `etype == "PLAYER"` force-set the decision to `AUTO_POST`,
+  regardless of the actual score. A tournament reference worded like an
+  official announcement (as this one was) is exactly the shape that
+  triggers it.
+
+### Fix — three independent, non-bypassable layers
+
+No part of this fix names "France", "World Cup", or the specific incident
+text anywhere in code — it is entirely knowledge/taxonomy-based, the same
+pattern already used for clubs/journalists/media/stadiums, so it covers
+every country and every tournament/league, past and future.
+
+1. **New knowledge bases**: `data/countries.json` (country/national-team
+   names, ~100 entries) and `data/competitions.json` (tournaments/leagues/
+   cups, exact names + significant tokens), following the exact structure
+   of the existing `data/clubs_extended.json`.
+2. **New taxonomy entries** (`src/entity_guard.py`): `COUNTRY` and
+   `COMPETITION` join the hard-reject set (`_HARD_REJECT`), checked
+   *before* the `PLAYER` default via `detect_country_entity()` /
+   `detect_competition_entity()` — exact match for countries (never a
+   substring, so a real surname sharing a fragment with a country name is
+   never caught by accident), exact match OR ≥2-significant-token-overlap
+   OR a strong single-token indicator for competitions (mirrors
+   `detect_club_entity`'s existing strategy, and is what catches "France
+   World Cup" — tokens `{france, world, cup}` hit the `world cup`
+   tokenset/the `cup` token directly, no matter what else is glued to it).
+3. **Extraction-time defence** (`src/parser.py: _is_bad_name`): a
+   country/competition candidate is rejected *before* it is ever assigned
+   to `story["player"]`, so extraction tries the next capitalized run in
+   the text instead of settling on the bad one. For the reported post there
+   was no other candidate, so `player` correctly comes back `None` and
+   `validate_story` discards the story as `missing_player` — never a guess.
+4. **Confidence override hardened** (`src/confidence.py: evaluate()`): the
+   `elite_source_confirmed_language` override now requires `etype ==
+   "PLAYER"` **and** a zero `entity_penalty`, not `etype == "PLAYER"` alone
+   — so no future hard-reject category can silently re-open this exact
+   bypass by being added to `_HARD_REJECT` without also being wired into
+   every override condition individually.
+5. **Missing-name no longer defaults to PLAYER**: `classify_entity_detailed("")`
+   previously returned `("PLAYER", "empty_name")` "for downstream checks to
+   handle" — itself a guess-when-missing bug. It now returns `UNKNOWN` (hard
+   reject), closing the same class of failure for any code path that scores
+   confidence before (or without) a `validate_story` call.
+
+### Rejection audit logging (new: `src/rejection_log.py`)
+
+Every hard rejection now writes a durable, structured record — not just a
+console `print()` — to `queue/debug/rejections.jsonl` (append-only, capped
+at 5,000 lines) and `queue/debug/rejected_latest.json` (rolling snapshot of
+the last 300). Each record carries exactly what's needed to debug a
+rejection after the fact without re-running anything by hand: the original
+source text verbatim, every field the extractor produced, the entity
+classification (type + reason) for the subject, the confidence
+score/breakdown when one was computed, and the exact gate + reason string
+that rejected it. Wired into all four rejection points: `passes_safety_gate`
+and `validate_story` failures and confidence `SKIP` in `scrape()`, genuine
+(not merely unconfirmed) `contradiction` holds, and the pre-draft
+`validate_story`/`verify_card_data` double-check in `build_draft()`.
+Logging is best-effort by design (wrapped, never raises) so a disk/logging
+fault can never block or crash the posting pipeline it audits.
+
+### Test coverage added this pass
+
+- `tests/test_false_news_prevention.py` — the exact reported post end-to-end
+  (extraction → `validate_story` → confidence override), the COUNTRY/
+  COMPETITION taxonomy on ~15 country/tournament names, a real-player
+  false-positive sanity check, five *different* country+competition
+  fragments (Brazil/Copa America, England/Euros, Premier League, Champions
+  League, Ivory Coast/AFCON) to prove this generalizes rather than
+  pattern-matching the one incident, and the empty-name-is-never-PLAYER fix.
+- `tests/test_rejection_log.py` — required-field coverage of a rejection
+  record, append-not-overwrite behavior, and "logging never raises."
+- Full suite: 88/90 passing (`python -m pytest tests/`) — the 2 failures
+  (`test_gates.py::test_manager_appointment_can_confirm`,
+  `test_parser.py::test_genuine_second_club_still_captured_when_not_interest_only`)
+  pre-exist this change (confirmed by running the suite before touching any
+  file) and are unrelated to entity classification; left as-is, out of scope
+  for a false-news-prevention pass.
+
+## 8. Transfer-recall + posting-rules pass, code cleanup (2026-07-30, same day)
+
+Ask: reduce the false-post rate further, catch more genuinely-confirmed
+transfers (the "Done Deal filter only catches ~10%" complaint), add explicit
+✅ CONFIRMED / 🔄 RUMOUR labeling with source + link on every post, add a
+settle-time delay before a lower-tier "confirmed" story goes live, and clean
+up dead/residual code. Injury classification and wording were explicitly
+out of scope ("do not touch injury") — every change below was checked
+against that constraint directly, not just by intent.
+
+**Resolved contradiction, explicitly:** the request included both "send
+borderline cases to a Telegram/Discord review queue for a human to approve"
+and, in the same message, "all auto no manual work." Implemented the second:
+no human-approval step was added. The bot's existing `data["pending"]`
+mechanism (a story that isn't confirmed yet is held and automatically
+re-verified against fresh sources on the next scheduled run — no human
+involved) already serves the "second mode" purpose the review queue was
+meant to cover.
+
+**Not implemented as literally specified:** the pasted `is_likely_confirmed()`
+keyword function was not adopted verbatim. It classifies purely on keyword
+presence with no club/entity/source validation — exactly the shape of bug
+that let "France World Cup" post as a transfer (§7 above). Its keyword list
+was instead folded into the existing, layered pipeline (entity guard, club/
+direction validation, contradiction detection, confidence scoring), so
+recall goes up without reopening that hole.
+
+### 8.1 Broadened confirmed-transfer wording — deliberately NOT via the shared stage list
+
+The obvious place to add recall was `STRONG_OFFICIAL_CUES` (the single
+completion-wording list). Verified empirically that this is unsafe: that
+list also drives `parser.py`'s universal `stage` field, which injury posts
+read directly (`_avail_text`: stage 4 → "FIT AGAIN"). Adding, e.g.,
+`"announced"` there flips a genuinely-fresh, still-ongoing injury to
+"FIT AGAIN" whenever a club statement about the injury happens to use that
+word ("Arsenal announced Saka is out for six weeks" → wrongly rendered
+FIT AGAIN). This reproduces with the *original* list too via "confirmed"/
+"official"/"medical" (a pre-existing, out-of-scope-to-fix issue, left alone
+per "do not touch injury" — see the test suite's documented pre-existing
+failures).
+
+Fix: a new, separate constant, `TRANSFER_CONFIRM_CUES` (`src/constants.py`),
+read *only* by `classify_post()`'s transfer/loan branch in `main.py` — never
+by `parser.py`'s stage computation. `classify_post()`'s injury branch
+returns before ever consulting it, so this cannot change injury behavior by
+construction, not just by careful wording choice.
+
+**Backtested against real data, not synthetic examples.** With no live
+network access in this environment, the closest available substitute for
+"last 7 days of production traffic" was the repository's own historical
+corpus: 203 real transfer/loan items already sitting in `queue/posted/` and
+`queue/pending/` from actual past runs. Every candidate cue was checked
+against all 203 before being kept:
+
+| Candidate cue | Real historical false positive found? |
+|---|---|
+| `completes`, `announces`, `announced`, `presented as`, `unveiling` | None found across all 203 items — kept. |
+| `finalised` / `finalized` | **Yes.** Matched "verbal agreement in place with details **to be finalised** soon" (future tense — not done) and "discovery rights compensation has now **been finalised**" (an ancillary inter-club fee, not the transfer itself). Removed. |
+| `contract until` | **Yes.** Matched "Bergvall is under **contract until** June 2031" describing his existing contract at his *current* club (cited as a reason he's hard to sign) — the opposite of evidence a new move is confirmed. Removed. |
+| `permanent transfer`, `free transfer` | Not tried — these describe deal TYPE, not status, and already appear verbatim in `parser.py`'s stage-1 SPECULATION cue list; adding them would make a rumour match the confirmation list too. |
+| `agreement reached` | Not tried — this codebase already has a distinct AGREED tier (stage 2-3) one step below OFFICIAL for exactly this wording. |
+
+Net result on the 203-item historical corpus: wording-only match rate rose
+from 92/203 (45.3%) to 93/203 (45.8%), with the single newly-caught item
+already labelled `confirmed` historically (a Bournemouth official signing
+announcement) — **zero new false positives** on real data. This is a modest,
+evidence-bounded number, not the "far beyond 10%" framing in the original
+ask — that figure couldn't be independently verified against this bot's
+actual historical performance (no ground-truth "% caught vs missed" dataset
+exists in the repo), so it isn't quoted here as if it were. The full
+transfer-confirmation decision also depends on source tier, stage, and the
+elite-source-confirmed-language override (§7, hardened) — this table
+measures only the wording signal in isolation, which is what the historical
+JSON records could actually support checking.
+
+Also added: `"% chance"`, `"chance of joining"`, `"chance of a move"`,
+`"likelihood of"` to `validate_story`'s stage-1 speculation cue list (from
+the requested `rumour_indicators`) — scoped inside the existing
+`if ev in ("transfer", "loan", "loan_option")` block, so structurally unable
+to affect injury's own (unrelated) "% chance of playing" availability field.
+
+### 8.2 Settle-time gate before a non-elite "confirmed" post goes live
+
+New `settle_time_ok(story)` (`main.py`) + `MIN_CONFIRM_SETTLE_MINUTES`
+(default 45, env-overridable): a transfer/loan story classified `confirmed`
+from a source that is neither official (tier 1) nor elite (tier 2: Romano/
+Ornstein/Sky/BBC/Athletic) must have been sitting in the pipeline for at
+least this long — tracked via a new `first_seen` timestamp, carried forward
+across runs in `data["pending"]` — before it's allowed to post. This is the
+requested "wait 30-60 minutes and re-check before posting" behavior,
+implemented without adding polling infrastructure: the bot already re-scores
+every pending story each scheduled run, so a held story is automatically
+re-verified, not just delayed. Official/elite sources bypass the wait
+entirely — their confirmation language is already about as final as
+football reporting gets, so an artificial delay would add latency without
+reducing false positives for those tiers specifically. Non-transfer events
+(injury, manager, renewal, ...) always return `True` — untouched.
+
+### 8.3 Explicit labeling, source, and link on every transfer post
+
+`build_tweet_body()`'s transfer/loan branch now always includes:
+- `✅ STATUS — CONFIRMED` or `🔄 STATUS — RUMOUR`, driven directly by `mode`
+  (the actual publish-decision variable), independent of the existing
+  headline wording (which already varied by stage/label — "AGREEMENT
+  REACHED", "LINKED WITH A", etc. — and was left alone since several tests
+  depend on that exact hedge wording).
+- `📡 SOURCE — @handle(s)`, plus the article/tweet link when one was
+  actually captured from the feed (`source_url`, newly threaded through
+  `fetch_rss_news()`/`fetch_bluesky_posts()` → `scrape()` → the story dict —
+  never fabricated when the feed entry had no real link).
+- The visual card (`src/renderer.py`) already renders its own prominent
+  CONFIRMED/OFFICIAL/TRANSFER RUMOUR badge (unchanged, out of scope) — this
+  section adds the same clarity to the tweet caption text itself, which is
+  searchable/readable without opening the image.
+
+### 8.4 Code cleanup (dead/residual code removed)
+
+- `main.py`: `is_big_name_player()`, `is_big_club_name()`, and
+  `BIG_NAMES_NON_FPL` — three stubs/constants with zero call sites anywhere
+  in the codebase (confirmed via full-repo search before removal).
+- `main.py`: local `is_big_player()` and `fpl_team_key()` definitions
+  removed. Both were byte-for-byte duplicates of `src/fpl_feed.py`'s
+  versions that main.py *also imported* — the local defs silently shadowed
+  the import the moment the module loaded, making the import dead weight.
+  Worse, they had actually drifted: `fpl_feed.fpl_team_key()`'s
+  `resolve_club_key()` accent-strips before matching (`_strip()`); main.py's
+  shadowing copy only lowercased. Removing the duplicate means the accent-
+  safe canonical version is what actually runs now, not a silent second
+  implementation nobody was calling by design.
+- `main.py`: dead `COUNTRY_NAMES` / `_build_country_block()` — see §7,
+  already covered by the new `data/countries.json`-backed entity guard.
+- `is_big_player` dropped from the `src.fpl_feed` import list (unused
+  everywhere, confirmed via search).
+
+### 8.5 Test coverage added this pass
+
+`tests/test_transfer_accuracy_improvements.py` (14 tests): broadened-wording
+recall on 4 real phrasings; the exact 2 real historical false-positive
+sentences (Doku/Bergvall) that justified removing `finalised`/`contract
+until`, locked in as regression tests; the injury-stage-immunity check
+(3 sentences that would have flipped stage to 4 under the old shared-list
+approach, verified to stay at stage 1); `settle_time_ok()` behavior across
+tier 1/2/3/0 sources and non-transfer events; unparseable-timestamp fails
+closed; source+link rendering with and without a captured URL; the explicit
+✅/🔄 status line; and presence checks confirming the removed dead code is
+actually gone. Full suite: 102/104 passing — the same 2 pre-existing,
+unrelated failures as §6/§7 (still unchanged, still out of scope).

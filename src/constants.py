@@ -127,9 +127,48 @@ TRUSTED_MEDIA_DOMAINS = {
 # "joined"/"signed"/"medical"/etc.), which is exactly the kind of consistency
 # gap that lets a genuinely-completed move ("has joined ... on loan") get
 # stuck at a lower confidence stage than the wording actually supports.
+#
+# DELIBERATELY NOT extended for transfer-recall in the 2026-07-30 pass: this
+# list also drives parser.py's universal `stage` field, which INJURY posts
+# use for their own wording (_avail_text: stage 4 = "FIT AGAIN"). Verified
+# empirically that adding transfer-only completion words here (e.g.
+# "announced", "completes") flips a genuinely-fresh, still-ongoing injury
+# post to stage 4 whenever a club statement uses that word anywhere in the
+# same tweet ("Club announced Player will be out for six weeks" -> wrongly
+# renders "FIT AGAIN"). Transfer-recall improvements belong in
+# TRANSFER_CONFIRM_CUES below instead, which only src/../main.py's
+# classify_post() reads for the transfer/loan branch — injury has its own
+# separate, earlier return in classify_post() and never consults it.
 STRONG_OFFICIAL_CUES = [
     "here we go", "official", "confirmed", "completed", "done deal",
     "sealed", "unveiled", "joins", "joined", "signs", "signed", "medical",
+]
+
+# Additional completed-deal wording for TRANSFER/LOAN confirmation ONLY
+# (main.py: classify_post()'s transfer/loan branch). Kept separate from
+# STRONG_OFFICIAL_CUES on purpose — see the note above it — so broadening
+# transfer recall can never change an injury post's stage/wording. Every
+# entry here is a phrase that only appears once a move is actually done;
+# "permanent transfer" / "free transfer" (deal TYPE, not status — already
+# used as stage-1 SPECULATION wording in parser.py's _SPEC_CUES) and
+# "agreement reached" (this codebase's existing AGREED tier is deliberately
+# one step below OFFICIAL for exactly this phrasing) are left out for the
+# same reason they're left out of STRONG_OFFICIAL_CUES.
+#
+# "finalised"/"finalized" and "contract until" were tried and REMOVED after
+# backtesting against the real historical queue/posted + queue/pending
+# corpus (203 real transfer/loan items — see VALIDATION_REDESIGN.md §9):
+#   - "finalised" false-matched "verbal agreement in place with details to
+#     be finalised soon" (future tense — NOT done yet) and "discovery rights
+#     compensation has now been finalised" (an ancillary fee between clubs,
+#     not the transfer itself).
+#   - "contract until" false-matched a player's EXISTING contract at his
+#     CURRENT club being cited as a reason he's hard to prise away — the
+#     opposite of evidence a new move is confirmed.
+# Both are real, not hypothetical, false positives — left out on that
+# evidence rather than intuition.
+TRANSFER_CONFIRM_CUES = [
+    "completes", "announces", "announced", "presented as", "unveiling",
 ]
 
 # Parsing Keywords
