@@ -523,7 +523,10 @@ class VerificationEngine:
         within_active = bool(previous_at and now - previous_at <= active_window)
         previous_facts = previous.get("facts", {})
 
-        if policy and within_active:
+        if not within_active:
+            return GateState.PASS, GateState.PASS, "new verified story outside active window"
+
+        if policy:
             conflict_fields = set(policy.conflict_fields)
             for field in conflict_fields:
                 old = previous_facts.get(field)
@@ -534,13 +537,54 @@ class VerificationEngine:
                     return GateState.WAIT, GateState.WAIT, f"new facts conflict with recent publication on {field}"
 
         old_status = EventStatus(previous.get("event_status", "UNKNOWN"))
-        material_changed = bool(policy and any(
-            normalize_fact(previous_facts.get(field)) != normalize_fact(facts.get(field))
-            for field in policy.material_fields
-        ))
-        if self.config.status_rank(status) <= self.config.status_rank(old_status) and not material_changed:
-            return GateState.FAIL, GateState.FAIL, "no new verified milestone or material fact"
-        return GateState.PASS, GateState.PASS, "verified progression"
+        newly_verified_fields, progressive_fields = self._progression_fields(
+            policy, previous_facts, facts
+        )
+        if progressive_fields:
+            fields = ", ".join(progressive_fields)
+            return GateState.PASS, GateState.PASS, f"verified progression in {fields}"
+        if newly_verified_fields:
+            fields = ", ".join(newly_verified_fields)
+            return GateState.PASS, GateState.PASS, f"new verified material facts: {fields}"
+        if (
+            not policy
+            and self.config.status_rank(status) > self.config.status_rank(old_status)
+        ):
+            return GateState.PASS, GateState.PASS, "verified status progression"
+        return GateState.FAIL, GateState.FAIL, "no new verified milestone or material fact"
+
+    def _progression_fields(
+        self,
+        policy: Any,
+        previous_facts: Mapping[str, Any],
+        facts: Mapping[str, Any],
+    ) -> tuple[list[str], list[str]]:
+        if not policy:
+            return [], []
+
+        def _present(value: Any) -> bool:
+            return value not in (None, "")
+
+        progressive: list[str] = []
+        new_material: list[str] = []
+        progressive_set = set(policy.progressive_fields)
+        material_set = set(policy.material_fields)
+        ordered = list(dict.fromkeys([*policy.progressive_fields, *policy.material_fields]))
+        for field in ordered:
+            old = previous_facts.get(field)
+            new = facts.get(field)
+            old_present = _present(old)
+            new_present = _present(new)
+            if not new_present:
+                continue
+            changed = (not old_present) or normalize_fact(old) != normalize_fact(new)
+            if not changed:
+                continue
+            if field in progressive_set:
+                progressive.append(field)
+            elif field in material_set and not old_present:
+                new_material.append(field)
+        return new_material, progressive
 
     def _story_ids(
         self,
