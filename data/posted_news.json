@@ -5202,20 +5202,64 @@
   },
   "last_read_health": {
     "feeds_total": 19,
-    "feeds_succeeded": 17,
-    "feeds_failed": 2,
-    "fail_ratio": 0.10526315789473684,
+    "feeds_succeeded": 6,
+    "feeds_failed": 13,
+    "fail_ratio": 0.6842105263157895,
     "failures": [
+      {
+        "feed_id": "google.premier_league.transfers",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=site%3Apremierleague.com+transfer+OR+signs+OR+joined&hl=en-GB&gl=GB&ceid=GB:en"
+      },
+      {
+        "feed_id": "google.premier_league.availability",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=site%3Apremierleague.com+injur+OR+suspended+OR+ruled+out&hl=en-GB&gl=GB&ceid=GB:en"
+      },
+      {
+        "feed_id": "google.transfer.reporting.romano",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=%22Fabrizio+Romano%22+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
+      },
+      {
+        "feed_id": "google.transfer.reporting.ornstein",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=%22David+Ornstein%22+football+transfer&hl=en-GB&gl=GB&ceid=GB:en"
+      },
+      {
+        "feed_id": "google.injury.reporting.dinnery",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=%22Ben+Dinnery%22+injury+OR+fitness+OR+ruled+out&hl=en-GB&gl=GB&ceid=GB:en"
+      },
       {
         "feed_id": "guardian.transfers",
         "error": "404 Client Error: Not Found for url: https://www.theguardian.com/football/transfers/rss"
+      },
+      {
+        "feed_id": "google.rootwire.premier_league",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=site%3Arootwiresoccer.com+premier+league&hl=en-GB&gl=GB&ceid=GB:en"
+      },
+      {
+        "feed_id": "official-clubs.discovery.1",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=%28site%3Aafcb.co.uk+OR+site%3Aarsenal.com+OR+site%3Aavfc.co.uk+OR+site%3Abrentfordfc.com+OR+site%3Abrightonandhovealbion.com%29+%28signs+OR+signed+OR+joined+OR+injury+OR+%22ruled+out%22+OR+suspended+OR+appointed+OR+"
+      },
+      {
+        "feed_id": "official-clubs.discovery.2",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=%28site%3Aburnleyfootballclub.com+OR+site%3Achelseafc.com+OR+site%3Acoventrycityfc.co.uk+OR+site%3Acpfc.co.uk+OR+site%3Aevertonfc.com%29+%28signs+OR+signed+OR+joined+OR+injury+OR+%22ruled+out%22+OR+suspended+OR+appoi"
+      },
+      {
+        "feed_id": "official-clubs.discovery.3",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=%28site%3Afulhamfc.com+OR+site%3Ahullcityafc.co.uk+OR+site%3Aitfc.co.uk+OR+site%3Alcfc.com+OR+site%3Aleedsunited.com%29+%28signs+OR+signed+OR+joined+OR+injury+OR+%22ruled+out%22+OR+suspended+OR+appointed+OR+%22contra"
+      },
+      {
+        "feed_id": "official-clubs.discovery.4",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=%28site%3Aliverpoolfc.com+OR+site%3Amancity.com+OR+site%3Amanutd.com+OR+site%3Anewcastleunited.com+OR+site%3Anottinghamforest.co.uk%29+%28signs+OR+signed+OR+joined+OR+injury+OR+%22ruled+out%22+OR+suspended+OR+appoint"
+      },
+      {
+        "feed_id": "official-clubs.discovery.5",
+        "error": "503 Server Error: Service Unavailable for url: https://news.google.com/rss/search?q=%28site%3Asafc.com+OR+site%3Asouthamptonfc.com+OR+site%3Atottenhamhotspur.com+OR+site%3Awhufc.com+OR+site%3Awolves.co.uk%29+%28signs+OR+signed+OR+joined+OR+injury+OR+%22ruled+out%22+OR+suspended+OR+appointed+OR+%22co"
       },
       {
         "feed_id": "bluesky.premier_injuries",
         "error": "HTTP Error 400: Bad Request"
       }
     ],
-    "at": "2026-08-03T01:23:29.902201+00:00"
+    "at": "2026-08-03T01:53:32.270860+00:00"
   },
   "posted_hashes": [
     "62e08d6321bb10cc96dc625efcbb7afc842737a49d2158e9c8de4c9d3853de50",
@@ -15588,7 +15632,7 @@
         "source_reliability:minimum authoritative reliability=0.000",
         "overall_confidence:noncompensatory weighted confidence=0.000"
       ],
-      "last_seen": "2026-08-03T01:24:09.704994+00:00"
+      "last_seen": "2026-08-03T02:01:21.083479+00:00"
     },
     "0448df2f76411194f743fa9af16ab7db": {
       "decision": "REJECT",
@@ -15615,16 +15659,16 @@
       "reasons": [
         "event_classification:conflicting or missing event classifications",
         "entity_validation:mandatory person/club identity or relationship is unresolved",
+        "sport_validation:football was not positively established",
         "source_provenance:no verified authoritative source yet",
         "source_url:authoritative source URL missing",
         "event_status:status=UNKNOWN; publishable=False",
         "official_confirmation:media/journalist evidence remains pending",
         "mandatory_facts:missing=[]; unsupported=[]",
         "temporal_consistency:awaiting authoritative timestamp",
-        "source_reliability:minimum authoritative reliability=0.000",
-        "overall_confidence:noncompensatory weighted confidence=0.000"
+        "source_reliability:minimum authoritative reliability=0.000"
       ],
-      "last_seen": "2026-08-03T01:24:13.839480+00:00"
+      "last_seen": "2026-08-03T02:01:23.347496+00:00"
     },
     "4949bb320bbfcad1bed6c5b72f4a55ec": {
       "decision": "REJECT",
@@ -15641,7 +15685,7 @@
         "source_reliability:minimum authoritative reliability=0.000",
         "overall_confidence:noncompensatory weighted confidence=0.000"
       ],
-      "last_seen": "2026-08-03T01:24:08.374061+00:00"
+      "last_seen": "2026-08-03T02:01:20.724965+00:00"
     },
     "555f2fb4eac8b179446575b5ccea6427": {
       "decision": "REJECT",
@@ -15658,7 +15702,7 @@
         "source_reliability:minimum authoritative reliability=0.000",
         "overall_confidence:noncompensatory weighted confidence=0.000"
       ],
-      "last_seen": "2026-08-03T01:24:08.455345+00:00"
+      "last_seen": "2026-08-03T02:01:20.729091+00:00"
     },
     "1a14caf5ee06edb630420d6b5740323e": {
       "decision": "PENDING",
@@ -15666,10 +15710,10 @@
       "status": "COMPLETED",
       "reasons": [
         "fact_consensus:conflicts={'club_to_id': {'club chelsea': ['club.chelsea', 'media.the_athletic', 'club.brighton-and-hove-albion', 'media.bbc_sport'], 'club brentford': ['media.the_guardian']}}",
-        "temporal_consistency:official confirmation is 33.4h old",
+        "temporal_consistency:official confirmation is 34.1h old",
         "overall_confidence:noncompensatory weighted confidence=0.000"
       ],
-      "last_seen": "2026-08-03T01:24:08.569670+00:00"
+      "last_seen": "2026-08-03T02:01:20.742003+00:00"
     },
     "f31cda7cef76a20887228e388d78e33e": {
       "decision": "PENDING",
@@ -15703,7 +15747,7 @@
         "source_reliability:minimum authoritative reliability=0.000",
         "overall_confidence:noncompensatory weighted confidence=0.000"
       ],
-      "last_seen": "2026-08-03T01:24:09.165761+00:00"
+      "last_seen": "2026-08-03T02:01:20.908435+00:00"
     },
     "9bdad8342ca3910574682a89f0515bff": {
       "decision": "REJECT",
@@ -15721,7 +15765,7 @@
         "source_reliability:minimum authoritative reliability=0.000",
         "overall_confidence:noncompensatory weighted confidence=0.000"
       ],
-      "last_seen": "2026-08-03T01:24:09.718144+00:00"
+      "last_seen": "2026-08-03T02:01:21.096910+00:00"
     },
     "5906b90cf1d55090906b450c9f4b4cca": {
       "decision": "REJECT",
@@ -15739,7 +15783,7 @@
         "mandatory_facts:missing=[]; unsupported=[]",
         "temporal_consistency:awaiting authoritative timestamp"
       ],
-      "last_seen": "2026-08-03T01:24:13.453386+00:00"
+      "last_seen": "2026-08-03T02:01:23.605194+00:00"
     },
     "5caf40e88ec08ebaaee10c1a51d6503a": {
       "decision": "REJECT",
@@ -15757,7 +15801,7 @@
         "source_reliability:minimum authoritative reliability=0.000",
         "overall_confidence:noncompensatory weighted confidence=0.000"
       ],
-      "last_seen": "2026-08-03T01:24:10.323879+00:00"
+      "last_seen": "2026-08-03T02:01:21.700156+00:00"
     },
     "71e2501d72fe230bd1d6d0e4b9c2f42c": {
       "decision": "PENDING",
@@ -15773,7 +15817,7 @@
         "source_reliability:minimum authoritative reliability=0.000",
         "overall_confidence:noncompensatory weighted confidence=0.000"
       ],
-      "last_seen": "2026-08-03T01:24:11.710420+00:00"
+      "last_seen": "2026-08-03T02:01:23.097232+00:00"
     },
     "f31f4b6852187a467f4a4caebaea5588": {
       "decision": "PENDING",
@@ -15811,10 +15855,10 @@
       "event": "TRANSFER",
       "status": "COMPLETED",
       "reasons": [
-        "temporal_consistency:official confirmation is 33.4h old",
+        "temporal_consistency:official confirmation is 34.0h old",
         "overall_confidence:noncompensatory weighted confidence=0.000"
       ],
-      "last_seen": "2026-08-03T01:24:12.624006+00:00"
+      "last_seen": "2026-08-03T02:01:20.821483+00:00"
     },
     "0b5b9a7025fa069fa9d7d97d3a277c33": {
       "decision": "REJECT",
