@@ -178,8 +178,7 @@ def _is_bad_name(low: str, event: str) -> bool:
     if any(w in NATIONALITY_ADJECTIVES for w in words): return True
     if any(w in ROLE_WORDS for w in words): return True
     if looks_like_club(low): return True
-    # A country or tournament/league name (or a country+tournament fragment
-    # glued together by the capitalized-word regex, e.g. "France World Cup")
+    # A country, tournament, league, or compound country-and-competition phrase
     # is never a player candidate. Rejecting it here means extraction tries
     # the NEXT capitalized run in the text instead of ever settling on it —
     # this is the first line of defence, independent of (and in addition to)
@@ -305,17 +304,26 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
     from_key = actual_current_club_key
     to_key = None
 
+    # A club immediately governed by the preposition "from" is an explicit
+    # origin, not a positional guess. This safely resolves "Brighton sign X
+    # from Leeds" while continuing to ignore comparison/interest clubs.
+    explicit_from = next((
+        club for club in clubs
+        if re.search(r"\bfrom\s+$", tl[:club_pos.get(club, 0)])
+    ), None)
+
     if actual_current_club_key:
         other_clubs = [c for c in clubs if c != actual_current_club_key]
         if other_clubs:
             to_key = other_clubs[0]
+    elif explicit_from:
+        from_key = explicit_from
+        destinations = [c for c in clubs if c != explicit_from]
+        to_key = destinations[0] if destinations else None
     elif clubs:
         to_key = clubs[0]
-        # from_key is NOT assigned positionally for non-FPL players.
-        # direction.resolve() in build_story() handles from_club via grammar
-        # ("from X", "agreed fee with X"). Positional second-club caused the
-        # Manu Kone "FROM BRIGHTON" false post: Brighton was a comparison club
-        # in the article, not Kone's actual club (AS Roma).
+        # No origin is assigned merely because a second club appears. Only the
+        # explicit grammar above can establish it for a non-FPL player.
 
     is_collapsed = has_word(["collapsed", "called off", "rejected", "deal off"], tl)
 

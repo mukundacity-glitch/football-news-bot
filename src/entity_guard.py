@@ -12,9 +12,8 @@ Taxonomy (classify_entity_detailed):
     JOURNALIST / MEDIA                       -> rejected
     COMPANY / BRAND / SPONSOR                -> rejected
     STADIUM / CLUB                           -> rejected
-    COUNTRY / COMPETITION / LEAGUE            -> rejected (national team / tournament / league,
-                                                 NEVER a transfer subject — "France World Cup",
-                                                 "Premier League", "Champions League" are not players)
+    COUNTRY / COMPETITION / LEAGUE            -> rejected (a national team,
+                                                 tournament, or league is never a transfer subject)
     UNKNOWN                                  -> rejected (junk / RSS fragment / noise)
 
 Hard invariant: an entity classified as COUNTRY or COMPETITION/LEAGUE can NEVER become
@@ -204,11 +203,10 @@ def detect_country_entity(name_norm) -> bool:
 
 
 def detect_competition_entity(name_norm) -> bool:
-    """True if the (normalized) name is a tournament/league/cup competition —
-    including a country+competition fragment glued together by a misparse
-    (e.g. 'france world cup', 'england euros'). Same strategy as clubs: exact
-    name match, OR >=2 significant-token overlap with a known competition, OR
-    a strong single-token indicator ('cup', 'bundesliga', 'afcon', ...)."""
+    """True if the normalized name is a tournament/league/cup competition,
+    including a country-and-competition fragment glued together by extraction.
+    Uses an exact match, significant token overlap, or a structural competition
+    indicator from the configurable knowledge base."""
     if not name_norm:
         return False
     toks = [t for t in name_norm.split() if t not in _STOP]
@@ -363,9 +361,8 @@ def classify_entity_detailed(name, text="", fpl_data=None):
         return "UNKNOWN", _reason("UNKNOWN", "unknown_entity")
 
     # 1. Competition / tournament / league misparsed as a person — checked
-    # BEFORE club detection because a country+competition fragment ("France
-    # World Cup") can also brush a club token by coincidence, and the
-    # competition read is the correct one. This is what stops a national-team
+    # before club detection because a compound country-and-competition fragment
+    # can also brush a club token by coincidence. This stops a national-team
     # tournament reference from ever being posted as a transfer subject,
     # regardless of source tier or "confirmed"/"official" wording in the text.
     if detect_competition_entity(name_norm):

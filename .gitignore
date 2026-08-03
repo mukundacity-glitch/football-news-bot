@@ -7,3 +7,23 @@ __pycache__/
 .venv/
 venv/
 env/
+
+# Runtime caches and generated verification artifacts
+data/fpl_cache.json
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+data/verification.sqlite3
+.cache/
+.pytest_cache/
+
+# Generated bot output (historical tracked files remain until a separate archive)
+fpl_drafts/
+queue/pending/*
+!queue/pending/.gitkeep
+queue/posted/*
+!queue/posted/.gitkeep
+queue/dryrun/
+queue/debug/*.jsonl
+queue/debug/rejected_latest.json
+queue/debug/decisions_*.json

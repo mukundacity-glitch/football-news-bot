@@ -38,39 +38,45 @@ def resolve_club_key(name: str) -> str | None:
             return CLUB_ALIASES[alias]
     return None
 
+def _valid_fpl_payload(data) -> bool:
+    return bool(
+        isinstance(data, dict)
+        and isinstance(data.get("teams"), list) and data.get("teams")
+        and isinstance(data.get("elements"), list) and data.get("elements")
+    )
+
+
 def fetch_fpl_data() -> dict | None:
-    """
-    Fetches and caches the official bootstrap-static FPL data feed.
-    Enforces a 24-hour cache limit to ensure data is fresh but not spamming the API.
+    """Fetch a fresh, schema-validated FPL registry and cache it atomically.
+
+    A missing/corrupt/stale cache never weakens validation: if the official API
+    cannot provide a valid payload, ``None`` is returned and V2 blocks publishing.
     """
     cache = Path("data/fpl_cache.json")
-    
-    # 1. Check local cache (Valid for 24 hours / 86400 seconds)
-    if cache.exists() and (datetime.now(timezone.utc).timestamp() - cache.stat().st_mtime < 86400):
+    now = datetime.now(timezone.utc).timestamp()
+    if cache.exists() and now - cache.stat().st_mtime < 86400:
         try:
-            with open(cache, "r", encoding="utf-8") as f: 
-                return json.load(f)
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            if _valid_fpl_payload(data):
+                return data
+            print("  [FEED ERROR] FPL cache schema invalid, forcing re-fetch.")
         except (json.JSONDecodeError, OSError) as e:
             print(f"  [FEED ERROR] Cache unreadable, forcing re-fetch: {e}")
 
-    # 2. Fetch fresh data if cache is missing or stale
     try:
         req = urllib.request.Request(
             "https://fantasy.premierleague.com/api/bootstrap-static/",
-            headers={"User-Agent": "Mozilla/5.0"}
+            headers={"User-Agent": "FPLVortexBot/2.0"},
         )
-        
-        # Added a 10-second timeout to prevent the thread from hanging indefinitely
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            
-        # 3. Write securely to local cache
+        if not _valid_fpl_payload(data):
+            raise ValueError("official FPL payload missing teams/elements")
         cache.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache, "w", encoding="utf-8") as f: 
-            json.dump(data, f)
-            
+        tmp = cache.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(cache)
         return data
-        
     except Exception as e:
         print(f"  [FEED ERROR] Failed syncing with FPL API: {e}")
         return None

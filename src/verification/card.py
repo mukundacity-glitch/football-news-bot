@@ -1,0 +1,136 @@
+"""Simple verified-facts-only image card for X posts."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict, List
+
+from PIL import Image, ImageDraw, ImageFont
+
+from .models import EventType, VerificationDecision
+from .source_registry import SourceRegistry
+
+
+_BG = (9, 16, 35)
+_PANEL = (18, 29, 58)
+_WHITE = (247, 249, 255)
+_MUTED = (173, 188, 216)
+_GREEN = (46, 204, 113)
+_BLUE = (73, 141, 255)
+
+
+def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    names = (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold
+        else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    )
+    for name in names:
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def create_verified_card(
+    decision: VerificationDecision,
+    sources: SourceRegistry,
+    output_path: str | Path,
+) -> str:
+    if not decision.may_publish:
+        raise ValueError("cannot render card for unverified decision")
+    facts = decision.verified_facts
+    image = Image.new("RGB", (1200, 675), _BG)
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((50, 45, 1150, 630), radius=28, fill=_PANEL)
+    draw.rectangle((50, 45, 1150, 55), fill=_GREEN)
+
+    event_label = {
+        EventType.TRANSFER: "CONFIRMED TRANSFER",
+        EventType.INJURY: "OFFICIAL INJURY UPDATE",
+        EventType.SUSPENSION: "OFFICIAL SUSPENSION",
+        EventType.MANAGER: "OFFICIAL MANAGER UPDATE",
+        EventType.CONTRACT: "OFFICIAL CONTRACT EXTENSION",
+        EventType.OFFICIAL_STATEMENT: "OFFICIAL CLUB STATEMENT",
+    }[decision.event_type]
+    draw.text((90, 85), event_label, font=_font(34, True), fill=_GREEN)
+
+    subject = str(
+        facts.get("subject_name") or facts.get("club_name") or "Official update"
+    )
+    subject = _ellipsize(draw, subject, _font(62, True), 1000)
+    draw.text((90, 150), subject, font=_font(62, True), fill=_WHITE)
+
+    lines = _fact_lines(decision)
+    y = 255
+    for line in lines[:4]:
+        line = _ellipsize(draw, line, _font(31), 1000)
+        draw.text((92, y), line, font=_font(31), fill=_WHITE)
+        y += 58
+
+    source_id = decision.source_ids[0] if decision.source_ids else ""
+    profile = sources.get(source_id)
+    source_name = profile.display_name if profile else source_id
+    draw.text((90, 555), f"Verified source: {source_name}", font=_font(25), fill=_MUTED)
+    draw.text((905, 555), "FPL VORTEX", font=_font(25, True), fill=_BLUE)
+
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path, format="PNG", optimize=True)
+    return str(path)
+
+
+def _fact_lines(decision: VerificationDecision) -> List[str]:
+    f = decision.verified_facts
+    if decision.event_type == EventType.TRANSFER:
+        destination = f.get("club_to_name")
+        origin = f.get("club_from_name")
+        route = f"{origin} → {destination}" if origin else f"Joined {destination}"
+        lines = [route]
+        if f.get("transfer_kind"):
+            lines.append(f"Move type: {str(f['transfer_kind']).title()}")
+        if f.get("fee"):
+            lines.append(f"Fee: {f['fee']}")
+        if f.get("contract_length"):
+            lines.append(f"Contract: {f['contract_length']}")
+        return lines
+    if decision.event_type == EventType.INJURY:
+        lines = [str(f.get("club_name"))]
+        status = str(f.get("injury_status") or "")
+        if len(status) <= 140:
+            lines.append(status)
+        return lines
+    if decision.event_type == EventType.SUSPENSION:
+        lines = [str(f.get("club_name"))]
+        status = str(f.get("suspension_status") or "")
+        if len(status) <= 140:
+            lines.append(status)
+        if f.get("suspension_length"):
+            lines.append(f"Length: {f['suspension_length']}")
+        return lines
+    if decision.event_type == EventType.MANAGER:
+        action = str(f.get("manager_action") or "").title()
+        return [f"{action} — {f.get('club_name')}"]
+    if decision.event_type == EventType.CONTRACT:
+        lines = [str(f.get("club_name"))]
+        if f.get("contract_length"):
+            lines.append(f"Terms: {f['contract_length']}")
+        return lines
+    topic = str(f.get("statement_topic") or "")
+    return [topic] if len(topic) <= 140 else []
+
+
+def _ellipsize(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    max_width: int,
+) -> str:
+    value = " ".join(str(text or "").split())
+    if draw.textbbox((0, 0), value, font=font)[2] <= max_width:
+        return value
+    while value and draw.textbbox((0, 0), value + "…", font=font)[2] > max_width:
+        value = value[:-1]
+    return value.rstrip() + "…"
