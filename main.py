@@ -83,8 +83,11 @@ from twikit import Client
 # ── SECRETS ──────────────────────────────────────────────────────────────
 X_AUTH_TOKEN = (os.getenv("X_AUTH_TOKEN") or "").strip()
 X_CT0_TOKEN = (os.getenv("X_CT0_TOKEN") or "").strip()
-X_POST_AUTH_TOKEN = (os.getenv("X_POST_AUTH_TOKEN") or "").strip()
-X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or "").strip()
+# Posting cookies fall back to the read-only pair so the scheduled workflow can
+# stay hands-off with a single maintained X cookie set. Dedicated posting
+# secrets still win when provided.
+X_POST_AUTH_TOKEN = (os.getenv("X_POST_AUTH_TOKEN") or X_AUTH_TOKEN or "").strip()
+X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or X_CT0_TOKEN or "").strip()
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 
@@ -104,6 +107,7 @@ def _env_int(name, default):
 
 # ── PATHS ────────────────────────────────────────────────────────────────
 POSTED_FILE = Path("posted_news.json")
+RUN_STATUS_FILE = Path("data/last_run_status.json")
 PENDING_DIR = Path("queue/pending")
 POSTED_DIR = Path("queue/posted")
 DRAFTS_DIR = Path("fpl_drafts")
@@ -284,11 +288,29 @@ def save_data(data: dict):
     with open(tmp, "w") as f: json.dump(data, f, indent=2)
     tmp.replace(POSTED_FILE)
 
+
+def write_run_status(status: dict):
+    try:
+        payload = dict(status or {})
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        RUN_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = RUN_STATUS_FILE.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        tmp.replace(RUN_STATUS_FILE)
+    except Exception as exc:
+        print(f"[STATUS] could not write run status: {exc}")
+
+
 def check_daily_limit(data: dict) -> bool:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if data["daily"]["date"] != today:
-        data["daily"] = {"date": today, "count": 0, "limit": DAILY_POST_LIMIT}
-    return data["daily"]["count"] < data["daily"]["limit"]
+    previous = dict(data.get("daily") or {})
+    count = int(previous.get("count", 0)) if previous.get("date") == today else 0
+    # Always sync the current configured limit, even mid-day, so workflow/env
+    # changes take effect immediately instead of waiting until tomorrow.
+    data["daily"] = {"date": today, "count": count, "limit": DAILY_POST_LIMIT}
+    limit = int(data["daily"].get("limit", DAILY_POST_LIMIT))
+    return True if limit <= 0 else data["daily"]["count"] < limit
 
 def increment_daily(data: dict):
     data["daily"]["count"] += 1
@@ -2383,15 +2405,15 @@ async def build_draft(item, data, fpl):
 # ── MAIN ─────────────────────────────────────────────────────────────────
 
 # ================== AUTO-POST SAFETY CONFIG ==================
-# ENABLE_AUTOPOST defaults OFF. Live publication requires both
-# ENABLE_AUTOPOST=true and the V2 rollout acknowledgement configured in
-# config/verification.json. --draft-only always wins.
+# Local/manual runs default to draft-only; the scheduled GitHub workflow can
+# opt into live posting through environment variables. --draft-only always wins.
 #
 # Policy: NEVER getting flagged is the priority. Posts go out one at a time,
 # spaced by human-like jitter (the real anti-flag mechanism). Highest-value
 # PLAYER news posts first (see EVENT_PRIORITY). Per-run and per-hour caps
 # defer overflow items to the next run rather than bursting. If X flags us,
 # the cooldown engages and blocks all posting until the back-off window clears.
+# Any cap set to 0 or a negative number means "unlimited".
 ENABLE_AUTOPOST = ((os.getenv("ENABLE_AUTOPOST") or "false").strip().lower() == "true")
 MAX_POSTS_PER_RUN = _env_int("MAX_POSTS_PER_RUN", 10)
 MAX_POSTS_PER_HOUR = _env_int("MAX_POSTS_PER_HOUR", 12)
@@ -2418,6 +2440,26 @@ EVENT_PRIORITY = {
     "injury": 0, "transfer": 1, "loan": 1, "loan_option": 1,
     "suspension": 2, "manager": 3, "renewal": 4, "stay": 4,
 }
+LIVE_POST_EVENT_NAMES = {"transfer", "loan", "loan_option", "injury", "suspension"}
+
+def _cap_label(value) -> str:
+    try:
+        return "unlimited" if int(value) <= 0 else str(int(value))
+    except Exception:
+        return str(value)
+
+
+def _positive_cap(value):
+    try:
+        ivalue = int(value)
+    except Exception:
+        return None
+    return ivalue if ivalue > 0 else None
+
+
+def _live_event_allowed(item: dict) -> bool:
+    return str(item.get("event") or "").lower() in LIVE_POST_EVENT_NAMES
+
 
 def _recent_post_count(data, within_seconds):
     now = datetime.now(timezone.utc)
@@ -2507,10 +2549,10 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
     print(f"  Duplicates blocked : {total_dup_blocked}  (should be > 0 if runs>1)")
     print(f"  Images OK (>=1KB)  : {total_img_ok}")
     print(f"  Images FAILED      : {total_img_fail}  (MUST be 0)")
-    print(f"  Daily cap          : {data['daily']['limit']}")
-    est = min(total_accepted, data['daily']['limit'])
-    print(f"  Est. posts/day     : ~{est} (capped at {data['daily']['limit']}; "
-          f"1/run × 30-min cron, hour cap {MAX_POSTS_PER_HOUR})")
+    print(f"  Daily cap          : {_cap_label(data['daily']['limit'])}")
+    est = total_accepted if int(data['daily']['limit']) <= 0 else min(total_accepted, data['daily']['limit'])
+    print(f"  Est. posts/day     : ~{est} (capped at {_cap_label(data['daily']['limit'])}; "
+          f"1/run × 30-min cron, hour cap {_cap_label(MAX_POSTS_PER_HOUR)})")
     print(f"  Classifier         : regex-only (no LLM)")
     print(f"  Cards written to   : {dryrun_dir}/")
     # ... (End of run_dry_run function)
@@ -2523,228 +2565,342 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
 
 async def main(post: bool = True):
     global _VERIFICATION_RUNTIME
-    # ================== POSTING MODE ==================
-    # Live posting only when ENABLE_AUTOPOST=true AND the run wasn't forced to
-    # draft-only (--draft-only). Otherwise we save drafts and post nothing.
-    if not ENABLE_AUTOPOST:
-        post = False
-        mode_str = "DRAFT-ONLY (set ENABLE_AUTOPOST=true to post live)"
-    elif not post:
-        mode_str = "DRAFT-ONLY (--draft-only)"
-    else:
-        mode_str = (f"LIVE AUTO-POST — safety caps: {MAX_POSTS_PER_RUN}/run, "
-                    f"{MAX_POSTS_PER_HOUR}/hr, jitter {POST_JITTER_RANGE_S[0]}-{POST_JITTER_RANGE_S[1]}s")
-    print(f"\n[BOT] Run — {datetime.now(timezone.utc).isoformat()} "
-          f"(classifier=regex, mode={mode_str})")
-    # ==================================================
-
-    init_club_data()
-    fpl = fetch_fpl_data()
-    data = load_data()
-    try:
-        bootstrap_config = V2VerificationConfig.load()
-        db_path = Path(bootstrap_config.database_config["path"])
-        rollout = bootstrap_config.rollout_config
-        rebuild_allowed = (
-            os.getenv(rollout["database_rebuild_environment_variable"], "")
-            == rollout["database_rebuild_required_value"]
-        )
-        if data.get("v2_database_initialized") and not db_path.exists() and not rebuild_allowed:
-            raise V2RuntimeUnavailable(
-                "V2 database history is missing although the compatibility ledger "
-                "says it was initialized; restore the Actions cache or use the "
-                "explicit audited rebuild acknowledgement"
-            )
-        _VERIFICATION_RUNTIME = VerificationRuntime(fpl_data=fpl)
-        data["v2_database_initialized"] = True
-        data["v2_database_schema"] = bootstrap_config.database_config["schema_version"]
-        print(
-            f"[V2] verification engine ready — entity_registry="
-            f"{_VERIFICATION_RUNTIME.entities.health_reason}, "
-            f"live_authorized={_VERIFICATION_RUNTIME.live_enabled}"
-        )
-    except Exception as exc:
-        _VERIFICATION_RUNTIME = None
-        post = False
-        print(f"[V2] FAIL-CLOSED: {exc}. Live posting disabled.")
-    if _VERIFICATION_RUNTIME is not None and not _VERIFICATION_RUNTIME.live_enabled:
-        post = False
-        print(
-            "[V2] SHADOW MODE — decisions and verified drafts may be created, "
-            "but X publishing is disabled."
-        )
-
-    # X safety: if a previous run was flagged/rate-limited, stay off X until the
-    # cooldown expires.
-    if post and in_cooldown(data):
-        print(f"[BOT] X safety cooldown active until {data.get('cooldown_until')} — "
-              f"not posting this run.")
-        post = False
-
-    if not check_daily_limit(data):
-        print("[BOT] Daily limit reached — nothing will post today.")
-
-    # Execute V2. Legacy extraction supplies hints only; V2 owns publication.
-    queue = await scrape(data, fpl=fpl, verification_runtime=_VERIFICATION_RUNTIME)
-    if not queue:
-        rh = data.get("last_read_health", {})
-        if rh.get("fail_ratio", 0) >= 0.15:
-            print("[BOT] No postable stories — but many sources failed to read. "
-                  "Likely a network/cookie issue, not a quiet news day. "
-                  "Check Nitter availability and RSS feeds, then re-run.")
-        else:
-            print("[BOT] Quiet run — no new stories cleared all gates (sources read OK).")
-        save_data(data)
-        return
-
+    started_at = datetime.now(timezone.utc).isoformat()
+    data = None
+    queue = []
     drafts = []
-    for item in queue:
-        built = await build_draft(item, data, fpl)
-        if built is not None:
-            drafts.append(built)
-    save_data(data)
-
-    if not post:
-        print(f"\n[BOT] DRAFT-ONLY mode — {len(drafts)} item(s) prepared. "
-              f"Images in {PENDING_DIR}/"
-              + (f", text in {DRAFTS_FOLDER}/" if SAVE_DRAFTS_TO_DISK else "")
-              + ". Set ENABLE_AUTOPOST=true to enable live posting.")
-        return
-
-    if not drafts:
-        print("[BOT] No items passed all validation gates this run.")
-        return
-
-    if not (X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN):
-        print("[BOT] ENABLE_AUTOPOST=true but posting credentials are missing. "
-              "Set X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN. Nothing was posted.")
-        return
-
-    print(f"\n[BOT] {len(drafts)} item(s) prepared — evaluating for live post…")
-
-    # Only fully CONFIRMED stories post live. classify_post() returns "confirmed"
-    # or None — there is no rumour path in the automated pipeline.
-    # REVIEW-tier stories (confidence 75-89) are held back and re-verified
-    # automatically on the next scheduled run; no manual step needed.
-    def _conf_ok(d):
-        return (
-            d.get("_v2_verified") is True
-            and d.get("confidence_decision") == _conf.AUTO_POST
-            and bool(d.get("_v2_decision"))
-        )
-
-    postable = [d for d in drafts if d.get("mode") == "confirmed" and _conf_ok(d)]
-    _held = [d for d in drafts if d.get("mode") == "confirmed" and not _conf_ok(d)]
-    if _held:
-        print(f"[BOT] {len(_held)} story(ies) need more corroboration (confidence "
-              f"75-89) — held, will re-verify automatically on the next run.")
-
-    if not postable:
-        print("[BOT] No confirmed stories cleared all gates this run.")
-        return
-
-    # ROUND-ROBIN CATEGORY SELECTION: a straight priority sort always puts
-    # every injury ahead of every transfer (injuries are structurally tier-0
-    # via the official FPL feed; transfers are structurally tier-1/2 via
-    # journalists). On a busy injury day that starves transfers out of every
-    # slot even when good transfer stories are ready and waiting. Instead,
-    # group by category, rank WITHIN each category by stage/tier as before,
-    # then interleave categories round-robin so limited slots get split
-    # fairly across injury / transfer / suspension rather than one category
-    # eating the whole run.
-    _CATEGORY = {
-        "injury": "injury",
-        "transfer": "transfer", "loan": "transfer", "loan_option": "transfer",
-        "suspension": "suspension",
-        "manager": "manager", "renewal": "manager", "stay": "manager",
+    postable = []
+    held = []
+    posted = 0
+    target = 0
+    status = {
+        "started_at": started_at,
+        "requested_live_posting": bool(post),
+        "autopost_env_enabled": ENABLE_AUTOPOST,
+        "live_authorized": False,
+        "posting_enabled": False,
+        "mode": None,
+        "queue_count": 0,
+        "draft_count": 0,
+        "postable_count": 0,
+        "held_count": 0,
+        "posted_count": 0,
+        "posting_target": 0,
+        "daily_limit_ok": None,
+        "daily_count": None,
+        "daily_limit": None,
+        "cooldown_until": None,
+        "feed_fail_ratio": None,
+        "feeds_total": None,
+        "feeds_failed": None,
+        "feed_failures": [],
+        "no_post_reason": None,
+        "auth_expired": False,
+        "x_backoff": None,
+        "run_exit": "running",
     }
-    _buckets = {}
-    for s in postable:
-        cat = _CATEGORY.get(s.get("event"), "other")
-        _buckets.setdefault(cat, []).append(s)
-    for cat in _buckets:
-        _buckets[cat].sort(key=lambda s: (
-            0 if s.get("collapsed") else 1,
-            -int(s.get("stage", 1)),
-        ))
-    _order = ["injury", "transfer", "suspension", "manager", "other"]
-    _round_robin = []
-    _idx = 0
-    while any(_buckets.get(c) for c in _order):
-        cat = _order[_idx % len(_order)]
-        if _buckets.get(cat):
-            _round_robin.append(_buckets[cat].pop(0))
-        _idx += 1
-    postable = _round_robin
-
-    posted_last_hour = _recent_post_count(data, 3600)
-    if posted_last_hour >= MAX_POSTS_PER_HOUR:
-        print(f"[BOT] Per-hour cap reached ({posted_last_hour}/{MAX_POSTS_PER_HOUR}) "
-              f"— skipping posting this run.")
-        return
 
     try:
-        post_client = Client("en-US")
-        post_client.set_cookies({"auth_token": X_POST_AUTH_TOKEN, "ct0": X_POST_CT0_TOKEN})
-    except Exception as e:
-        print(f"[BOT] could not init posting client: {e}")
-        return
+        # ================== POSTING MODE ==================
+        # Live posting only when ENABLE_AUTOPOST=true AND the run wasn't forced to
+        # draft-only (--draft-only). Otherwise we save drafts and post nothing.
+        if not ENABLE_AUTOPOST:
+            post = False
+            mode_str = "DRAFT-ONLY (set ENABLE_AUTOPOST=true to post live)"
+        elif not post:
+            mode_str = "DRAFT-ONLY (--draft-only)"
+        else:
+            mode_str = (
+                "LIVE AUTO-POST — safety caps: "
+                f"{_cap_label(MAX_POSTS_PER_RUN)}/run, "
+                f"{_cap_label(MAX_POSTS_PER_HOUR)}/hr, "
+                f"{_cap_label(DAILY_POST_LIMIT)}/day, "
+                f"jitter {POST_JITTER_RANGE_S[0]}-{POST_JITTER_RANGE_S[1]}s"
+            )
+        status["mode"] = mode_str
+        print(f"\n[BOT] Run — {started_at} (classifier=regex, mode={mode_str})")
+        # ==================================================
 
-    remaining_today = data["daily"]["limit"] - data["daily"]["count"]
-    remaining_hour = MAX_POSTS_PER_HOUR - posted_last_hour
-    # PRIORITY 2 — success cap, not attempt cap. We walk the FULL ranked list
-    # and stop only after target successful posts or when candidates run out.
-    # A duplicate (post_item -> False) is skipped, not run-ending.
-    target = max(0, min(MAX_POSTS_PER_RUN, remaining_today, remaining_hour))
-    print(f"[BOT] Up to {target} post(s) this run from {len(postable)} ranked "
-          f"candidate(s) (run cap {MAX_POSTS_PER_RUN}, {remaining_today} left "
-          f"today, {remaining_hour} left this hour).")
+        init_club_data()
+        fpl = fetch_fpl_data()
+        data = load_data()
+        try:
+            bootstrap_config = V2VerificationConfig.load()
+            db_path = Path(bootstrap_config.database_config["path"])
+            rollout = bootstrap_config.rollout_config
+            rebuild_allowed = (
+                os.getenv(rollout["database_rebuild_environment_variable"], "")
+                == rollout["database_rebuild_required_value"]
+            )
+            if data.get("v2_database_initialized") and not db_path.exists() and not rebuild_allowed:
+                raise V2RuntimeUnavailable(
+                    "V2 database history is missing although the compatibility ledger "
+                    "says it was initialized; restore the Actions cache or use the "
+                    "explicit audited rebuild acknowledgement"
+                )
+            _VERIFICATION_RUNTIME = VerificationRuntime(fpl_data=fpl)
+            data["v2_database_initialized"] = True
+            data["v2_database_schema"] = bootstrap_config.database_config["schema_version"]
+            status["live_authorized"] = bool(_VERIFICATION_RUNTIME.live_enabled)
+            print(
+                f"[V2] verification engine ready — entity_registry="
+                f"{_VERIFICATION_RUNTIME.entities.health_reason}, "
+                f"live_authorized={_VERIFICATION_RUNTIME.live_enabled}"
+            )
+        except Exception as exc:
+            _VERIFICATION_RUNTIME = None
+            post = False
+            status["no_post_reason"] = "verification_runtime_unavailable"
+            print(f"[V2] FAIL-CLOSED: {exc}. Live posting disabled.")
+        if _VERIFICATION_RUNTIME is not None and not _VERIFICATION_RUNTIME.live_enabled:
+            post = False
+            status["no_post_reason"] = status["no_post_reason"] or "shadow_mode"
+            print(
+                "[V2] SHADOW MODE — decisions and verified drafts may be created, "
+                "but X publishing is disabled."
+            )
 
-    posted = 0
-    for i, item in enumerate(postable):
-        if posted >= target:
-            break
-        if not check_daily_limit(data):
-            print("[BOT] Hit daily limit mid-batch — stopping.")
-            break
+        # X safety: if a previous run was flagged/rate-limited, stay off X until the
+        # cooldown expires.
+        if post and in_cooldown(data):
+            status["x_backoff"] = "cooldown"
+            status["no_post_reason"] = status["no_post_reason"] or "x_cooldown_active"
+            print(f"[BOT] X safety cooldown active until {data.get('cooldown_until')} — "
+                  f"not posting this run.")
+            post = False
 
-        jitter = random.randint(*POST_JITTER_RANGE_S)
-        print(f"  [PACING] waiting {jitter}s before posting (anti-spam jitter)…")
-        await asyncio.sleep(jitter)
+        status["daily_limit_ok"] = check_daily_limit(data)
+        if not status["daily_limit_ok"]:
+            status["no_post_reason"] = status["no_post_reason"] or "daily_limit_reached"
+            print("[BOT] Daily limit reached — nothing will post today.")
+
+        # Execute V2. Legacy extraction supplies hints only; V2 owns publication.
+        queue = await scrape(data, fpl=fpl, verification_runtime=_VERIFICATION_RUNTIME)
+        if not queue:
+            rh = data.get("last_read_health", {})
+            if rh.get("fail_ratio", 0) >= 0.15:
+                status["no_post_reason"] = status["no_post_reason"] or "feed_read_failures"
+                print("[BOT] No postable stories — but many sources failed to read. "
+                      "Likely a network/cookie issue, not a quiet news day. "
+                      "Check Nitter availability and RSS feeds, then re-run.")
+            else:
+                status["no_post_reason"] = status["no_post_reason"] or "no_v2_publishable_stories"
+                print("[BOT] Quiet run — no new stories cleared all gates (sources read OK).")
+            save_data(data)
+            return
+
+        for item in queue:
+            built = await build_draft(item, data, fpl)
+            if built is not None:
+                drafts.append(built)
+        save_data(data)
+
+        if not post:
+            status["no_post_reason"] = status["no_post_reason"] or "draft_only_mode"
+            print(f"\n[BOT] DRAFT-ONLY mode — {len(drafts)} item(s) prepared. "
+                  f"Images in {PENDING_DIR}/"
+                  + (f", text in {DRAFTS_FOLDER}/" if SAVE_DRAFTS_TO_DISK else "")
+                  + ". Set ENABLE_AUTOPOST=true to enable live posting.")
+            return
+
+        if not drafts:
+            status["no_post_reason"] = status["no_post_reason"] or "no_items_passed_draft_build"
+            print("[BOT] No items passed all validation gates this run.")
+            return
+
+        if not (X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN):
+            status["no_post_reason"] = status["no_post_reason"] or "missing_posting_credentials"
+            print("[BOT] ENABLE_AUTOPOST=true but posting credentials are missing. "
+                  "Set X_POST_AUTH_TOKEN/X_POST_CT0_TOKEN or X_AUTH_TOKEN/X_CT0_TOKEN. "
+                  "Nothing was posted.")
+            return
+
+        print(f"\n[BOT] {len(drafts)} item(s) prepared — evaluating for live post…")
+
+        # Only fully CONFIRMED stories post live. classify_post() returns "confirmed"
+        # or None — there is no rumour path in the automated pipeline.
+        # REVIEW-tier stories (confidence 75-89) are held back and re-verified
+        # automatically on the next scheduled run; no manual step needed.
+        def _conf_ok(d):
+            return (
+                d.get("_v2_verified") is True
+                and d.get("confidence_decision") == _conf.AUTO_POST
+                and bool(d.get("_v2_decision"))
+            )
+
+        confirmed = [d for d in drafts if d.get("mode") == "confirmed"]
+        postable = [d for d in confirmed if _conf_ok(d) and _live_event_allowed(d)]
+        held = [d for d in confirmed if not _conf_ok(d)]
+        non_target = [d for d in confirmed if _conf_ok(d) and not _live_event_allowed(d)]
+        if held:
+            print(f"[BOT] {len(held)} story(ies) need more corroboration (confidence "
+                  f"75-89) — held, will re-verify automatically on the next run.")
+        if non_target:
+            print(f"[BOT] {len(non_target)} confirmed non-target story(ies) skipped "
+                  f"(live scope is transfer / injury / suspension only).")
+
+        if not postable:
+            status["no_post_reason"] = status["no_post_reason"] or "no_confirmed_target_stories_after_post_filters"
+            print("[BOT] No confirmed transfer, injury, or suspension stories cleared all gates this run.")
+            return
+
+        # ROUND-ROBIN CATEGORY SELECTION: a straight priority sort always puts
+        # every injury ahead of every transfer (injuries are structurally tier-0
+        # via the official FPL feed; transfers are structurally tier-1/2 via
+        # journalists). On a busy injury day that starves transfers out of every
+        # slot even when good transfer stories are ready and waiting. Instead,
+        # group by category, rank WITHIN each category by stage/tier as before,
+        # then interleave categories round-robin so limited slots get split
+        # fairly across injury / transfer / suspension rather than one category
+        # eating the whole run.
+        _CATEGORY = {
+            "injury": "injury",
+            "transfer": "transfer", "loan": "transfer", "loan_option": "transfer",
+            "suspension": "suspension",
+            "manager": "manager", "renewal": "manager", "stay": "manager",
+        }
+        _buckets = {}
+        for s in postable:
+            cat = _CATEGORY.get(s.get("event"), "other")
+            _buckets.setdefault(cat, []).append(s)
+        for cat in _buckets:
+            _buckets[cat].sort(key=lambda s: (
+                0 if s.get("collapsed") else 1,
+                -int(s.get("stage", 1)),
+            ))
+        _order = ["injury", "transfer", "suspension", "manager", "other"]
+        _round_robin = []
+        _idx = 0
+        while any(_buckets.get(c) for c in _order):
+            cat = _order[_idx % len(_order)]
+            if _buckets.get(cat):
+                _round_robin.append(_buckets[cat].pop(0))
+            _idx += 1
+        postable = _round_robin
+
+        posted_last_hour = _recent_post_count(data, 3600)
+        hour_cap = _positive_cap(MAX_POSTS_PER_HOUR)
+        if hour_cap is not None and posted_last_hour >= hour_cap:
+            status["no_post_reason"] = status["no_post_reason"] or "hourly_cap_reached"
+            print(f"[BOT] Per-hour cap reached ({posted_last_hour}/{hour_cap}) "
+                  f"— skipping posting this run.")
+            return
 
         try:
-            if await post_item(post_client, item, data):
-                posted += 1
-            else:
-                # Blocked as duplicate/invalid — advance to next candidate
-                # instead of ending the run at zero.
-                print(f"  [SKIP] {item.get('key')} not posted — trying next ranked candidate.")
-                continue
-        except XBackoffError as be:
-            # X flagged automation / rate-limit — stop the ENTIRE run now.
-            # Never retry; the cooldown is already persisted.
-            print(f"[BOT] X-SAFETY STOP ({be}) — aborting posting run, no retries.")
-            break
+            post_client = Client("en-US")
+            post_client.set_cookies({"auth_token": X_POST_AUTH_TOKEN, "ct0": X_POST_CT0_TOKEN})
         except Exception as e:
-            if item.get("id") and item["id"] in data["posted_ids"]:
-                print(f"  [ERROR] {item['key']}: {e} — already recorded, NOT retrying")
-            else:
-                print(f"  [ERROR] {item['key']} (attempt 1): {e} — retrying once")
-                try:
-                    await asyncio.sleep(10)
-                    if await post_item(post_client, item, data):
-                        posted += 1
-                except XBackoffError as be:
-                    print(f"[BOT] X-SAFETY STOP ({be}) on retry — aborting posting run.")
-                    break
-                except Exception as e2:
-                    print(f"  [ERROR] {item['key']} (attempt 2): {e2} — skipping")
-                    if item.get("id") and item["id"] not in data["posted_ids"]:
-                        data["posted_ids"].append(item["id"])
-                        save_data(data)
+            status["no_post_reason"] = status["no_post_reason"] or "posting_client_init_failed"
+            print(f"[BOT] could not init posting client: {e}")
+            return
 
-    print(f"\n[BOT] {posted} post(s) published; {data['daily']['count']}/"
-          f"{data['daily']['limit']} used today.")
+        daily_limit = _positive_cap(data["daily"].get("limit", DAILY_POST_LIMIT))
+        remaining_today = (None if daily_limit is None
+                           else max(0, daily_limit - int(data["daily"].get("count", 0))))
+        remaining_hour = None if hour_cap is None else max(0, hour_cap - posted_last_hour)
+        run_cap = _positive_cap(MAX_POSTS_PER_RUN)
+        # PRIORITY 2 — success cap, not attempt cap. We walk the FULL ranked list
+        # and stop only after target successful posts or when candidates run out.
+        # A duplicate (post_item -> False) is skipped, not run-ending.
+        target = len(postable)
+        for cap in (run_cap, remaining_today, remaining_hour):
+            if cap is not None:
+                target = min(target, cap)
+        print(f"[BOT] Up to {target} post(s) this run from {len(postable)} ranked "
+              f"candidate(s) (run cap {_cap_label(MAX_POSTS_PER_RUN)}, "
+              f"{_cap_label(data['daily'].get('limit', DAILY_POST_LIMIT))} daily, "
+              f"{_cap_label(MAX_POSTS_PER_HOUR)} hourly).")
+        if target <= 0:
+            status["no_post_reason"] = status["no_post_reason"] or "posting_cap_reached"
+            print("[BOT] Posting caps leave no remaining slots this run.")
+            return
+
+        for item in postable:
+            if posted >= target:
+                break
+            if not check_daily_limit(data):
+                status["no_post_reason"] = status["no_post_reason"] or "daily_limit_reached_mid_batch"
+                print("[BOT] Hit daily limit mid-batch — stopping.")
+                break
+
+            jitter = random.randint(*POST_JITTER_RANGE_S)
+            print(f"  [PACING] waiting {jitter}s before posting (anti-spam jitter)…")
+            await asyncio.sleep(jitter)
+
+            try:
+                if await post_item(post_client, item, data):
+                    posted += 1
+                else:
+                    # Blocked as duplicate/invalid — advance to next candidate
+                    # instead of ending the run at zero.
+                    print(f"  [SKIP] {item.get('key')} not posted — trying next ranked candidate.")
+                    continue
+            except XBackoffError as be:
+                # X flagged automation / rate-limit — stop the ENTIRE run now.
+                # Never retry; the cooldown is already persisted.
+                if be.kind == "auth":
+                    status["auth_expired"] = True
+                    status["no_post_reason"] = "x_auth_expired"
+                else:
+                    status["x_backoff"] = be.kind
+                    status["no_post_reason"] = f"x_{be.kind}"
+                print(f"[BOT] X-SAFETY STOP ({be}) — aborting posting run, no retries.")
+                break
+            except Exception as e:
+                if item.get("id") and item["id"] in data["posted_ids"]:
+                    print(f"  [ERROR] {item['key']}: {e} — already recorded, NOT retrying")
+                else:
+                    print(f"  [ERROR] {item['key']} (attempt 1): {e} — retrying once")
+                    try:
+                        await asyncio.sleep(10)
+                        if await post_item(post_client, item, data):
+                            posted += 1
+                    except XBackoffError as be:
+                        if be.kind == "auth":
+                            status["auth_expired"] = True
+                            status["no_post_reason"] = "x_auth_expired"
+                        else:
+                            status["x_backoff"] = be.kind
+                            status["no_post_reason"] = f"x_{be.kind}"
+                        print(f"[BOT] X-SAFETY STOP ({be}) on retry — aborting posting run.")
+                        break
+                    except Exception as e2:
+                        print(f"  [ERROR] {item['key']} (attempt 2): {e2} — skipping")
+                        if item.get("id") and item["id"] not in data["posted_ids"]:
+                            data["posted_ids"].append(item["id"])
+                            save_data(data)
+
+        if posted == 0 and status["no_post_reason"] is None:
+            status["no_post_reason"] = "no_post_succeeded"
+
+        print(f"\n[BOT] {posted} post(s) published; {data['daily']['count']}/"
+              f"{_cap_label(data['daily'].get('limit', DAILY_POST_LIMIT))} used today.")
+    finally:
+        status["posting_enabled"] = bool(post)
+        status["queue_count"] = len(queue)
+        status["draft_count"] = len(drafts)
+        status["postable_count"] = len(postable)
+        status["held_count"] = len(held)
+        status["posted_count"] = posted
+        status["posting_target"] = target
+        if data is not None:
+            rh = data.get("last_read_health", {})
+            status["feed_fail_ratio"] = rh.get("fail_ratio")
+            status["feeds_total"] = rh.get("feeds_total") or rh.get("accounts_total")
+            status["feeds_failed"] = rh.get("feeds_failed") or rh.get("accounts_failed")
+            status["feed_failures"] = list(rh.get("failures") or [])[:10]
+            status["cooldown_until"] = data.get("cooldown_until")
+            status["daily_count"] = data.get("daily", {}).get("count")
+            status["daily_limit"] = data.get("daily", {}).get("limit")
+        if status["auth_expired"]:
+            status["run_exit"] = "auth_expired"
+        elif posted > 0:
+            status["run_exit"] = "posted"
+        elif status["no_post_reason"]:
+            status["run_exit"] = "no_post"
+        else:
+            status["run_exit"] = "completed"
+        write_run_status(status)
 
 
 if __name__ == "__main__":

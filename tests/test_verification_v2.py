@@ -393,6 +393,57 @@ def test_duplicate_publication_is_not_reposted(runtime):
     assert not second.may_publish
 
 
+def test_status_only_upgrade_for_same_transfer_does_not_repost(runtime):
+    first_obs = observation(
+        title="Chelsea officially confirm Danny Welbeck signing from Brighton",
+        source_id="club.chelsea",
+        url="https://www.chelseafc.com/en/news/article/welbeck-confirmed",
+        story=transfer_story(),
+    )
+    first = runtime.verify_observations([first_obs])
+    assert first.may_publish, first.reasons
+    assert first.status.value == "OFFICIAL"
+    runtime.repository.mark_published(first)
+
+    second_obs = observation(
+        title="Chelsea sign Danny Welbeck from Brighton",
+        source_id="official.premier_league",
+        url="https://www.premierleague.com/news/welbeck-signs",
+        story=transfer_story(),
+    )
+    second = runtime.verify_observations([second_obs])
+    assert second.decision == DecisionType.DUPLICATE
+    assert not second.may_publish
+    assert second.gate("story_progression").reason == "no new verified milestone or material fact"
+
+
+def test_transfer_reposts_when_new_fee_and_contract_are_verified(runtime):
+    first_obs = observation(
+        title="Chelsea officially confirm Danny Welbeck signing from Brighton",
+        source_id="club.chelsea",
+        url="https://www.chelseafc.com/en/news/article/welbeck-confirmed",
+        story=transfer_story(),
+    )
+    first = runtime.verify_observations([first_obs])
+    assert first.may_publish, first.reasons
+    runtime.repository.mark_published(first)
+
+    updated_story = transfer_story()
+    updated_story["fee"] = "£20m"
+    updated_story["contract"] = "five-year contract"
+    second_obs = observation(
+        title="Chelsea sign Danny Welbeck from Brighton on a five-year contract for £20m",
+        source_id="club.chelsea",
+        url="https://www.chelseafc.com/en/news/article/welbeck-five-year-contract",
+        story=updated_story,
+    )
+    second = runtime.verify_observations([second_obs])
+    assert second.decision == DecisionType.PUBLISH, second.reasons
+    assert second.verified_facts["fee"] == "£20m"
+    assert second.verified_facts["contract_length"] == "five-year contract"
+    assert "new verified material facts" in second.gate("story_progression").reason
+
+
 def test_freshly_republished_historical_feature_is_not_new_event(runtime):
     obs = observation(
         title="On this day 10 years ago: Chelsea signed Danny Welbeck from Brighton",

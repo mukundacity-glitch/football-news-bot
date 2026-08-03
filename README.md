@@ -29,17 +29,33 @@ BOT_PAUSED=true
 
 You can also disable the `FPL Vortex Bot` workflow in the Actions UI.
 
-## Safe rollout
+## Production behavior
 
-V2 starts in shadow mode. Live posting requires **all three** conditions:
+The scheduled GitHub workflow is configured for **set-and-forget live posting**:
+
+- live posting is enabled automatically on every scheduled run
+- every V2-verified **confirmed transfer, injury, and suspension** story is eligible to post
+- confirmed manager, contract, and other non-target items are intentionally skipped from live posting
+- per-run, per-hour, and daily posting caps are disabled in the workflow
+- every run writes a clear GitHub Actions summary explaining why it posted or did not post
+- if X posting cookies expire, the workflow opens/updates a GitHub issue and fails the run for visibility
+- `BOT_PAUSED=true` remains the single emergency kill switch
+
+Required GitHub Actions secrets for X posting:
 
 ```text
-BOT_PAUSED=false
-ENABLE_AUTOPOST=true
-VERIFICATION_V2_LIVE=I_ACCEPT_STRICT_V2
+X_POST_AUTH_TOKEN
+X_POST_CT0_TOKEN
 ```
 
-Do not set the final two variables until shadow results have been reviewed.
+If you prefer maintaining only one X cookie pair, the bot will fall back to:
+
+```text
+X_AUTH_TOKEN
+X_CT0_TOKEN
+```
+
+when the `X_POST_*` secrets are absent.
 
 ## Architecture
 
