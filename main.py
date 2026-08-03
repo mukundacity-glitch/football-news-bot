@@ -27,6 +27,16 @@ from src import confidence as _conf
 from src import direction as _direction
 from src.verifier import cross_verify
 from src.rejection_log import log_rejection
+from src.verification import (
+    DecisionType as V2DecisionType,
+    RuntimeUnavailable as V2RuntimeUnavailable,
+    VerificationDecision as V2VerificationDecision,
+    VerificationRuntime,
+)
+from src.verification.card import create_verified_card
+from src.verification.config import VerificationConfig as V2VerificationConfig
+from src.verification.ingestion import fetch_configured_news
+from src.verification.enrichment import enrich_official_item
 
 # Shared Canvas Namespace Initialization
 FONT = ImageFont.load_default()
@@ -78,6 +88,10 @@ X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or "").strip()
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 
+# Set once by main(); post_item uses the same verified decision ledger that
+# authorized the draft. A missing runtime always blocks live publication.
+_VERIFICATION_RUNTIME = None
+
 def _env_int(name, default):
     """Read an int env var, falling back to default for unset OR empty values.
     (An unset GitHub Actions Variable is passed through as an empty string.)"""
@@ -102,7 +116,7 @@ CHANNEL_HANDLE = "@FPLVortex"
 
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
-_LOGIC_VER = "2026-07-23-fpl-entity-guard-club-clean"
+_LOGIC_VER = "2026-08-02-verification-engine-v2"
 
 # ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
 from src.constants import (
@@ -236,14 +250,19 @@ def looks_like_reporter(name) -> bool:
 # Daily post cap. Generous, but capped so a freak news day can't burst-flag us.
 DAILY_POST_LIMIT = _env_int("DAILY_POST_LIMIT", 30)
 
+class StateCorruptionError(RuntimeError):
+    """Mutable publication state is unavailable; live posting must stop."""
+
+
 def load_data() -> dict:
     fresh = {"daily": {"date": "", "count": 0, "limit": DAILY_POST_LIMIT}, "stories": {}, "posted_ids": []}
     if POSTED_FILE.exists():
         try:
             with open(POSTED_FILE) as f: d = json.load(f)
         except (json.JSONDecodeError, OSError) as e:
-            print(f"[STATE] posted_news.json unreadable ({e}); starting fresh.")
-            d = fresh
+            raise StateCorruptionError(
+                f"{POSTED_FILE} unreadable ({e}); refusing to forget dedup history"
+            ) from e
     else: d = fresh
     d.setdefault("daily", fresh["daily"])
     d.setdefault("stories", {})
@@ -258,13 +277,6 @@ def load_data() -> dict:
     d.setdefault("posted_headlines", [])
     d["posted_hashes"] = [h for h in d["posted_hashes"] if "|" not in h]
 
-    _reset_names = {"dubravka", "wilson", "verkooijen"}
-    d["posted_headlines"] = [h for h in d["posted_headlines"] if not any(n in h.lower() for n in _reset_names)]
-    d["posted_hashes"] = [h for h in d["posted_hashes"] if not any(n in h.lower() for n in _reset_names)]
-    d["posted_ids"] = [i for i in d["posted_ids"] if not any(n in str(i).lower() for n in _reset_names)]
-    for k in list(d.get("stories", {}).keys()):
-        if any(n in k.lower() for n in _reset_names):
-            del d["stories"][k]
     return d
 
 def save_data(data: dict):
@@ -696,7 +708,7 @@ def classify_post(story, sources):
         tl_mgr = (story.get("body", "") + " " + (story.get("headline", "") or "")
                   + " " + (story.get("raw_text", "") or "")).lower()
         _MGR_CONFIRM_CUES = (
-            "appointed", "confirmed", "official", "announced", "signed",
+            "appoint", "appointed", "confirmed", "official", "announced", "signed",
             "here we go", "completed", "agreed", "sacked", "dismissed",
             "left the club", "departure confirmed", "leaves as",
         )
@@ -1251,15 +1263,14 @@ def save_draft(item: dict, body: str, image_path: str) -> str:
     
     if ev in ("loan", "loan_option"): event_folder = "Loans"
     elif ev == "injury": event_folder = "Injuries"
+    elif ev == "suspension": event_folder = "Suspensions"
     elif ev == "manager": event_folder = "Managers"
     elif ev in ("renewal", "stay"): event_folder = "Contracts"
+    elif ev == "official_statement": event_folder = "Official Statements"
     else: event_folder = "Transfers"
 
-    if anchor_key in set(CLUB_ALIASES.values()): club_folder = anchor_key.replace("_", " ")
-    elif any(k.lower() in anchor_key.lower() for k in {"Bayern", "Dortmund", "Leipzig", "Leverkusen"}): club_folder = "Bundesliga"
-    elif any(k.lower() in anchor_key.lower() for k in {"Real_Madrid", "Barcelona", "Atletico"}): club_folder = "LaLiga"
-    elif any(k.lower() in anchor_key.lower() for k in {"Juventus", "Inter", "AC_Milan"}): club_folder = "SeriaA"
-    else: club_folder = "Miscellaneous"
+    raw_folder = club_display(anchor_key) if anchor_key else "Miscellaneous"
+    club_folder = re.sub(r"[^A-Za-z0-9 ._-]", "", raw_folder).strip() or "Miscellaneous"
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     folder = Path("fpl_drafts") / today / club_folder / event_folder
@@ -1367,21 +1378,33 @@ def in_cooldown(data) -> bool:
         return False
 
 async def post_item(post_client, item, data):
-    fpl = fetch_fpl_data()
-    valid, why = validate_story(item, fpl)
-    if not valid:
-        print(f"  POST BLOCKED ({why}): {item.get('player')!r}")
-        if item.get("id") and item["id"] not in data["posted_ids"]:
-            data["posted_ids"].append(item["id"]); save_data(data)
+    # HARD AUTHORITY BOUNDARY: legacy candidates can never reach X. The signed
+    # V2 decision object must still have every critical gate in PASS state.
+    if not item.get("_v2_verified") or _VERIFICATION_RUNTIME is None:
+        print(f"  POST BLOCKED (missing_v2_authority): {item.get('player')!r}")
         return False
-    # Re-run the accuracy double-check at post time in case the card is being
-    # regenerated here (e.g. the cached draft image went missing).
-    ok, vwhy, _ = verify_card_data(item, fpl)
-    if not ok:
-        print(f"  POST BLOCKED (verify:{vwhy}): {item.get('player')!r}")
-        if item.get("id") and item["id"] not in data["posted_ids"]:
-            data["posted_ids"].append(item["id"]); save_data(data)
+    try:
+        v2_decision = V2VerificationDecision.from_dict(item["_v2_decision"])
+    except Exception as exc:
+        print(f"  POST BLOCKED (invalid_v2_decision:{exc}): {item.get('player')!r}")
         return False
+    if not v2_decision.may_publish:
+        print(f"  POST BLOCKED (v2_critical_gate_not_passed): {item.get('player')!r}")
+        return False
+    if not _VERIFICATION_RUNTIME.decision_integrity_ok(v2_decision):
+        print(f"  POST BLOCKED (v2_decision_integrity): {item.get('player')!r}")
+        return False
+    if _VERIFICATION_RUNTIME.repository.has_publication_fingerprint(v2_decision.fingerprint):
+        print(f"  POST BLOCKED (v2_database_duplicate): {item.get('player')!r}")
+        return False
+    # Never trust a caption carried from a mutable queue file; deterministically
+    # regenerate it from the verified fact set immediately before posting.
+    try:
+        item["draft_caption"] = _VERIFICATION_RUNTIME.renderer.render(v2_decision)
+    except Exception as exc:
+        print(f"  POST BLOCKED (v2_render:{exc}): {item.get('player')!r}")
+        return False
+
     dup, dreason = is_duplicate_content(item, data)
     if dup:
         print(f"  POST BLOCKED (duplicate:{dreason}): {item.get('player')!r}")
@@ -1389,28 +1412,19 @@ async def post_item(post_client, item, data):
             data["posted_ids"].append(item["id"]); save_data(data)
         return False
     image_path = item.get("draft_image") or str(PENDING_DIR / f"{_slug(item)}.png")
-    caption = item.get("draft_caption") or trim_for_twitter(
-        build_tweet_body(item, item["sources"], item.get("mode", "confirmed")), limit=278)
+    caption = item["draft_caption"]
 
     def _img_ok():
         return os.path.exists(image_path) and os.path.getsize(image_path) >= 1000
 
     if not _img_ok():
-        print(f"  [IMG] post-time card missing — regenerating: {item.get('player')!r}")
+        print(f"  [IMG] V2 card missing — regenerating from verified facts: {item.get('player')!r}")
         try:
-            if item.get("event") == "injury":
-                create_injury_image(item, item["sources"], image_path)
-            else:
-                # ARCHITECT FIX: Removed invalid 'await'
-                create_transfer_image(item, item["sources"], image_path, collapsed=item.get("collapsed", False))
+            create_verified_card(
+                v2_decision, _VERIFICATION_RUNTIME.sources, image_path
+            )
         except Exception as e:
-            print(f"  [IMG] regeneration raised: {e}")
-    if not _img_ok():
-        print(f"  [IMG] forcing BREAKING NEWS fallback card: {item.get('player')!r}")
-        try:
-            _create_fallback_card(item, item["sources"], image_path)
-        except Exception as e:
-            print(f"  [IMG] forced fallback card failed: {e}")
+            print(f"  [IMG] verified-card regeneration raised: {e}")
     if not _img_ok():
         print(f"  POST BLOCKED (no image could be produced): {item.get('player')!r}")
         return False
@@ -1437,6 +1451,10 @@ async def post_item(post_client, item, data):
             print(f"  [X-SAFETY] DUPLICATE (187) — already on X; recording dedup, will not retry: {item.get('player')!r}")
             if item.get("id") and item["id"] not in data["posted_ids"]:
                 data["posted_ids"].append(item["id"])
+            try:
+                _VERIFICATION_RUNTIME.repository.mark_published(v2_decision)
+            except Exception:
+                pass
             record_content_dedup(item, data)
             save_data(data)
             move_to_posted(item)
@@ -1458,9 +1476,15 @@ async def post_item(post_client, item, data):
         raise
 
     if posted_live:
+        try:
+            _VERIFICATION_RUNTIME.repository.mark_published(v2_decision)
+        except Exception as exc:
+            # The X post is already live. Preserve legacy dedup state and make the
+            # ledger failure visible; never retry this item in the same run.
+            print(f"  [V2-LEDGER] publication ledger failed after X success: {exc}")
         record_posted(item, data)
-        print(f"  ✅ POSTED [{status_label(item, item.get('mode'))}]: "
-              f"{item['player']} — {item['event']} (stage {item['stage']})")
+        print(f"  ✅ POSTED [V2 {v2_decision.status.value}]: "
+              f"{item['player']} — {v2_decision.event_type.value}")
         return True
 
     return False
@@ -1737,7 +1761,8 @@ async def fetch_rss_news():
 
     return out
 
-async def scrape(data):
+async def scrape_legacy(data):
+    """Pre-v2 pipeline retained for regression tests only; never called live."""
     fpl = fetch_fpl_data()
     story_map = {}
     seen = skipped = 0
@@ -1993,7 +2018,306 @@ async def scrape(data):
     
     return sorted(ready, key=lambda x: -(1 if x["collapsed"] else x["stage"]))
 
+
+# ── VERIFICATION ENGINE V2 LIVE PIPELINE ─────────────────────────────────
+def _v2_refine_candidate_hint(story: dict, source_item: dict, runtime) -> None:
+    """Replace the legacy default only when V2 finds a grounded event predicate."""
+    try:
+        document = runtime.documents.from_item(_v2_document_item(source_item))
+        classified = runtime.extractor.classifier.classify(document, None)
+    except Exception:
+        return
+    mapping = {
+        "TRANSFER": "transfer", "INJURY": "injury", "SUSPENSION": "suspension",
+        "MANAGER": "manager", "CONTRACT": "renewal",
+        "OFFICIAL_STATEMENT": "official_statement",
+    }
+    if (
+        classified.event_type.value in mapping
+        and classified.event_certainty >= runtime.config.threshold("event_certainty_min")
+    ):
+        story["event"] = mapping[classified.event_type.value]
+        if classified.event_type.value == "OFFICIAL_STATEMENT":
+            story["player"] = None
+
+
+def _v2_group_key(story: dict, item_id: str) -> str:
+    """Group competing claims by subject + event family, deliberately excluding
+    destination club so Arsenal/Chelsea claims about one player are compared as
+    conflicts rather than becoming unrelated stories."""
+    player = _norm_text(story.get("player") or "")
+    event = str(story.get("event") or "unknown").lower()
+    family = (
+        "transfer" if event in {"transfer", "loan", "loan_option", "free_transfer", "release"}
+        else "contract" if event in {"renewal", "stay", "contract_extension"}
+        else "manager" if event in {"manager", "managerial_change", "staff_appointment", "staff_departure"}
+        else event
+    )
+    return f"{player or 'unknown-' + item_id}|{family}"
+
+
+def _v2_document_item(item: dict) -> dict:
+    """Copy only immutable source-document fields into an observation."""
+    keys = (
+        "id", "document_id", "title", "summary", "full_text", "text", "source_url",
+        "publisher_url", "publisher_name", "source_id", "source_hint",
+        "source_handle", "username", "transport", "configured_direct_feed",
+        "declared_sport", "created_at", "published_at", "fetched_at", "feed_id",
+        "metadata", "_fpl_pre_built",
+    )
+    return {key: item.get(key) for key in keys if key in item}
+
+
+def _v2_project_verified_facts(item: dict, decision: V2VerificationDecision) -> None:
+    """Project only verified facts back onto the legacy card/post envelope."""
+    facts = decision.verified_facts
+    item["player"] = facts.get("subject_name") or facts.get("club_name") or item.get("player")
+    item["display_name"] = item["player"]
+    item["event"] = {
+        "TRANSFER": "loan" if facts.get("transfer_kind") == "loan" else "transfer",
+        "INJURY": "injury",
+        "SUSPENSION": "suspension",
+        "MANAGER": "manager",
+        "CONTRACT": "renewal",
+        "OFFICIAL_STATEMENT": "official_statement",
+    }.get(decision.event_type.value, item.get("event"))
+    if facts.get("club_from_name"):
+        item["from_club"] = facts["club_from_name"]
+        item["from_key"] = resolve_club_key(facts["club_from_name"])
+    if facts.get("club_to_name"):
+        item["to_club"] = facts["club_to_name"]
+        item["to_key"] = resolve_club_key(facts["club_to_name"])
+    if facts.get("club_name"):
+        item["from_club"] = facts["club_name"]
+        item["from_key"] = resolve_club_key(facts["club_name"])
+    item["fee"] = facts.get("fee")
+    item["contract"] = facts.get("contract_length")
+    item["diagnosis"] = facts.get("injury_status") or facts.get("suspension_status")
+    item["expected_return"] = facts.get("return_date")
+    item["staff_action"] = facts.get("manager_action")
+    item["stage"] = 4
+    item["collapsed"] = False
+    item["historical"] = False
+    item["mode"] = "confirmed"
+    item["rumour"] = False
+    item["sources"] = decision.source_ids
+    item["source_url"] = decision.source_url
+    item["confidence_score"] = round(decision.confidence * 100)
+    item["confidence_decision"] = _conf.AUTO_POST
+    item["_v2_verified"] = True
+    item["_v2_decision"] = decision.to_dict()
+    item["_v2_caption"] = decision.rendered_text
+    item["key"] = f"v2_{decision.story_id}"
+    item["id"] = decision.evidence_document_ids[0] if decision.evidence_document_ids else decision.story_id
+
+
+def _v2_log_decision(decision: V2VerificationDecision) -> None:
+    failed = [f"{g.name}={g.state.value}" for g in decision.gates if g.state.value != "PASS"]
+    print(
+        f"  [V2] decision={decision.decision.value} event={decision.event_type.value} "
+        f"status={decision.status.value} confidence={decision.confidence:.3f} "
+        f"story={decision.story_id}"
+        + (f" gates=[{', '.join(failed)}]" if failed else "")
+    )
+    for reason in decision.reasons[:5]:
+        print(f"       {reason}")
+
+
+async def scrape(data, fpl=None, verification_runtime=None):
+    """V2 candidate discovery → grounded claims → fail-closed decisions.
+
+    Legacy regex output is a hint only. No legacy score/classification can place
+    an item in the returned live queue.
+    """
+    runtime = verification_runtime
+    if runtime is None:
+        print("  [V2] verification runtime unavailable — fail closed, no candidates")
+        data["last_read_health"] = {
+            "fail_ratio": 1.0,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "reason": "verification_runtime_unavailable",
+        }
+        save_data(data)
+        return []
+    if fpl is None:
+        fpl = fetch_fpl_data()
+
+    rss_items, health = fetch_configured_news(runtime)
+    fpl_items = fetch_fpl_injury_news(fpl)
+    for item in fpl_items:
+        item.update({
+            "title": item.get("text", ""),
+            "summary": item.get("_fpl_pre_built", {}).get("body", ""),
+            "source_url": "https://fantasy.premierleague.com/api/bootstrap-static/",
+            "source_id": "official.fpl",
+            "source_hint": "official.fpl",
+            "source_handle": "officialfpl",
+            "transport": "DIRECT_API",
+            "configured_direct_feed": True,
+            "declared_sport": "football",
+            "feed_id": "official.fpl.bootstrap",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {"structured_official": True, "competition_id": "competition:premier-league"},
+        })
+    items = rss_items + fpl_items
+    data["last_read_health"] = health
+    print(
+        f"  [V2-READ] {len(rss_items)} RSS/social + {len(fpl_items)} structured FPL items; "
+        f"{health['feeds_failed']}/{health['feeds_total']} feeds failed"
+    )
+
+    groups = {}
+    max_age_hours = runtime.config.threshold("max_publication_age_hours")
+    collection_config = runtime.config.collection_config
+    official_enrichment_budget = int(collection_config["official_enrichment_budget"])
+    for source_item in items:
+        item_id = source_item["id"]
+        if item_id in data.get("posted_ids", []):
+            continue
+        created = _parse_rss_date(source_item.get("created_at"))
+        if created is None:
+            print(f"   [V2-SKIP] unknown publication time: {source_item.get('title', '')[:80]!r}")
+            continue
+        if (datetime.now(timezone.utc) - created).total_seconds() > max_age_hours * 3600:
+            continue
+
+        if "_fpl_pre_built" in source_item:
+            story = dict(source_item["_fpl_pre_built"])
+        else:
+            story = build_story(source_item.get("text", ""), fpl)
+            if official_enrichment_budget > 0:
+                try:
+                    probe = runtime.documents.from_item(_v2_document_item(source_item))
+                    profile = runtime.sources.get(probe.source.profile_id)
+                    if profile and profile.is_official and probe.source.verified:
+                        source_item = enrich_official_item(source_item, runtime)
+                        official_enrichment_budget -= 1
+                except Exception:
+                    pass
+        _v2_refine_candidate_hint(story, source_item, runtime)
+        story["media_url"] = source_item.get("media_url")
+        story["created_at"] = source_item.get("created_at")
+        story["source_url"] = source_item.get("source_url")
+        observation = {
+            "document": _v2_document_item(source_item),
+            "legacy_story": dict(story),
+        }
+        key = _v2_group_key(story, item_id)
+        group = groups.setdefault(key, {
+            "observations": [], "representative": story,
+            "legacy_sources": [],
+        })
+        group["observations"].append(observation)
+        group["legacy_sources"].append(source_item.get("username") or "unknown")
+
+    # Candidate evidence search can discover an official announcement that was
+    # not present in a configured feed. Every result is still re-extracted by V2.
+    read_client = None
+    if groups and X_AUTH_TOKEN and X_CT0_TOKEN:
+        try:
+            read_client = Client("en-US")
+            read_client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
+        except Exception as exc:
+            print(f"  [V2-X] read client unavailable: {exc}")
+    for group in list(groups.values())[: int(collection_config["cross_verify_budget"]) ]:
+        representative = group["representative"]
+        try:
+            result = await cross_verify(
+                representative,
+                known_sources=group["legacy_sources"],
+                read_client=read_client,
+                source_registry=runtime.sources,
+                entity_registry=runtime.entities,
+            )
+        except Exception as exc:
+            result = {"evidence": [], "log": [f"collector error: {exc}"]}
+        for evidence_item in result.get("evidence", []):
+            if official_enrichment_budget > 0:
+                enriched = enrich_official_item(evidence_item, runtime)
+                if enriched.get("metadata", {}).get("official_page_enriched"):
+                    official_enrichment_budget -= 1
+                evidence_item = enriched
+            evidence_text = (
+                evidence_item.get("title", "") + ". " + evidence_item.get("summary", "")
+            ).strip(". ")
+            evidence_story = build_story(evidence_text, fpl)
+            _v2_refine_candidate_hint(evidence_story, evidence_item, runtime)
+            evidence_story["created_at"] = evidence_item.get("created_at")
+            evidence_story["source_url"] = evidence_item.get("source_url")
+            group["observations"].append({
+                "document": evidence_item,
+                "legacy_story": evidence_story,
+            })
+        for line in result.get("log", [])[:4]:
+            print(f"             {line}")
+
+    ready = []
+    pending_v2 = data.setdefault("pending_v2", {})
+    for key, group in groups.items():
+        try:
+            decision = runtime.verify_observations(group["observations"])
+        except Exception as exc:
+            print(f"  [V2-ERROR] {key}: {exc} — fail closed")
+            continue
+        _v2_log_decision(decision)
+        pending_v2[decision.story_id] = {
+            "decision": decision.decision.value,
+            "event": decision.event_type.value,
+            "status": decision.status.value,
+            "reasons": decision.reasons[:10],
+            "last_seen": datetime.now(timezone.utc).isoformat(),
+        }
+        if not decision.may_publish:
+            continue
+        item = dict(group["representative"])
+        _v2_project_verified_facts(item, decision)
+        duplicate, duplicate_reason = is_duplicate_content(item, data)
+        if duplicate:
+            print(f"  [V2-DUPLICATE-LEGACY] {item.get('player')!r}: {duplicate_reason}")
+            continue
+        pending_v2.pop(decision.story_id, None)
+        ready.append(item)
+
+    # Keep the compact compatibility snapshot bounded; full evidence lives in SQLite.
+    if len(pending_v2) > 500:
+        oldest = sorted(pending_v2, key=lambda k: pending_v2[k].get("last_seen", ""))
+        for key in oldest[:-500]:
+            pending_v2.pop(key, None)
+    save_data(data)
+    return ready
+
+
 async def build_draft(item, data, fpl):
+    if item.get("_v2_verified"):
+        if _VERIFICATION_RUNTIME is None:
+            print("  [V2] draft blocked: verification runtime missing")
+            return None
+        try:
+            decision = V2VerificationDecision.from_dict(item["_v2_decision"])
+            if not decision.may_publish:
+                raise ValueError("decision no longer satisfies all critical gates")
+            if not _VERIFICATION_RUNTIME.decision_integrity_ok(decision):
+                raise ValueError("decision fingerprint/ledger integrity failed")
+            body = decision.rendered_text or _VERIFICATION_RUNTIME.renderer.render(decision)
+            image_path = PENDING_DIR / f"{_slug(item)}.png"
+            create_verified_card(
+                decision, _VERIFICATION_RUNTIME.sources, image_path
+            )
+            if not image_path.exists() or image_path.stat().st_size < 1000:
+                raise RuntimeError("verified card missing or empty")
+            if SAVE_DRAFTS_TO_DISK:
+                save_draft(item, body, image_path)
+            item["draft_caption"] = body
+            item["draft_image"] = str(image_path)
+            print(
+                f"  QUEUED [V2 {decision.status.value}]: {item.get('player')} — "
+                f"{decision.event_type.value} ({decision.confidence:.3f})"
+            )
+            return item
+        except Exception as exc:
+            print(f"  [V2] verified draft blocked: {exc}")
+            return None
+
     valid, why = validate_story(item, fpl)
     if not valid:
         print(f"  VALIDATION FAILED ({why}) — not drafting: {item.get('player')!r}")
@@ -2059,16 +2383,16 @@ async def build_draft(item, data, fpl):
 # ── MAIN ─────────────────────────────────────────────────────────────────
 
 # ================== AUTO-POST SAFETY CONFIG ==================
-# ENABLE_AUTOPOST defaults ON — the bot is fully hands-free by default.
-# To pause posting without a code change, set repo env var ENABLE_AUTOPOST=false.
-# To force draft-only for a single run, pass --draft-only on the CLI.
+# ENABLE_AUTOPOST defaults OFF. Live publication requires both
+# ENABLE_AUTOPOST=true and the V2 rollout acknowledgement configured in
+# config/verification.json. --draft-only always wins.
 #
 # Policy: NEVER getting flagged is the priority. Posts go out one at a time,
 # spaced by human-like jitter (the real anti-flag mechanism). Highest-value
 # PLAYER news posts first (see EVENT_PRIORITY). Per-run and per-hour caps
 # defer overflow items to the next run rather than bursting. If X flags us,
 # the cooldown engages and blocks all posting until the back-off window clears.
-ENABLE_AUTOPOST = ((os.getenv("ENABLE_AUTOPOST") or "true").strip().lower() == "true")
+ENABLE_AUTOPOST = ((os.getenv("ENABLE_AUTOPOST") or "false").strip().lower() == "true")
 MAX_POSTS_PER_RUN = _env_int("MAX_POSTS_PER_RUN", 10)
 MAX_POSTS_PER_HOUR = _env_int("MAX_POSTS_PER_HOUR", 12)
 # Random human-like pause before each post. THIS is the anti-flag mechanism —
@@ -2198,6 +2522,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
 
 
 async def main(post: bool = True):
+    global _VERIFICATION_RUNTIME
     # ================== POSTING MODE ==================
     # Live posting only when ENABLE_AUTOPOST=true AND the run wasn't forced to
     # draft-only (--draft-only). Otherwise we save drafts and post nothing.
@@ -2216,6 +2541,38 @@ async def main(post: bool = True):
     init_club_data()
     fpl = fetch_fpl_data()
     data = load_data()
+    try:
+        bootstrap_config = V2VerificationConfig.load()
+        db_path = Path(bootstrap_config.database_config["path"])
+        rollout = bootstrap_config.rollout_config
+        rebuild_allowed = (
+            os.getenv(rollout["database_rebuild_environment_variable"], "")
+            == rollout["database_rebuild_required_value"]
+        )
+        if data.get("v2_database_initialized") and not db_path.exists() and not rebuild_allowed:
+            raise V2RuntimeUnavailable(
+                "V2 database history is missing although the compatibility ledger "
+                "says it was initialized; restore the Actions cache or use the "
+                "explicit audited rebuild acknowledgement"
+            )
+        _VERIFICATION_RUNTIME = VerificationRuntime(fpl_data=fpl)
+        data["v2_database_initialized"] = True
+        data["v2_database_schema"] = bootstrap_config.database_config["schema_version"]
+        print(
+            f"[V2] verification engine ready — entity_registry="
+            f"{_VERIFICATION_RUNTIME.entities.health_reason}, "
+            f"live_authorized={_VERIFICATION_RUNTIME.live_enabled}"
+        )
+    except Exception as exc:
+        _VERIFICATION_RUNTIME = None
+        post = False
+        print(f"[V2] FAIL-CLOSED: {exc}. Live posting disabled.")
+    if _VERIFICATION_RUNTIME is not None and not _VERIFICATION_RUNTIME.live_enabled:
+        post = False
+        print(
+            "[V2] SHADOW MODE — decisions and verified drafts may be created, "
+            "but X publishing is disabled."
+        )
 
     # X safety: if a previous run was flagged/rate-limited, stay off X until the
     # cooldown expires.
@@ -2227,8 +2584,8 @@ async def main(post: bool = True):
     if not check_daily_limit(data):
         print("[BOT] Daily limit reached — nothing will post today.")
 
-    # Execute the new RSS-powered scrape logic (no read_client required)
-    queue = await scrape(data)
+    # Execute V2. Legacy extraction supplies hints only; V2 owns publication.
+    queue = await scrape(data, fpl=fpl, verification_runtime=_VERIFICATION_RUNTIME)
     if not queue:
         rh = data.get("last_read_health", {})
         if rh.get("fail_ratio", 0) >= 0.15:
@@ -2270,7 +2627,11 @@ async def main(post: bool = True):
     # REVIEW-tier stories (confidence 75-89) are held back and re-verified
     # automatically on the next scheduled run; no manual step needed.
     def _conf_ok(d):
-        return d.get("confidence_decision", "AUTO_POST") == _conf.AUTO_POST
+        return (
+            d.get("_v2_verified") is True
+            and d.get("confidence_decision") == _conf.AUTO_POST
+            and bool(d.get("_v2_decision"))
+        )
 
     postable = [d for d in drafts if d.get("mode") == "confirmed" and _conf_ok(d)]
     _held = [d for d in drafts if d.get("mode") == "confirmed" and not _conf_ok(d)]

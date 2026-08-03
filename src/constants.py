@@ -188,13 +188,9 @@ STAFF_BLOCK_KW = [
     "transfer chief", "negotiator",
 ]
 
-MANAGER_SURNAMES = {
-    "de zerbi", "zerbi", "guardiola", "arteta", "klopp", "slot", "postecoglou",
-    "ten hag", "amorim", "emery", "howe", "maresca", "iraola", "frank",
-    "nuno", "moyes", "dyche", "hurzeler", "glasner", "ancelotti", "xabi alonso",
-    "alonso", "flick", "simeone", "mourinho", "conte", "tuchel", "nagelsmann",
-    "wilder", "edwards", "robinson", "silva", "kompany", "lopetegui", "obi",
-}
+# No manager-name list. Staff identity is established from configured role cues,
+# provider snapshots, or related first-party announcements in V2.
+MANAGER_SURNAMES = set()
 
 # Position & Nationality filters (used by parser._is_bad_name)
 # Lowercase, single-token words — _is_bad_name lowercases and splits candidate names.

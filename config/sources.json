@@ -1,0 +1,1407 @@
+{
+  "schema_version": 2,
+  "sources": [
+    {
+      "id": "official.premier_league",
+      "display_name": "Premier League",
+      "handles": [
+        "premierleague"
+      ],
+      "domains": [
+        "premierleague.com"
+      ],
+      "publisher_group": "premier-league",
+      "kind": "OFFICIAL_LEAGUE",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "competition:premier-league"
+      ],
+      "official_scope": [
+        "premier_league_ecosystem"
+      ],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "official.fpl",
+      "display_name": "Fantasy Premier League",
+      "handles": [
+        "officialfpl",
+        "fpl"
+      ],
+      "domains": [
+        "fantasy.premierleague.com"
+      ],
+      "publisher_group": "premier-league",
+      "kind": "OFFICIAL_DATA",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "competition:premier-league"
+      ],
+      "official_scope": [
+        "premier_league_ecosystem"
+      ],
+      "allowed_events": [
+        "INJURY",
+        "SUSPENSION"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "official.fa",
+      "display_name": "The Football Association",
+      "handles": [
+        "fa"
+      ],
+      "domains": [
+        "thefa.com"
+      ],
+      "publisher_group": "football-association",
+      "kind": "GOVERNING_BODY",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "governing-body:fa"
+      ],
+      "official_scope": [
+        "english_football"
+      ],
+      "allowed_events": [
+        "SUSPENSION",
+        "MANAGER",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "official.fifa",
+      "display_name": "FIFA",
+      "handles": [
+        "fifacom"
+      ],
+      "domains": [
+        "fifa.com"
+      ],
+      "publisher_group": "fifa",
+      "kind": "GOVERNING_BODY",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "governing-body:fifa"
+      ],
+      "official_scope": [
+        "football"
+      ],
+      "allowed_events": [
+        "SUSPENSION",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.99,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.arsenal",
+      "display_name": "Arsenal",
+      "handles": [
+        "arsenal"
+      ],
+      "domains": [
+        "arsenal.com"
+      ],
+      "publisher_group": "club-arsenal",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:arsenal"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.aston-villa",
+      "display_name": "Aston Villa",
+      "handles": [
+        "avfcofficial"
+      ],
+      "domains": [
+        "avfc.co.uk"
+      ],
+      "publisher_group": "club-aston-villa",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:aston-villa",
+        "club:villa"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.bournemouth",
+      "display_name": "Bournemouth",
+      "handles": [
+        "afcbournemouth"
+      ],
+      "domains": [
+        "afcb.co.uk"
+      ],
+      "publisher_group": "club-bournemouth",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:bournemouth"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.brentford",
+      "display_name": "Brentford",
+      "handles": [
+        "brentfordfc"
+      ],
+      "domains": [
+        "brentfordfc.com"
+      ],
+      "publisher_group": "club-brentford",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:brentford"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.brighton-and-hove-albion",
+      "display_name": "Brighton and Hove Albion",
+      "handles": [
+        "officialbhafc"
+      ],
+      "domains": [
+        "brightonandhovealbion.com"
+      ],
+      "publisher_group": "club-brighton-and-hove-albion",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:brighton-and-hove-albion",
+        "club:brighton"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.burnley",
+      "display_name": "Burnley",
+      "handles": [
+        "burnleyofficial"
+      ],
+      "domains": [
+        "burnleyfootballclub.com"
+      ],
+      "publisher_group": "club-burnley",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:burnley"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.chelsea",
+      "display_name": "Chelsea",
+      "handles": [
+        "chelseafc"
+      ],
+      "domains": [
+        "chelseafc.com"
+      ],
+      "publisher_group": "club-chelsea",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:chelsea"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.coventry-city",
+      "display_name": "Coventry City",
+      "handles": [
+        "coventrycity"
+      ],
+      "domains": [
+        "coventrycityfc.co.uk"
+      ],
+      "publisher_group": "club-coventry-city",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:coventry-city",
+        "club:coventry"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.crystal-palace",
+      "display_name": "Crystal Palace",
+      "handles": [
+        "cpfc"
+      ],
+      "domains": [
+        "cpfc.co.uk"
+      ],
+      "publisher_group": "club-crystal-palace",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:crystal-palace",
+        "club:palace"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.everton",
+      "display_name": "Everton",
+      "handles": [
+        "everton"
+      ],
+      "domains": [
+        "evertonfc.com"
+      ],
+      "publisher_group": "club-everton",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:everton"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.fulham",
+      "display_name": "Fulham",
+      "handles": [
+        "fulhamfc"
+      ],
+      "domains": [
+        "fulhamfc.com"
+      ],
+      "publisher_group": "club-fulham",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:fulham"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.hull-city",
+      "display_name": "Hull City",
+      "handles": [
+        "hullcity"
+      ],
+      "domains": [
+        "hullcityafc.co.uk"
+      ],
+      "publisher_group": "club-hull-city",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:hull-city",
+        "club:hull"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.ipswich-town",
+      "display_name": "Ipswich Town",
+      "handles": [
+        "ipswichtown"
+      ],
+      "domains": [
+        "itfc.co.uk"
+      ],
+      "publisher_group": "club-ipswich-town",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:ipswich-town",
+        "club:ipswich"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.leeds-united",
+      "display_name": "Leeds United",
+      "handles": [
+        "leedsunited",
+        "lufc"
+      ],
+      "domains": [
+        "leedsunited.com"
+      ],
+      "publisher_group": "club-leeds-united",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:leeds-united",
+        "club:leeds"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.leicester-city",
+      "display_name": "Leicester City",
+      "handles": [
+        "lcfc"
+      ],
+      "domains": [
+        "lcfc.com"
+      ],
+      "publisher_group": "club-leicester-city",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:leicester-city",
+        "club:leicester"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.liverpool",
+      "display_name": "Liverpool",
+      "handles": [
+        "liverpoolfc",
+        "lfc"
+      ],
+      "domains": [
+        "liverpoolfc.com"
+      ],
+      "publisher_group": "club-liverpool",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:liverpool"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.manchester-city",
+      "display_name": "Manchester City",
+      "handles": [
+        "mancity"
+      ],
+      "domains": [
+        "mancity.com"
+      ],
+      "publisher_group": "club-manchester-city",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:manchester-city",
+        "club:man-city"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.manchester-united",
+      "display_name": "Manchester United",
+      "handles": [
+        "manutd"
+      ],
+      "domains": [
+        "manutd.com"
+      ],
+      "publisher_group": "club-manchester-united",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:manchester-united",
+        "club:man-utd"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.newcastle-united",
+      "display_name": "Newcastle United",
+      "handles": [
+        "nufc",
+        "newcastle_nufc"
+      ],
+      "domains": [
+        "newcastleunited.com"
+      ],
+      "publisher_group": "club-newcastle-united",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:newcastle-united",
+        "club:newcastle"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.nottingham-forest",
+      "display_name": "Nottingham Forest",
+      "handles": [
+        "nffc"
+      ],
+      "domains": [
+        "nottinghamforest.co.uk"
+      ],
+      "publisher_group": "club-nottingham-forest",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:nottingham-forest",
+        "club:nott-m-forest",
+        "club:nottm-forest"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.southampton",
+      "display_name": "Southampton",
+      "handles": [
+        "southamptonfc"
+      ],
+      "domains": [
+        "southamptonfc.com"
+      ],
+      "publisher_group": "club-southampton",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:southampton"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.sunderland",
+      "display_name": "Sunderland",
+      "handles": [
+        "sunderlandafc",
+        "safc"
+      ],
+      "domains": [
+        "safc.com"
+      ],
+      "publisher_group": "club-sunderland",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:sunderland"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.tottenham-hotspur",
+      "display_name": "Tottenham Hotspur",
+      "handles": [
+        "spursofficial"
+      ],
+      "domains": [
+        "tottenhamhotspur.com"
+      ],
+      "publisher_group": "club-tottenham-hotspur",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:tottenham-hotspur",
+        "club:spurs",
+        "club:tottenham"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.west-ham-united",
+      "display_name": "West Ham United",
+      "handles": [
+        "westham"
+      ],
+      "domains": [
+        "whufc.com"
+      ],
+      "publisher_group": "club-west-ham-united",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:west-ham-united",
+        "club:west-ham"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "club.wolverhampton-wanderers",
+      "display_name": "Wolverhampton Wanderers",
+      "handles": [
+        "wolves"
+      ],
+      "domains": [
+        "wolves.co.uk"
+      ],
+      "publisher_group": "club-wolverhampton-wanderers",
+      "kind": "OFFICIAL_CLUB",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [
+        "club:wolverhampton-wanderers",
+        "club:wolves",
+        "club:wolverhampton"
+      ],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "prior": {
+        "mean": 0.995,
+        "strength": 100
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "journalist.fabrizio_romano",
+      "display_name": "Fabrizio Romano",
+      "handles": [
+        "fabrizioromano"
+      ],
+      "domains": [
+        "fabrizioromano.com"
+      ],
+      "publisher_group": "fabrizio-romano",
+      "kind": "JOURNALIST",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "MANAGER",
+        "CONTRACT"
+      ],
+      "allowed_milestones": [
+        "HERE_WE_GO"
+      ],
+      "prior": {
+        "mean": 0.94,
+        "strength": 30
+      },
+      "search_enabled": true
+    },
+    {
+      "id": "journalist.david_ornstein",
+      "display_name": "David Ornstein",
+      "handles": [
+        "david_ornstein"
+      ],
+      "domains": [],
+      "publisher_group": "david-ornstein",
+      "kind": "JOURNALIST",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "MANAGER",
+        "CONTRACT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.95,
+        "strength": 30
+      },
+      "search_enabled": true
+    },
+    {
+      "id": "specialist.ben_dinnery",
+      "display_name": "Ben Dinnery",
+      "handles": [
+        "bendinnery",
+        "bendinnery.bsky.social"
+      ],
+      "domains": [],
+      "publisher_group": "premier-injuries",
+      "kind": "SPECIALIST",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "INJURY",
+        "SUSPENSION"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.91,
+        "strength": 25
+      },
+      "search_enabled": true
+    },
+    {
+      "id": "specialist.premier_injuries",
+      "display_name": "Premier Injuries",
+      "handles": [
+        "premierinjuries",
+        "premierinjuries.bsky.social"
+      ],
+      "domains": [
+        "premierinjuries.com"
+      ],
+      "publisher_group": "premier-injuries",
+      "kind": "SPECIALIST",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "INJURY",
+        "SUSPENSION"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.91,
+        "strength": 25
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "media.bbc_sport",
+      "display_name": "BBC Sport",
+      "handles": [
+        "bbcsport",
+        "bbc_sport"
+      ],
+      "domains": [
+        "bbc.co.uk",
+        "bbc.com"
+      ],
+      "publisher_group": "bbc",
+      "kind": "MEDIA",
+      "declared_sports": [],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.94,
+        "strength": 20
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "media.sky_sports",
+      "display_name": "Sky Sports",
+      "handles": [
+        "skysports",
+        "skysportsnews"
+      ],
+      "domains": [
+        "skysports.com"
+      ],
+      "publisher_group": "sky-sports",
+      "kind": "MEDIA",
+      "declared_sports": [],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.93,
+        "strength": 20
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "media.the_athletic",
+      "display_name": "The Athletic",
+      "handles": [
+        "theathletic",
+        "theathleticfc"
+      ],
+      "domains": [
+        "theathletic.com",
+        "nytimes.com"
+      ],
+      "publisher_group": "the-athletic",
+      "kind": "MEDIA",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.94,
+        "strength": 20
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "media.the_guardian",
+      "display_name": "The Guardian Sport",
+      "handles": [
+        "guardian_sport"
+      ],
+      "domains": [
+        "theguardian.com"
+      ],
+      "publisher_group": "guardian",
+      "kind": "MEDIA",
+      "declared_sports": [],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.9,
+        "strength": 20
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "media.telegraph",
+      "display_name": "The Telegraph Football",
+      "handles": [
+        "telegraph",
+        "telegraphfootball"
+      ],
+      "domains": [
+        "telegraph.co.uk"
+      ],
+      "publisher_group": "telegraph",
+      "kind": "MEDIA",
+      "declared_sports": [],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.91,
+        "strength": 20
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "media.espn",
+      "display_name": "ESPN",
+      "handles": [
+        "espn",
+        "espnfc",
+        "espnsoccer"
+      ],
+      "domains": [
+        "espn.com",
+        "espn.co.uk",
+        "espnfc.com"
+      ],
+      "publisher_group": "espn",
+      "kind": "MEDIA",
+      "declared_sports": [],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.88,
+        "strength": 20
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "media.lequipe",
+      "display_name": "L'Equipe",
+      "handles": [
+        "lequipe"
+      ],
+      "domains": [
+        "lequipe.fr"
+      ],
+      "publisher_group": "lequipe",
+      "kind": "MEDIA",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.89,
+        "strength": 20
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "media.kicker",
+      "display_name": "Kicker",
+      "handles": [
+        "kicker"
+      ],
+      "domains": [
+        "kicker.de"
+      ],
+      "publisher_group": "kicker",
+      "kind": "MEDIA",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.89,
+        "strength": 20
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "database.transfermarkt",
+      "display_name": "Transfermarkt",
+      "handles": [
+        "transfermarkt"
+      ],
+      "domains": [
+        "transfermarkt.com",
+        "transfermarkt.co.uk",
+        "transfermarkt.us"
+      ],
+      "publisher_group": "transfermarkt",
+      "kind": "MEDIA",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.86,
+        "strength": 20
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "media.fotmob",
+      "display_name": "FotMob",
+      "handles": [
+        "fotmob"
+      ],
+      "domains": [
+        "fotmob.com"
+      ],
+      "publisher_group": "fotmob",
+      "kind": "MEDIA",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.86,
+        "strength": 20
+      },
+      "search_enabled": false
+    },
+    {
+      "id": "media.rootwire",
+      "display_name": "RootWire Soccer",
+      "handles": [
+        "rootwire",
+        "rootwiresoccer"
+      ],
+      "domains": [
+        "rootwiresoccer.com"
+      ],
+      "publisher_group": "rootwire",
+      "kind": "MEDIA",
+      "declared_sports": [
+        "football"
+      ],
+      "official_for": [],
+      "official_scope": [],
+      "allowed_events": [
+        "TRANSFER",
+        "INJURY",
+        "SUSPENSION",
+        "MANAGER",
+        "CONTRACT",
+        "OFFICIAL_STATEMENT"
+      ],
+      "allowed_milestones": [],
+      "prior": {
+        "mean": 0.82,
+        "strength": 20
+      },
+      "search_enabled": false
+    }
+  ]
+}

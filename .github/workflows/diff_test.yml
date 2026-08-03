@@ -1,12 +1,17 @@
-name: V6 Diff Test Gate
+name: Verification V2 Test Gate
 
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -15,11 +20,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt || true
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Run diff test gate
-        run: |
-          python tools/diff_test_gate.py
+      - name: Compile Python sources
+        run: python -m compileall -q main.py src tools
+
+      - name: Run complete test suite
+        run: python -m pytest -q
+
+      - name: Run historical diff gate
+        run: python tools/diff_test_gate.py

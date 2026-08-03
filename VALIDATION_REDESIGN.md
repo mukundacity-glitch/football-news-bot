@@ -1,3 +1,10 @@
+# Legacy Validation History (Superseded by Verification Engine V2)
+
+> This file documents earlier incremental patches to the legacy regex pipeline.
+> It is retained as incident history only. The live publication authority is now
+> described in `VERIFICATION_V2.md`; statements below saying work was out of scope
+> are not descriptions of the V2 implementation.
+
 # Validation Pipeline: Root Cause Analysis & Redesign (2026-07-13)
 
 Scope note up front: this bot's only data source is X/Twitter (via `twikit`/Nitter,

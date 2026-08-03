@@ -16,22 +16,23 @@ concurrency:
   cancel-in-progress: false
 jobs:
   run-bot:
+    if: ${{ vars.BOT_PAUSED != 'true' }}
     runs-on: ubuntu-latest
 
     env:
       BOT_PAUSED: ${{ vars.BOT_PAUSED }}
 
     steps:
-      - name: Pause Check (Kill Switch)
-        run: |
-          echo "BOT_PAUSED=$BOT_PAUSED"
-          if [ "$BOT_PAUSED" = "true" ]; then
-            echo "BOT IS PAUSED - EXITING JOB"
-            exit 0
-          fi
-
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Restore V2 verification database
+        uses: actions/cache@v4
+        with:
+          path: data/verification.sqlite3
+          key: verification-v2-${{ github.repository_id }}-${{ github.run_id }}
+          restore-keys: |
+            verification-v2-${{ github.repository_id }}-
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -45,6 +46,10 @@ jobs:
           pip install playwright
           python -m playwright install chromium --with-deps
 
+      - name: Mandatory verification test gate
+        run: |
+          python -m pytest -q
+
       - name: Run bot
         id: run
         env:
@@ -52,9 +57,12 @@ jobs:
           X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
           X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
-          # Fully automatic — set ENABLE_AUTOPOST=false in repo Variables to pause
-          # without a code change (or set BOT_PAUSED=true above for a hard stop).
-          ENABLE_AUTOPOST: true
+          # Safe defaults: both variables must be explicitly configured before
+          # V2 can publish. BOT_PAUSED remains the emergency kill switch.
+          ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST }}
+          VERIFICATION_V2_LIVE: ${{ vars.VERIFICATION_V2_LIVE }}
+          VERIFICATION_V2_ALLOW_DB_REBUILD: ${{ vars.VERIFICATION_V2_ALLOW_DB_REBUILD }}
+          SAVE_DRAFTS_TO_DISK: false
           MAX_POSTS_PER_RUN: 4
           MAX_POSTS_PER_HOUR: 6
           DAILY_POST_LIMIT: 15
@@ -72,18 +80,20 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit $code
 
+      - name: Verification V2 shadow report
+        if: always()
+        run: python tools/v2_report.py || true
+
       - name: Persist state (dedup, daily count, deferred queue)
         if: always()
         run: |
           git config user.name "fpl-vortex-bot"
           git config user.email "bot@users.noreply.github.com"
-          # data/posted_news.json is the dedup + daily-count + cooldown ledger.
-          # It MUST be persisted every run or the bot forgets what it already
-          # posted and re-posts the same news. (Old paths kept for compatibility.)
+          # Persist only the compact compatibility JSON ledger. V2 SQLite is
+          # restored/saved by actions/cache; generated cards and logs are not
+          # committed, preventing continued repository growth.
           git add data/posted_news.json 2>/dev/null || true
           git add posted_news.json fpl_player_state.json 2>/dev/null || true
-          git add queue/ 2>/dev/null || true
-          git add fpl_drafts/ 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No state changes to commit."
           else

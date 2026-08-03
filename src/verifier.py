@@ -1,281 +1,291 @@
+"""Candidate evidence collector for verification engine v2.
+
+This module finds potentially relevant documents.  It does **not** confirm a
+story.  Every returned document is independently re-extracted and evaluated by
+the fail-closed verification engine, which compares canonical facts.
 """
-FPL VORTEX — Automatic Cross-Verification Engine.
 
-Replaces the manual verification step entirely: every candidate story is
-automatically checked against independent, reliable outlets BEFORE the
-publish decision is made:
-
-  • Official club websites (the club's own domain — tier-1 confirmation)
-  • Google News (aggregated verification across the trusted press)
-  • FotMob, Sky Sports, BBC Sport, The Athletic, Guardian, Telegraph
-  • Elite journalists on X (Fabrizio Romano, David Ornstein) — best-effort,
-    only when read cookies are configured
-
-Every independent corroborating outlet found is merged into the story's
-source list as its canonical handle, so the EXISTING tier / classification /
-confidence machinery upgrades the story naturally:
-
-  - a second trusted outlet    -> multiple_sources signal (+10)
-  - the club's own website     -> official_source signal (+15) + CONFIRMED
-  - an elite journalist on X   -> elite_source signal (+5) + CONFIRMED path
-
-A story no reliable outlet corroborates never reaches the AUTO_POST
-threshold; it is simply re-checked automatically on the next scheduled run
-(sources accumulate as the story develops). There is no human review step
-anywhere in the loop.
-
-All network calls are best-effort: any failure degrades to "no extra
-corroboration found" and can never crash the pipeline.
-"""
+from __future__ import annotations
 
 import calendar
 import re
 import time
 import urllib.parse
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import feedparser
 import requests
 
-from src.constants import (
-    JOURNALISTS, CLUB_OFFICIAL_DOMAINS, TRUSTED_MEDIA_DOMAINS,
-)
+from src.verification.entities import EntityRegistry
+from src.verification.source_registry import SourceRegistry
+
 
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q={q}&hl=en-GB&gl=GB&ceid=GB:en"
-_UA = {"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0; +https://x.com/FPLVortex)"}
+_UA = {"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/2.0; +https://x.com/FPLVortex)"}
 HTTP_TIMEOUT_S = 12
-MAX_AGE_DAYS = 3          # corroboration must be as fresh as the news itself
+MAX_AGE_DAYS = 3
 MAX_ENTRIES_PER_QUERY = 25
-
-# Words too generic to identify a club inside a headline.
-_GENERIC_CLUB_WORDS = {"united", "city", "town", "club", "albion", "hotspur",
-                       "forest", "the", "and", "real", "athletic"}
-
-_EVENT_KW = {
-    "injury": ("injur", "ruled out", "out for", "scan", "surgery", "hamstring",
-               "knee", "ankle", "fitness", "doubt", "sidelined", "blow", "return"),
-    "suspension": ("suspend", "ban", "red card", "sent off", "miss"),
-    "manager": ("manager", "head coach", "appoint", "sack", "boss", "coach",
-                "in charge", "job"),
+_GENERIC_CLUB_WORDS = {
+    "united", "city", "town", "club", "albion", "hotspur", "forest",
+    "the", "and", "real", "athletic",
+}
+_EVENT_CANDIDATE_TERMS = {
+    "injury": ("injur", "ruled out", "out for", "scan", "surgery", "fitness", "sidelined", "return"),
+    "suspension": ("suspend", "ban", "red card", "sent off"),
+    "manager": ("manager", "head coach", "appoint", "sack", "in charge"),
     "renewal": ("contract", "new deal", "extend", "renew", "stay"),
     "stay": ("contract", "new deal", "extend", "renew", "stay", "remain"),
 }
-_TRANSFER_KW = ("transfer", "sign", "deal", "join", "move", "bid", "fee",
-                "medical", "agree", "loan", "talks", "swoop", "switch", "exit")
-
-
-def _norm_handle(h: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", (h or "").lower())
-
-
-def _surname(name: str) -> str:
-    toks = [t for t in re.split(r"[\s\-']+", (name or "").strip()) if t]
-    if not toks:
-        return ""
-    last = toks[-1].lower()
-    # Very short surnames ("Sá") match too loosely — use the full name instead.
-    return last if len(last) >= 3 else " ".join(toks).lower()
-
-
-def _club_tokens(story: dict) -> set:
-    toks = set()
-    for f in ("to_club", "from_club", "to_key", "from_key"):
-        for w in re.split(r"[\s_\-]+", str(story.get(f) or "").lower()):
-            if len(w) >= 4 and w not in _GENERIC_CLUB_WORDS:
-                toks.add(w)
-    return toks
-
-
-def matches_story(text: str, story: dict) -> bool:
-    """A headline corroborates a story only if it names the player AND carries
-    a club token or an event cue for the same kind of news."""
-    tl = " " + (text or "").lower() + " "
-    sur = _surname(story.get("player"))
-    if not sur or sur not in tl:
-        return False
-    if any(t in tl for t in _club_tokens(story)):
-        return True
-    kws = _EVENT_KW.get(story.get("event"), _TRANSFER_KW)
-    return any(k in tl for k in kws)
-
-
-# Signals that indicate a story's outcome is the OPPOSITE of what was claimed.
-# If verification sources carry these phrases alongside the player's name, the
-# story is contradicted — it should be blocked, not corroborated.
+_TRANSFER_CANDIDATE_TERMS = (
+    "transfer", "sign", "deal", "join", "move", "bid", "fee", "medical",
+    "agree", "loan", "talks", "switch", "exit",
+)
 _CONTRADICTION_SIGNALS = (
-    "bid rejected", "rejected bid", "rejected a bid",
-    "bid turned down", "bid knocked back", "knocked back",
-    "not for sale", "refuses to sell", "refused to sell",
-    "rejected move", "rejects move", "rejects a move",
-    "deal collapsed", "falls through", "fell through", "has fallen through",
-    "pulled out", "pulls out", "no deal", "deal off",
-    "failed to agree", "unable to agree",
-    "free agent", "terminated contract", "by mutual agreement",
-    "stays at", "remains at", "signs new deal", "new deal signed",
-    "extends contract", "contract extension signed",
-    "turned down a bid", "turned down an offer",
+    "bid rejected", "rejected bid", "not for sale", "deal collapsed",
+    "falls through", "fell through", "pulled out", "no deal", "deal off",
+    "failed to agree", "stays at", "remains at", "extends contract",
 )
 
 
-def _contradicts_story(text: str, story: dict) -> bool:
-    """True when a verification headline signals the deal was rejected/dead/wrong.
-    Requires the player's surname to be present so generic headlines don't fire."""
-    tl = " " + (text or "").lower() + " "
-    sur = _surname(story.get("player"))
-    if not sur or sur not in tl:
+def _norm_handle(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def _surname(name: str) -> str:
+    parts = [p for p in re.split(r"[\s\-']+", (name or "").strip()) if p]
+    if not parts:
+        return ""
+    return parts[-1].lower() if len(parts[-1]) >= 3 else " ".join(parts).lower()
+
+
+def _club_tokens(story: Dict[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    for field in ("to_club", "from_club", "to_key", "from_key"):
+        for token in re.split(r"[\s_\-]+", str(story.get(field) or "").lower()):
+            if len(token) >= 4 and token not in _GENERIC_CLUB_WORDS:
+                tokens.add(token)
+    return tokens
+
+
+def matches_story(text: str, story: Dict[str, Any]) -> bool:
+    """Broad candidate-retrieval match, never a verification decision."""
+    lowered = " " + (text or "").lower() + " "
+    surname = _surname(story.get("player"))
+    if not surname or not re.search(r"(?<![a-z])" + re.escape(surname) + r"(?![a-z])", lowered):
         return False
-    return any(s in tl for s in _CONTRADICTION_SIGNALS)
+    if any(re.search(r"(?<![a-z])" + re.escape(t) + r"(?![a-z])", lowered) for t in _club_tokens(story)):
+        return True
+    terms = _EVENT_CANDIDATE_TERMS.get(story.get("event"), _TRANSFER_CANDIDATE_TERMS)
+    return any(term in lowered for term in terms)
 
 
-def _too_old(entry) -> bool:
-    tp = entry.get("published_parsed") or entry.get("updated_parsed")
-    if not tp:
-        return False  # queries are already scoped with when:Nd
-    return (time.time() - calendar.timegm(tp)) > MAX_AGE_DAYS * 86400
+def _contradicts_story(text: str, story: Dict[str, Any]) -> bool:
+    lowered = " " + (text or "").lower() + " "
+    surname = _surname(story.get("player"))
+    if not surname or not re.search(r"(?<![a-z])" + re.escape(surname) + r"(?![a-z])", lowered):
+        return False
+    return any(signal in lowered for signal in _CONTRADICTION_SIGNALS)
 
 
-def _entry_domain(entry) -> str:
-    """Publisher domain of a Google News entry. entry.link is a Google
-    redirect, so prefer the <source href=...> publisher URL."""
-    src = entry.get("source") or {}
-    href = src.get("href") if isinstance(src, dict) else getattr(src, "href", "")
-    link = href or entry.get("link", "")
-    host = urllib.parse.urlparse(link).netloc.lower()
-    return host[4:] if host.startswith("www.") else host
+def _too_old(entry: Any) -> bool:
+    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not parsed:
+        return False  # v2 temporal gate will refuse authoritative unknown dates
+    return (time.time() - calendar.timegm(parsed)) > MAX_AGE_DAYS * 86400
 
 
-def _handle_for_domain(domain: str):
-    """(canonical_handle, kind) for a publisher domain, or (None, None)."""
-    if not domain:
-        return None, None
-    for d, handle in TRUSTED_MEDIA_DOMAINS.items():
-        if domain == d or domain.endswith("." + d):
-            return handle, "media"
-    for _club, (d, handle) in CLUB_OFFICIAL_DOMAINS.items():
-        if domain == d or domain.endswith("." + d):
-            return handle, "official"
-    return None, None
+def _entry_publisher_url(entry: Any) -> str:
+    source = entry.get("source") or {}
+    return (
+        source.get("href", "") if isinstance(source, dict)
+        else getattr(source, "href", "")
+    ) or ""
 
 
-def _google_news(query: str, log: list) -> list:
+def _entry_publisher_name(entry: Any) -> str:
+    source = entry.get("source") or {}
+    return (
+        source.get("title", "") if isinstance(source, dict)
+        else getattr(source, "title", "")
+    ) or ""
+
+
+def _google_news(query: str, log: List[str]) -> List[Any]:
     url = GOOGLE_NEWS_RSS.format(q=urllib.parse.quote(query))
     try:
-        resp = requests.get(url, headers=_UA, timeout=HTTP_TIMEOUT_S)
-        resp.raise_for_status()
-    except Exception as e:
-        log.append(f"google news unreachable for {query!r}: {e}")
+        response = requests.get(url, headers=_UA, timeout=HTTP_TIMEOUT_S)
+        response.raise_for_status()
+    except Exception as exc:
+        log.append(f"Google News unavailable for {query!r}: {exc}")
         return []
-    feed = feedparser.parse(resp.content)
-    return list(feed.entries or [])[:MAX_ENTRIES_PER_QUERY]
+    return list(feedparser.parse(response.content).entries or [])[:MAX_ENTRIES_PER_QUERY]
 
 
-def _official_domains_for(story: dict) -> list:
-    out = []
-    for f in ("to_key", "from_key"):
-        k = story.get(f)
-        if k and k in CLUB_OFFICIAL_DOMAINS:
-            out.append(CLUB_OFFICIAL_DOMAINS[k])
-    return out
+def _entry_evidence(entry: Any, profile_id: str) -> Dict[str, Any]:
+    return {
+        "title": entry.get("title", ""),
+        "summary": re.sub(r"<[^>]+>", " ", entry.get("summary", "") or "").strip(),
+        "source_url": entry.get("link"),
+        "publisher_url": _entry_publisher_url(entry),
+        "publisher_name": _entry_publisher_name(entry),
+        "source_id": profile_id,
+        "source_hint": None,
+        "transport": "GOOGLE_NEWS",
+        "configured_direct_feed": False,
+        "declared_sport": None,
+        "created_at": entry.get("published") or entry.get("updated"),
+        "feed_id": "cross_verifier.google_news",
+    }
 
 
-async def _x_journalists(read_client, story: dict, log: list) -> list:
-    """Best-effort check of elite journalists' recent posts on X. Skipped
-    silently when no read client is available."""
-    found = []
+def _official_profiles_for_story(
+    story: Dict[str, Any],
+    source_registry: SourceRegistry,
+    entity_registry: Optional[EntityRegistry],
+) -> List[Any]:
+    club_ids = set()
+    if entity_registry:
+        for field in ("to_key", "to_club", "from_key", "from_club"):
+            value = story.get(field)
+            if value and (record := entity_registry.resolve_club(str(value).replace("_", " "))):
+                club_ids.add(record.id)
+    profiles = []
+    for profile in source_registry.all():
+        if not profile.is_official or not profile.domains:
+            continue
+        if club_ids & set(profile.official_for):
+            profiles.append(profile)
+        elif "premier_league_ecosystem" in profile.official_scope and club_ids:
+            profiles.append(profile)
+    return profiles
+
+
+async def _x_journalist_evidence(
+    read_client: Any,
+    story: Dict[str, Any],
+    source_registry: SourceRegistry,
+    log: List[str],
+) -> List[Dict[str, Any]]:
     if read_client is None:
-        return found
-    sur = _surname(story.get("player"))
-    if not sur:
-        return found
-    for j in JOURNALISTS[:4]:
+        return []
+    surname = _surname(story.get("player"))
+    if not surname:
+        return []
+    evidence = []
+    for profile in (p for p in source_registry.all() if p.search_enabled):
+        if not profile.handles:
+            continue
+        handle = profile.handles[0]
         try:
-            res = await read_client.search_tweet(f"from:{j} {sur}", "Latest")
-        except Exception as e:
-            log.append(f"X @{j}: search failed ({e})")
+            results = await read_client.search_tweet(f"from:{handle} {surname}", "Latest")
+        except Exception as exc:
+            log.append(f"X @{handle}: search failed ({exc})")
             continue
-        for tw in list(res or [])[:10]:
-            text = getattr(tw, "text", "") or getattr(tw, "full_text", "") or ""
-            if matches_story(text, story):
-                found.append(j.lower())
-                log.append(f"X @{j}: corroborates ✓ {text[:70]!r}")
-                break
-    return found
+        for tweet in list(results or [])[:10]:
+            text = getattr(tweet, "text", "") or getattr(tweet, "full_text", "") or ""
+            if not matches_story(text, story):
+                continue
+            tweet_id = getattr(tweet, "id", None)
+            evidence.append({
+                "title": text,
+                "summary": "",
+                "source_url": f"https://x.com/{handle}/status/{tweet_id}" if tweet_id else None,
+                "source_handle": handle,
+                "source_id": profile.id,
+                "transport": "X",
+                "configured_direct_feed": False,
+                "declared_sport": "football" if "football" in profile.declared_sports else None,
+                "created_at": str(getattr(tweet, "created_at", "") or "") or None,
+                "feed_id": "cross_verifier.x",
+            })
+            log.append(f"X @{handle}: candidate evidence found")
+            break
+    return evidence
 
 
-async def cross_verify(story: dict, known_sources=(), read_client=None) -> dict:
-    """Verify a story against independent reliable outlets.
-
-    Returns {"handles": [new corroborating handles], "official_confirmed":
-    bool, "n_independent": int, "log": [human-readable check lines]}.
-    Handles already present in known_sources are not double-counted.
-    """
-    log, handles = [], []
-    known = {_norm_handle(s) for s in (known_sources or [])}
-
-    def _add(h):
-        n = _norm_handle(h)
-        if n and n not in known:
-            known.add(n)
-            handles.append(h)
-
-    player = (story.get("player") or "").strip()
-    if not player:
-        return {"handles": [], "official_confirmed": False,
-                "n_independent": 0, "log": ["no player name to verify"]}
-
+async def cross_verify(
+    story: Dict[str, Any],
+    known_sources: Sequence[str] = (),
+    read_client: Any = None,
+    *,
+    source_registry: Optional[SourceRegistry] = None,
+    entity_registry: Optional[EntityRegistry] = None,
+) -> Dict[str, Any]:
+    """Collect independently attributable documents for a candidate story."""
+    source_registry = source_registry or SourceRegistry.load()
+    log: List[str] = []
+    evidence: List[Dict[str, Any]] = []
+    handles: List[str] = []
+    known = {_norm_handle(source) for source in known_sources}
+    groups = set()
+    contradiction_groups = set()
     official_confirmed = False
-    n_contradictions = 0
+    player = str(story.get("player") or "").strip()
+    if not player:
+        return {
+            "handles": [], "evidence": [], "official_confirmed": False,
+            "n_independent": 0, "contradicted": False,
+            "n_contradictions": 0, "log": ["no subject to search"],
+        }
 
-    # 1) Google News aggregate check — one query covers BBC, Sky Sports,
-    #    The Athletic, FotMob, Guardian, Telegraph AND official club sites.
-    for entry in _google_news(f'"{player}" football when:{MAX_AGE_DAYS}d', log):
-        if _too_old(entry):
-            continue
+    def accept_entry(entry: Any) -> None:
+        nonlocal official_confirmed
+        publisher_url = _entry_publisher_url(entry)
+        profile = source_registry.profile_for_domain(publisher_url)
+        if not profile:
+            return
         title = entry.get("title", "")
-        # Contradiction check BEFORE corroboration: if this headline signals
-        # the deal was rejected/dead/wrong, count it against the story rather
-        # than as a supporting source. Two contradictions from independent
-        # outlets marks the story as contradicted and blocks it from posting.
         if _contradicts_story(title, story):
-            n_contradictions += 1
-            log.append(f"CONTRADICTION ({_entry_domain(entry)}): {title[:70]!r}")
-            continue
+            contradiction_groups.add(profile.publisher_group)
+            log.append(f"candidate contradiction ({profile.display_name}): {title[:90]}")
+            return
         if not matches_story(title, story):
-            continue
-        handle, kind = _handle_for_domain(_entry_domain(entry))
-        if not handle:
-            continue
-        _add(handle)
-        if kind == "official":
-            official_confirmed = True
-        log.append(f"{_entry_domain(entry)}: {title[:70]!r} ✓")
+            return
+        if profile.publisher_group in groups:
+            return
+        groups.add(profile.publisher_group)
+        evidence.append(_entry_evidence(entry, profile.id))
+        handle = profile.handles[0] if profile.handles else profile.id
+        if _norm_handle(handle) not in known:
+            known.add(_norm_handle(handle))
+            handles.append(handle)
+        official_confirmed = official_confirmed or profile.is_official
+        log.append(f"candidate evidence ({profile.display_name}): {title[:90]}")
 
-    # 2) Direct official-club-website check (site:-scoped query) when the
-    #    club's own site didn't already appear in the aggregate results.
+    for entry in _google_news(f'"{player}" football when:{MAX_AGE_DAYS}d', log):
+        if not _too_old(entry):
+            accept_entry(entry)
+
+    # Search only domains configured as official for a club in this claim. The
+    # final engine still requires exact fact extraction and source relationship.
     if not official_confirmed:
-        for domain, handle in _official_domains_for(story):
-            time.sleep(0.4)
-            for entry in _google_news(f"site:{domain} {_surname(player)} when:7d", log):
-                if matches_story(entry.get("title", ""), story):
-                    _add(handle)
-                    official_confirmed = True
-                    log.append(f"official club site {domain}: ✓")
+        surname = _surname(player)
+        for profile in _official_profiles_for_story(story, source_registry, entity_registry):
+            for domain in profile.domains:
+                for entry in _google_news(f"site:{domain} {surname} when:{MAX_AGE_DAYS}d", log):
+                    if not _too_old(entry):
+                        accept_entry(entry)
+                if official_confirmed:
                     break
             if official_confirmed:
                 break
 
-    # 3) Elite journalists on X.
-    for h in await _x_journalists(read_client, story, log):
-        _add(h)
-
-    # Two or more independent sources contradicting the story = it's false.
-    # A single contradiction could be a misparsed headline; two is a pattern.
-    contradicted = n_contradictions >= 2
+    x_evidence = await _x_journalist_evidence(read_client, story, source_registry, log)
+    for item in x_evidence:
+        profile = source_registry.get(item["source_id"])
+        if profile and profile.publisher_group not in groups:
+            groups.add(profile.publisher_group)
+            evidence.append(item)
+            handle = profile.handles[0] if profile.handles else profile.id
+            if _norm_handle(handle) not in known:
+                handles.append(handle)
 
     return {
         "handles": handles,
+        "evidence": evidence,
         "official_confirmed": official_confirmed,
-        "n_independent": len(handles),
-        "contradicted": contradicted,
-        "n_contradictions": n_contradictions,
+        "n_independent": len(groups),
+        "contradicted": len(contradiction_groups) >= 2,
+        "n_contradictions": len(contradiction_groups),
         "log": log,
     }

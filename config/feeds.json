@@ -1,0 +1,136 @@
+{
+  "schema_version": 2,
+  "feeds": [
+    {
+      "id": "google.premier_league.transfers",
+      "url": "https://news.google.com/rss/search?q=site%3Apremierleague.com+transfer+OR+signs+OR+joined&hl=en-GB&gl=GB&ceid=GB:en",
+      "transport": "GOOGLE_NEWS",
+      "source_hint": "official.premier_league",
+      "declared_sport": "football",
+      "max_entries": 20
+    },
+    {
+      "id": "google.premier_league.availability",
+      "url": "https://news.google.com/rss/search?q=site%3Apremierleague.com+injur+OR+suspended+OR+ruled+out&hl=en-GB&gl=GB&ceid=GB:en",
+      "transport": "GOOGLE_NEWS",
+      "source_hint": "official.premier_league",
+      "declared_sport": "football",
+      "max_entries": 20
+    },
+    {
+      "id": "google.transfer.reporting.romano",
+      "url": "https://news.google.com/rss/search?q=%22Fabrizio+Romano%22+football+transfer&hl=en-GB&gl=GB&ceid=GB:en",
+      "transport": "GOOGLE_NEWS",
+      "source_hint": null,
+      "declared_sport": "football",
+      "max_entries": 20
+    },
+    {
+      "id": "google.transfer.reporting.ornstein",
+      "url": "https://news.google.com/rss/search?q=%22David+Ornstein%22+football+transfer&hl=en-GB&gl=GB&ceid=GB:en",
+      "transport": "GOOGLE_NEWS",
+      "source_hint": null,
+      "declared_sport": "football",
+      "max_entries": 20
+    },
+    {
+      "id": "google.injury.reporting.dinnery",
+      "url": "https://news.google.com/rss/search?q=%22Ben+Dinnery%22+injury+OR+fitness+OR+ruled+out&hl=en-GB&gl=GB&ceid=GB:en",
+      "transport": "GOOGLE_NEWS",
+      "source_hint": null,
+      "declared_sport": "football",
+      "max_entries": 20
+    },
+    {
+      "id": "bbc.premier_league",
+      "url": "https://feeds.bbci.co.uk/sport/football/premier-league/rss.xml",
+      "transport": "DIRECT_RSS",
+      "source_hint": "media.bbc_sport",
+      "declared_sport": "football",
+      "max_entries": 20
+    },
+    {
+      "id": "bbc.football",
+      "url": "https://feeds.bbci.co.uk/sport/football/rss.xml",
+      "transport": "DIRECT_RSS",
+      "source_hint": "media.bbc_sport",
+      "declared_sport": "football",
+      "max_entries": 20
+    },
+    {
+      "id": "transfermarkt.news",
+      "url": "https://www.transfermarkt.com/rss/news",
+      "transport": "DIRECT_RSS",
+      "source_hint": "database.transfermarkt",
+      "declared_sport": "football",
+      "max_entries": 20
+    },
+    {
+      "id": "sky.sports",
+      "url": "https://www.skysports.com/rss/12040",
+      "transport": "DIRECT_RSS",
+      "source_hint": "media.sky_sports",
+      "declared_sport": null,
+      "max_entries": 20
+    },
+    {
+      "id": "guardian.transfers",
+      "url": "https://www.theguardian.com/football/transfers/rss",
+      "transport": "DIRECT_RSS",
+      "source_hint": "media.the_guardian",
+      "declared_sport": "football",
+      "max_entries": 20
+    },
+    {
+      "id": "espn.soccer",
+      "url": "https://www.espn.com/espn/rss/soccer/news",
+      "transport": "DIRECT_RSS",
+      "source_hint": "media.espn",
+      "declared_sport": "football",
+      "max_entries": 20
+    },
+    {
+      "id": "google.rootwire.premier_league",
+      "url": "https://news.google.com/rss/search?q=site%3Arootwiresoccer.com+premier+league&hl=en-GB&gl=GB&ceid=GB:en",
+      "transport": "GOOGLE_NEWS",
+      "source_hint": null,
+      "declared_sport": "football",
+      "max_entries": 20
+    }
+  ],
+  "social_feeds": [
+    {
+      "id": "bluesky.premier_injuries",
+      "network": "BLUESKY",
+      "handle": "premierinjuries.bsky.social",
+      "source_id": "specialist.premier_injuries",
+      "declared_sport": "football",
+      "max_entries": 30
+    },
+    {
+      "id": "bluesky.ben_dinnery",
+      "network": "BLUESKY",
+      "handle": "bendinnery.bsky.social",
+      "source_id": "specialist.ben_dinnery",
+      "declared_sport": "football",
+      "max_entries": 30
+    }
+  ],
+  "official_discovery": {
+    "enabled": true,
+    "domains_per_query": 5,
+    "max_entries": 30,
+    "lookback_days": 2,
+    "query_terms": [
+      "signs",
+      "signed",
+      "joined",
+      "injury",
+      "ruled out",
+      "suspended",
+      "appointed",
+      "contract extension",
+      "club statement"
+    ]
+  }
+}
