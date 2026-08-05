@@ -299,7 +299,9 @@ def test_new_official_injury_status_is_material_progression(runtime):
     assert second.verified_facts["injury_status"] == "Returned to full training"
 
 
-def test_official_contract_extension_publishes_without_inventing_length(runtime):
+def test_official_contract_extension_is_rejected_out_of_scope(runtime):
+    # Strict policy: only TRANSFER / INJURY / SUSPENSION may publish. Even an
+    # official club confirmation of a contract extension must be rejected.
     obs = observation(
         title="Brighton confirm Danny Welbeck has signed a new contract",
         source_id="club.brighton-and-hove-albion",
@@ -310,12 +312,12 @@ def test_official_contract_extension_publishes_without_inventing_length(runtime)
         },
     )
     decision = runtime.verify_observations([obs])
-    assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert "contract extension" in decision.rendered_text.lower()
-    assert "Terms:" not in decision.rendered_text
+    assert decision.decision == DecisionType.REJECT, decision.reasons
+    assert not decision.may_publish
 
 
-def test_official_club_statement_supported_without_player(runtime):
+def test_official_club_statement_is_rejected_out_of_scope(runtime):
+    # Strict policy: club statements are not a publishable category.
     obs = observation(
         title="Official club statement: stadium redevelopment update",
         source_id="club.chelsea",
@@ -323,9 +325,8 @@ def test_official_club_statement_supported_without_player(runtime):
         story={"player": None, "event": "official_statement", "stage": 4},
     )
     decision = runtime.verify_observations([obs])
-    assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert decision.event_type == EventType.OFFICIAL_STATEMENT
-    assert decision.verified_facts["club_name"] == "Chelsea"
+    assert decision.decision == DecisionType.REJECT, decision.reasons
+    assert not decision.may_publish
 
 
 def test_governing_body_suspension_publishes(runtime):
@@ -344,7 +345,9 @@ def test_governing_body_suspension_publishes(runtime):
     assert decision.event_type == EventType.SUSPENSION
 
 
-def test_unknown_manager_can_be_established_only_by_related_official_source(runtime):
+def test_manager_appointment_is_rejected_out_of_scope(runtime):
+    # Strict policy: manager changes are not a publishable category, even when
+    # confirmed by the club and grounded on an official source.
     obs = observation(
         title="Chelsea appoint Marco Silva as head coach",
         source_id="club.chelsea",
@@ -356,8 +359,8 @@ def test_unknown_manager_can_be_established_only_by_related_official_source(runt
         },
     )
     decision = runtime.verify_observations([obs])
-    assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert decision.verified_facts["manager_action"] == "appointment"
+    assert decision.decision == DecisionType.REJECT, decision.reasons
+    assert not decision.may_publish
 
 
 def test_conflicting_official_destinations_hold_story(runtime):

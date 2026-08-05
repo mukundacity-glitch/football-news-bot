@@ -7,11 +7,14 @@ that pass **Verification Engine V2**.
 
 The shipped policy is deliberately strict:
 
-- Transfers, injuries, suspensions, manager changes, contract extensions, and
-  official club statements are eligible.
+- **Only Premier League–related TRANSFERS, INJURIES, and SUSPENSIONS are
+  eligible.** Manager changes, contract extensions, club statements, and all
+  other categories are rejected even when officially confirmed.
 - Only `OFFICIAL` or `COMPLETED` events can publish.
 - First-party club, Premier League, FPL, FA, or other configured governing-body
-  evidence is required.
+  evidence is required, and the story must involve an active Premier League
+  club/player relationship (league validation is a hard gate — non-PL news,
+  e.g. Real Madrid or Saudi clubs, is rejected).
 - Journalist/media reports remain pending until official confirmation.
 - `HERE_WE_GO` auto-publication is implemented but disabled in configuration.
 - Missing, stale, ambiguous, cross-sport, conflicting, or ungrounded facts fail

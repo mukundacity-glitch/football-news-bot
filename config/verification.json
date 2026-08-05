@@ -5,10 +5,7 @@
     "publishable_article_categories": [
       "TRANSFER",
       "INJURY",
-      "SUSPENSION",
-      "MANAGER",
-      "CONTRACT",
-      "OFFICIAL_STATEMENT"
+      "SUSPENSION"
     ],
     "publishable_statuses": [
       "OFFICIAL",
@@ -169,85 +166,6 @@
         "suspension_status",
         "return_date"
       ]
-    },
-    "MANAGER": {
-      "required_facts": [
-        "subject_id",
-        "subject_name",
-        "club_id",
-        "club_name",
-        "manager_action"
-      ],
-      "allowed_subject_types": [
-        "MANAGER",
-        "COACH"
-      ],
-      "conflict_fields": [
-        "subject_id",
-        "club_id",
-        "manager_action"
-      ],
-      "material_fields": [
-        "club_id",
-        "manager_action",
-        "contract_length"
-      ],
-      "official_relation_fields": [
-        "club_id",
-        "competition_id"
-      ],
-      "progressive_fields": []
-    },
-    "CONTRACT": {
-      "required_facts": [
-        "subject_id",
-        "subject_name",
-        "club_id",
-        "club_name",
-        "contract_status"
-      ],
-      "allowed_subject_types": [
-        "PLAYER",
-        "MANAGER",
-        "COACH"
-      ],
-      "conflict_fields": [
-        "subject_id",
-        "club_id",
-        "contract_length"
-      ],
-      "material_fields": [
-        "contract_status",
-        "contract_length"
-      ],
-      "official_relation_fields": [
-        "club_id",
-        "competition_id"
-      ],
-      "progressive_fields": []
-    },
-    "OFFICIAL_STATEMENT": {
-      "required_facts": [
-        "club_id",
-        "club_name",
-        "statement_topic"
-      ],
-      "allowed_subject_types": [
-        "CLUB",
-        "ORGANIZATION"
-      ],
-      "conflict_fields": [
-        "club_id",
-        "statement_topic"
-      ],
-      "material_fields": [
-        "statement_topic"
-      ],
-      "official_relation_fields": [
-        "club_id",
-        "competition_id"
-      ],
-      "progressive_fields": []
     }
   },
   "status_order": [
