@@ -725,6 +725,11 @@ class LegacyClaimAdapter:
         to_club: Optional[EntityRecord],
         profile: Any,
     ) -> bool:
+        # Strict Premier League relevance: the story must actually involve an
+        # active Premier League club (as origin/destination) or a player who
+        # belongs to an active PL club. Source scope alone (e.g. an official
+        # league-branded feed) is NOT sufficient — a non-PL story must never
+        # become "league relevant" just because the publisher is PL-branded.
         if any(
             club and self.entities.active_premier_league_club(club.id)
             for club in (from_club, to_club)
@@ -732,7 +737,7 @@ class LegacyClaimAdapter:
             return True
         if subject and subject.club_id and self.entities.active_premier_league_club(subject.club_id):
             return True
-        return bool(profile and "premier_league_ecosystem" in profile.official_scope)
+        return False
 
     def _sport_confidence(
         self,

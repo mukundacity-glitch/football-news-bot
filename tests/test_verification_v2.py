@@ -363,6 +363,26 @@ def test_manager_appointment_is_rejected_out_of_scope(runtime):
     assert not decision.may_publish
 
 
+def test_non_premier_league_club_news_is_rejected(runtime):
+    # Strict PL-only policy: a story involving no active Premier League club
+    # and no PL player must fail the league-validation gate even when it is
+    # well-grounded football news from a reliable source.
+    obs = observation(
+        title="PSG confirm Vitinha ruled out with hamstring injury",
+        source_id="media.espn",
+        url="https://www.espn.com/soccer/report?id=example",
+        story={
+            "player": "Vitinha", "event": "injury",
+            "from_key": "PSG", "from_club": "PSG",
+            "diagnosis": "Hamstring injury", "stage": 3,
+        },
+    )
+    decision = runtime.verify_observations([obs])
+    assert decision.decision == DecisionType.REJECT, decision.reasons
+    assert not decision.may_publish
+    assert decision.gate("league_validation").state.value == "FAIL"
+
+
 def test_conflicting_official_destinations_hold_story(runtime):
     chelsea = observation(
         title="Chelsea sign Example Player from Brighton",
