@@ -145,6 +145,10 @@ def test_official_transfer_publishes_and_renders_only_verified_facts(runtime):
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
     assert decision.may_publish
     assert "Danny Welbeck has joined Chelsea from Brighton" in decision.rendered_text
+    assert len(decision.rendered_text.splitlines()) <= 4
+    assert "http" not in decision.rendered_text
+    assert "#TransferNews" in decision.rendered_text
+    assert "#PremierLeague" in decision.rendered_text
     assert "TBC" not in decision.rendered_text
     assert "Contract" not in decision.rendered_text
     assert "Fee" not in decision.rendered_text
@@ -264,6 +268,10 @@ def test_official_structured_fpl_injury_publishes(runtime):
     decision = runtime.verify_observations([obs])
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
     assert "OFFICIAL INJURY UPDATE" in decision.rendered_text
+    assert len(decision.rendered_text.splitlines()) <= 4
+    assert "http" not in decision.rendered_text
+    assert "#InjuryNews" in decision.rendered_text
+    assert "#PremierLeague" in decision.rendered_text
     assert "Exact return date" not in decision.rendered_text
 
 

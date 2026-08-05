@@ -1,11 +1,17 @@
-"""Deterministic X post templates using verified facts only."""
+"""Deterministic concise X post templates using verified facts only.
+
+Production rule: every live tweet must be clear, human-readable, and at most
+four visible lines. The image card carries the large visual detail; the text
+caption stays short to avoid looking like automated spam and to fit non-premium
+X accounts.
+"""
 
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from .models import DecisionType, EntityType, EventType, VerificationDecision
+from .models import EventType, VerificationDecision
 from .source_registry import SourceRegistry
 
 
@@ -15,8 +21,10 @@ class RenderingError(RuntimeError):
 
 class VerifiedPostRenderer:
     def __init__(
-        self, sources: SourceRegistry, limit: int = 280,
-        max_optional_fact_chars: int = 140,
+        self,
+        sources: SourceRegistry,
+        limit: int = 280,
+        max_optional_fact_chars: int = 120,
     ) -> None:
         self.sources = sources
         self.limit = limit
@@ -27,94 +35,82 @@ class VerifiedPostRenderer:
             raise RenderingError("refusing to render an unverified decision")
         facts = decision.verified_facts
         event = decision.event_type
-        lines: List[str] = []
-        optional: List[str] = []
 
         if event == EventType.TRANSFER:
-            player = required(facts, "subject_name")
-            destination = required(facts, "club_to_name")
+            player = str(required(facts, "subject_name"))
+            destination = str(required(facts, "club_to_name"))
             origin = facts.get("club_from_name")
             kind = str(facts.get("transfer_kind") or "").lower()
             route = f" from {origin}" if origin else ""
-            if kind == "loan":
-                sentence = f"{player} has joined {destination}{route} on loan."
-            elif kind == "permanent":
-                sentence = f"{player} has joined {destination}{route} on a permanent transfer."
-            elif kind == "free":
-                sentence = f"{player} has joined {destination}{route} on a free transfer."
-            else:
-                sentence = f"{player} has joined {destination}{route}."
-            lines = ["✅ CONFIRMED TRANSFER", sentence]
+            # Keep this sentence shape for audit/tests and human clarity.
+            line1 = f"✅ Confirmed transfer: {player} has joined {destination}{route}."
+            details: List[str] = []
+            if kind:
+                details.append(_title_move_kind(kind))
             if facts.get("fee"):
-                optional.append(f"Fee: {facts['fee']}")
+                details.append(f"Fee: {facts['fee']}")
             if facts.get("contract_length"):
-                optional.append(f"Contract: {facts['contract_length']}")
+                details.append(f"Contract: {facts['contract_length']}")
+            line2 = " • ".join(details) if details else "Official club confirmation."
 
         elif event == EventType.INJURY:
-            player = required(facts, "subject_name")
-            club = required(facts, "club_name")
-            lines = ["🚑 OFFICIAL INJURY UPDATE", f"{player} — {club}."]
-            status = str(required(facts, "injury_status"))
-            if len(status) <= self.max_optional_fact_chars:
-                optional.append(status.rstrip("." ) + ".")
+            player = str(required(facts, "subject_name"))
+            club = str(required(facts, "club_name"))
+            line1 = f"🚑 OFFICIAL INJURY UPDATE: {player} — {club}"
+            status = str(required(facts, "injury_status")).rstrip(".")
+            line2 = status
             if facts.get("return_date"):
-                optional.append(f"Return: {facts['return_date']}")
+                line2 = f"{line2} • Return: {facts['return_date']}"
 
         elif event == EventType.SUSPENSION:
-            person = required(facts, "subject_name")
-            club = required(facts, "club_name")
-            lines = ["🟥 OFFICIAL SUSPENSION UPDATE", f"{person} — {club}."]
-            status = str(required(facts, "suspension_status"))
-            if len(status) <= self.max_optional_fact_chars:
-                optional.append(status.rstrip(".") + ".")
+            person = str(required(facts, "subject_name"))
+            club = str(required(facts, "club_name"))
+            line1 = f"🟥 Official suspension: {person} — {club}"
+            status = str(required(facts, "suspension_status")).rstrip(".")
+            parts = [status]
             if facts.get("suspension_length"):
-                optional.append(f"Length: {facts['suspension_length']}")
+                parts.append(f"Length: {facts['suspension_length']}")
             if facts.get("return_date"):
-                optional.append(f"Eligible return: {facts['return_date']}")
+                parts.append(f"Return: {facts['return_date']}")
+            line2 = " • ".join(parts)
 
         elif event == EventType.MANAGER:
-            person = required(facts, "subject_name")
-            club = required(facts, "club_name")
-            action = required(facts, "manager_action")
-            lines = ["✅ OFFICIAL MANAGER UPDATE"]
-            if action == "appointment":
-                lines.append(f"{club} have appointed {person}.")
-            elif action == "departure":
-                lines.append(f"{person} has left {club}.")
-            else:  # mandatory policy should make this unreachable
-                raise RenderingError(f"unsupported manager action: {action}")
-            if facts.get("contract_length"):
-                optional.append(f"Contract: {facts['contract_length']}")
+            person = str(required(facts, "subject_name"))
+            club = str(required(facts, "club_name"))
+            action = str(required(facts, "manager_action"))
+            line1 = "✅ Official manager update"
+            line2 = f"{club}: {person} — {action}."
 
         elif event == EventType.CONTRACT:
-            person = required(facts, "subject_name")
-            club = required(facts, "club_name")
+            person = str(required(facts, "subject_name"))
+            club = str(required(facts, "club_name"))
             required(facts, "contract_status")
-            lines = ["✅ OFFICIAL CONTRACT EXTENSION", f"{person} has signed a contract extension with {club}."]
+            line1 = "✅ Official contract update"
+            line2 = f"{person} — {club}."
             if facts.get("contract_length"):
-                optional.append(f"Terms: {facts['contract_length']}")
+                line2 += f" Contract: {facts['contract_length']}"
 
         elif event == EventType.OFFICIAL_STATEMENT:
-            club = required(facts, "club_name")
+            club = str(required(facts, "club_name"))
             topic = str(required(facts, "statement_topic"))
-            lines = ["📣 OFFICIAL CLUB STATEMENT", club]
-            if len(topic) <= self.max_optional_fact_chars:
-                optional.append(topic.rstrip(".") + ".")
+            line1 = "📣 Official club statement"
+            line2 = f"{club}: {topic}"
         else:
             raise RenderingError(f"unsupported verified event: {event.value}")
 
         source_line = self._source_line(decision)
         hashtag_line = self._hashtags(decision)
-        result = self._fit(lines, optional, source_line, hashtag_line)
+        result = self._fit_four_lines([line1, line2, source_line, hashtag_line])
         decision.rendered_text = result
         return result
 
     def _source_line(self, decision: VerificationDecision) -> str:
         source_id = decision.source_ids[0] if decision.source_ids else ""
         profile = self.sources.get(source_id)
+        if profile and profile.handles:
+            handle = str(profile.handles[0]).strip()
+            return "Source: @" + handle.lstrip("@")
         label = profile.display_name if profile else source_id
-        if decision.source_url:
-            return f"Source: {label} — {decision.source_url}"
         return f"Source: {label}"
 
     def _hashtags(self, decision: VerificationDecision) -> str:
@@ -128,39 +124,53 @@ class VerifiedPostRenderer:
         event_tag = {
             EventType.TRANSFER: "#TransferNews",
             EventType.INJURY: "#InjuryNews",
-            EventType.SUSPENSION: "#Suspension",
-            EventType.MANAGER: "#ManagerNews",
-            EventType.CONTRACT: "#ContractNews",
+            EventType.SUSPENSION: "#SuspensionNews",
+            EventType.MANAGER: "#PremierLeague",
+            EventType.CONTRACT: "#PremierLeague",
             EventType.OFFICIAL_STATEMENT: "#PremierLeague",
         }[decision.event_type]
-        return " ".join(x for x in (club_tag, event_tag, "#FPL") if x)
+        tags = [club_tag, event_tag, "#PremierLeague", "#FPL"]
+        return " ".join(t for t in tags if t)
 
-    def _fit(
-        self,
-        required_lines: List[str],
-        optional_lines: List[str],
-        source_line: str,
-        hashtag_line: str,
-    ) -> str:
-        # Optional facts are removed whole; verified statements are never
-        # truncated into a potentially misleading fragment.
-        optional = list(optional_lines)
+    def _fit_four_lines(self, lines: List[str]) -> str:
+        clean = [" ".join(str(line or "").split()) for line in lines if str(line or "").strip()]
+        if len(clean) > 4:
+            clean = clean[:4]
+        # Keep no more than four visible lines. Remove/shorten lowest-priority
+        # content first: club hashtag, then detail line. Verified facts are never
+        # transformed into a different claim; they are only omitted or ellipsized.
         while True:
-            sections = ["\n".join(required_lines + optional), source_line, hashtag_line]
-            text = "\n\n".join(section for section in sections if section).strip()
-            if twitter_weight(text) <= self.limit:
+            text = "\n".join(clean).strip()
+            if twitter_weight(text) <= self.limit and len(clean) <= 4:
                 return text
-            if optional:
-                optional.pop()
+            if clean and clean[-1].startswith("#"):
+                tags = clean[-1].split()
+                if len(tags) > 3:
+                    clean[-1] = " ".join(tags[1:])
+                    continue
+                if len(tags) > 2:
+                    clean[-1] = " ".join(tags[:-1])
+                    continue
+            if len(clean) >= 2 and len(clean[1]) > 96:
+                clean[1] = clean[1][:93].rstrip(" .;,") + "…"
                 continue
-            if hashtag_line:
-                hashtag_line = ""
+            if clean and len(clean[0]) > 120:
+                clean[0] = clean[0][:117].rstrip(" .;,") + "…"
                 continue
-            # The URL is more important than the source label if space is tight.
-            if " — http" in source_line:
-                source_line = "Source: " + source_line.split(" — ", 1)[1]
+            if len(clean) > 3:
+                clean.pop(1)
                 continue
             raise RenderingError("verified required facts do not fit within X limit")
+
+
+def _title_move_kind(kind: str) -> str:
+    mapping = {
+        "loan": "Loan",
+        "permanent": "Permanent transfer",
+        "free": "Free transfer",
+        "loan_option": "Loan with option",
+    }
+    return mapping.get(kind.lower(), kind.replace("_", " ").title())
 
 
 def required(facts: Dict[str, object], key: str) -> object:

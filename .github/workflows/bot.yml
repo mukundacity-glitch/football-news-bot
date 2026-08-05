@@ -1,20 +1,14 @@
 name: FPL Vortex Bot
 
-# Post exactly twice a day: 6:00 AM and 7:00 PM Eastern Time.
+# Near real-time confirmed-news monitor.
 #
-# GitHub Actions cron is UTC-only and cannot express timezones or DST, so we
-# schedule the four possible UTC instants that map to 6:00 and 19:00 Eastern
-# (EDT = UTC-4 and EST = UTC-5) and let the "posting window" guard below keep
-# exactly the two that match the current local time. This is set-and-forget:
-# no manual cron edit when DST flips.
+# We check every 15 minutes so official Premier League transfer, injury, and
+# suspension confirmations are not stale. X only sees actual posts, not source
+# checks. Posting is still tightly capped and paced below to reduce flag risk.
 on:
   schedule:
-    - cron: "0 10 * * *"    # 6:00 AM EDT (summer)
-    - cron: "0 11 * * *"    # 6:00 AM EST (winter)
-    - cron: "0 23 * * *"    # 7:00 PM EDT (summer)
-    - cron: "0 0 * * *"     # 7:00 PM EST (winter)
-  workflow_dispatch: {}     # manual runs always proceed, no window check
-
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
 permissions:
   contents: write
 
@@ -30,27 +24,11 @@ jobs:
       BOT_PAUSED: ${{ vars.BOT_PAUSED }}
 
     steps:
-      - name: Check posting window (6AM / 7PM America/New_York)
+      - name: Enable near real-time monitor
         id: window
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            # GitHub scheduled jobs can start late. Do NOT decide using the
-            # runner's current hour, or a delayed 6AM ET run may be skipped at
-            # 7AM/8AM. Instead, use the cron expression that triggered the event
-            # plus the current Eastern offset to keep exactly two effective runs
-            # per day through DST.
-            SCHEDULE="${{ github.event.schedule }}"
-            ET_OFFSET="$(TZ=America/New_York date +%z)"
-            if [[ "$ET_OFFSET" == "-0400" && ( "$SCHEDULE" == "0 10 * * *" || "$SCHEDULE" == "0 23 * * *" ) ]] ||                [[ "$ET_OFFSET" == "-0500" && ( "$SCHEDULE" == "0 11 * * *" || "$SCHEDULE" == "0 0 * * *" ) ]]; then
-              echo "should_run=true" >> "$GITHUB_OUTPUT"
-              echo "Scheduled posting slot $SCHEDULE is active for ET offset $ET_OFFSET — proceeding."
-            else
-              echo "should_run=false" >> "$GITHUB_OUTPUT"
-              echo "Scheduled slot $SCHEDULE is inactive for ET offset $ET_OFFSET — skipping duplicate DST guard run."
-            fi
-          else
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          fi
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+          echo "Checking for new official confirmed PL transfer/injury/suspension stories."
 
       - name: Checkout
         if: steps.window.outputs.should_run == 'true'
@@ -98,15 +76,15 @@ jobs:
           VERIFICATION_V2_LIVE: ${{ vars.VERIFICATION_V2_LIVE }}
           VERIFICATION_V2_ALLOW_DB_REBUILD: ${{ vars.VERIFICATION_V2_ALLOW_DB_REBUILD }}
           SAVE_DRAFTS_TO_DISK: false
-          # Volume: 2 runs/day (6AM + 7PM ET) x 8 verified stories = up to 16/day.
-          # Pacing is the anti-flag mechanism: posts go out one at a time with
-          # human-like jitter below, and the X-safety cooldown stops the run
-          # entirely if X signals automation/rate-limit (codes 226/326/429...).
-          MAX_POSTS_PER_RUN: 8
-          MAX_POSTS_PER_HOUR: 10
+          # Near real-time safety caps: check every 15 minutes, but post slowly.
+          # X sees only successful posts, not source checks. Keep bursts small,
+          # use human-like jitter, and stop instantly on X automation/rate-limit
+          # signals (codes 226/326/429...).
+          MAX_POSTS_PER_RUN: 2
+          MAX_POSTS_PER_HOUR: 4
           DAILY_POST_LIMIT: 16
-          POST_JITTER_MIN_S: 60
-          POST_JITTER_MAX_S: 150
+          POST_JITTER_MIN_S: 90
+          POST_JITTER_MAX_S: 240
           COOLDOWN_FLAGGED_MIN: 180
           COOLDOWN_RATELIMIT_MIN: 30
 
