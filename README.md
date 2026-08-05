@@ -33,12 +33,23 @@ You can also disable the `FPL Vortex Bot` workflow in the Actions UI.
 
 The scheduled GitHub workflow is configured for **set-and-forget live posting**:
 
+- the bot posts **exactly twice a day: 6:00 AM and 7:00 PM Eastern Time**
+  (the workflow schedules the four UTC instants covering EDT/EST and a
+  time-window guard keeps only the two matching the current local time, so no
+  cron edits are needed across DST changes; manual `workflow_dispatch` runs
+  bypass the window check)
 - live posting is enabled automatically on every scheduled run
 - every V2-verified **confirmed transfer, injury, and suspension** story is eligible to post
 - confirmed manager, contract, and other non-target items are intentionally skipped from live posting
-- per-run, per-hour, and daily posting caps are disabled in the workflow
+- volume caps default to **8 posts per run, 10 per hour, 16 per day** — up to
+  16 verified stories per day across the two windows. Posts are spaced by
+  human-like jitter (60–150s) one at a time — that pacing, not throttling, is
+  the anti-flag mechanism — and the X-safety cooldown stops the run instantly
+  if X signals automation/spam/rate-limit (codes 226/326/429), backing off
+  3 hours (flagged) or 30 minutes (rate-limited) before any further attempt
 - every run writes a clear GitHub Actions summary explaining why it posted or did not post
-- if X posting cookies expire, the workflow opens/updates a GitHub issue and fails the run for visibility
+- if X posting cookies expire, the run fails with an actionable `X-AUTH` message
+  pointing at `X_POST_AUTH_TOKEN` / `X_POST_CT0_TOKEN`
 - `BOT_PAUSED=true` remains the single emergency kill switch
 
 Required GitHub Actions secrets for X posting:

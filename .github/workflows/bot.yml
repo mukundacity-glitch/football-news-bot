@@ -1,12 +1,19 @@
 name: FPL Vortex Bot
 
+# Post exactly twice a day: 6:00 AM and 7:00 PM Eastern Time.
+#
+# GitHub Actions cron is UTC-only and cannot express timezones or DST, so we
+# schedule the four possible UTC instants that map to 6:00 and 19:00 Eastern
+# (EDT = UTC-4 and EST = UTC-5) and let the "posting window" guard below keep
+# exactly the two that match the current local time. This is set-and-forget:
+# no manual cron edit when DST flips.
 on:
   schedule:
-    - cron: "0 8 * * *"     # 4:00 AM EST
-    - cron: "0 13 * * *"    # 9:00 AM EST
-    - cron: "0 18 * * *"    # 2:00 PM EST
-    - cron: "0 23 * * *"    # 7:00 PM EST
-  workflow_dispatch: {}
+    - cron: "0 10 * * *"    # 6:00 AM EDT (summer)
+    - cron: "0 11 * * *"    # 6:00 AM EST (winter)
+    - cron: "0 23 * * *"    # 7:00 PM EDT (summer)
+    - cron: "0 0 * * *"     # 7:00 PM EST (winter)
+  workflow_dispatch: {}     # manual runs always proceed, no window check
 
 permissions:
   contents: write
@@ -23,10 +30,28 @@ jobs:
       BOT_PAUSED: ${{ vars.BOT_PAUSED }}
 
     steps:
+      - name: Check posting window (6AM / 7PM America/New_York)
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            ET_HOUR="$(TZ=America/New_York date +%-H)"
+            if [ "$ET_HOUR" = "6" ] || [ "$ET_HOUR" = "19" ]; then
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "In posting window (hour $ET_HOUR ET) — proceeding."
+            else
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "Outside posting windows (6AM/7PM ET; now $ET_HOUR ET) — skipping this scheduled run."
+            fi
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.window.outputs.should_run == 'true'
         uses: actions/checkout@v4
 
       - name: Restore V2 verification database
+        if: steps.window.outputs.should_run == 'true'
         uses: actions/cache@v4
         with:
           path: data/verification.sqlite3
@@ -35,11 +60,13 @@ jobs:
             verification-v2-${{ github.repository_id }}-
 
       - name: Set up Python
+        if: steps.window.outputs.should_run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
+        if: steps.window.outputs.should_run == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -47,11 +74,13 @@ jobs:
           python -m playwright install chromium --with-deps
 
       - name: Mandatory verification test gate
+        if: steps.window.outputs.should_run == 'true'
         run: |
           python -m pytest -q
 
       - name: Run bot
         id: run
+        if: steps.window.outputs.should_run == 'true'
         env:
           X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
           X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
@@ -63,9 +92,17 @@ jobs:
           VERIFICATION_V2_LIVE: ${{ vars.VERIFICATION_V2_LIVE }}
           VERIFICATION_V2_ALLOW_DB_REBUILD: ${{ vars.VERIFICATION_V2_ALLOW_DB_REBUILD }}
           SAVE_DRAFTS_TO_DISK: false
-          MAX_POSTS_PER_RUN: 4
-          MAX_POSTS_PER_HOUR: 6
-          DAILY_POST_LIMIT: 15
+          # Volume: 2 runs/day (6AM + 7PM ET) x 8 verified stories = up to 16/day.
+          # Pacing is the anti-flag mechanism: posts go out one at a time with
+          # human-like jitter below, and the X-safety cooldown stops the run
+          # entirely if X signals automation/rate-limit (codes 226/326/429...).
+          MAX_POSTS_PER_RUN: 8
+          MAX_POSTS_PER_HOUR: 10
+          DAILY_POST_LIMIT: 16
+          POST_JITTER_MIN_S: 60
+          POST_JITTER_MAX_S: 150
+          COOLDOWN_FLAGGED_MIN: 180
+          COOLDOWN_RATELIMIT_MIN: 30
 
         run: |
           set +e
@@ -81,11 +118,11 @@ jobs:
           exit $code
 
       - name: Verification V2 shadow report
-        if: always()
+        if: steps.window.outputs.should_run == 'true'
         run: python tools/v2_report.py || true
 
       - name: Persist state (dedup, daily count, deferred queue)
-        if: always()
+        if: steps.window.outputs.should_run == 'true'
         run: |
           git config user.name "fpl-vortex-bot"
           git config user.email "bot@users.noreply.github.com"
