@@ -98,9 +98,10 @@ class VerifiedPostRenderer:
         else:
             raise RenderingError(f"unsupported verified event: {event.value}")
 
-        source_line = self._source_line(decision)
+        # Source handles/links belong on the attached image footer only.
+        # Keep the X caption human, concise, and non-premium-safe: news + SEO hashtags.
         hashtag_line = self._hashtags(decision)
-        result = self._fit_four_lines([line1, line2, source_line, hashtag_line])
+        result = self._fit_four_lines([line1, line2, hashtag_line])
         decision.rendered_text = result
         return result
 
