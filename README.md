@@ -55,6 +55,24 @@ The scheduled GitHub workflow is configured for **set-and-forget live posting**:
   pointing at `X_POST_AUTH_TOKEN` / `X_POST_CT0_TOKEN`
 - `BOT_PAUSED=true` remains the single emergency kill switch
 
+### FPL deadline Top-5 team-news run
+
+A second workflow, `FPL Deadline Top-5 News`, polls every 15 minutes but only runs
+inside the calculated pre-deadline window:
+
+- official FPL deadline timestamp = first Premier League kickoff minus 90 minutes
+- bot target = deadline minus 30 minutes (effectively kickoff minus 2 hours)
+- teams = current official Premier League table Top 5; if the table is still all
+  played-0 before GW1, it falls back to FPL team strength to avoid alphabetical
+  placeholder standings
+- source = official FPL player availability data only
+- content = at most three concise text cards for critical Top-5 player news:
+  confirmed out/suspended, confirmed fit/available return, or major doubt
+- no lineup guesses, no fake starters, no deadline-only alert, and no post at all
+  if there are zero critical items
+- one post per gameweek deadline; the shared state ledger blocks duplicate
+  deadline posts and counts the tweet toward the daily cap
+
 Required GitHub Actions secrets for X posting:
 
 ```text
