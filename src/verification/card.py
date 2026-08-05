@@ -47,6 +47,12 @@ def create_verified_card(
     draw.rounded_rectangle((50, 45, 1150, 630), radius=28, fill=_PANEL)
     draw.rectangle((50, 45, 1150, 55), fill=_GREEN)
 
+    # Keep the production V2 card fact-only, while restoring the FPL VORTEX
+    # identity that was present on the original player-card design.  The local
+    # logo is deliberately embedded in every image so a repost/crop still has
+    # an unambiguous channel mark.
+    _draw_brand(draw, image)
+
     event_label = {
         EventType.TRANSFER: "CONFIRMED TRANSFER",
         EventType.INJURY: "OFFICIAL INJURY UPDATE",
@@ -80,6 +86,31 @@ def create_verified_card(
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, format="PNG", optimize=True)
     return str(path)
+
+
+def _draw_brand(draw: ImageDraw.ImageDraw, image: Image.Image) -> None:
+    """Draw the channel logo and name on every verified card.
+
+    Branding is local-only: it cannot introduce an external fetch or change any
+    verified football fact shown in the card.
+    """
+    logo_path = Path("Logo.png")
+    if logo_path.exists():
+        try:
+            logo = Image.open(logo_path).convert("RGBA")
+            logo.thumbnail((68, 68), Image.Resampling.LANCZOS)
+            x, y = 1070, 65
+            image.alpha_composite(logo, (x, y)) if image.mode == "RGBA" else image.paste(
+                logo, (x, y), logo
+            )
+        except Exception:
+            # A missing/corrupt decorative asset must never block an official
+            # news post; the channel name below remains visible.
+            pass
+    wordmark = "FPL VORTEX"
+    font = _font(24, True)
+    width = draw.textbbox((0, 0), wordmark, font=font)[2]
+    draw.text((1045 - width, 92), wordmark, font=font, fill=_WHITE)
 
 
 def _fact_lines(decision: VerificationDecision) -> List[str]:
