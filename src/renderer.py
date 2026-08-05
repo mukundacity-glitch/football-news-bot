@@ -390,6 +390,69 @@ def _build_card_html(player_name, status, badge_color, club_color,
     </body></html>"""
 
 
+def create_verified_branded_card(event, subject, facts, source_handles, filename):
+    """Render the original branded player-card layout from verified facts only.
+
+    This adapter is deliberately data-in/data-out: it never performs a news
+    classification and never invents a fee, diagnosis, timeline, or source.
+    """
+    from html import escape
+
+    event = str(event).upper()
+    subject = str(subject or "OFFICIAL UPDATE")
+    club_name = str(facts.get("club_to_name") or facts.get("club_name") or
+                    facts.get("club_from_name") or "")
+    club_key = _verified_club_key(club_name)
+    story = {"player": subject, "to_key": club_key, "from_key": club_key}
+    _, player_name, logo_uri, photo_uri = _img_assets(story)
+    crest_uri = _crest_uri(club_key)
+    source_text = " · ".join("@" + str(h).lstrip("@") for h in source_handles[:2])
+    source_text = source_text or "Official club source"
+
+    if event == "TRANSFER":
+        origin = str(facts.get("club_from_name") or "")
+        destination = str(facts.get("club_to_name") or "")
+        rows = []
+        if origin:
+            rows.append(("FROM", "#f5c518", escape(origin.upper()), ""))
+        if destination:
+            rows.append(("TO", "#00d4ff", escape(destination.upper()), ""))
+        if facts.get("transfer_kind"):
+            rows.append(("MOVE", "#f5c518", escape(str(facts["transfer_kind"]).upper()), ""))
+        if facts.get("fee"):
+            rows.append(("FEE", "#e31e24", escape(str(facts["fee"]).upper()), "color:#54e07c;"))
+        status, colour, tag = "CONFIRMED TRANSFER", "#54e07c", "TRANSFER"
+    elif event == "INJURY":
+        rows = [("CLUB", "#ff8c8c", escape(str(facts.get("club_name") or club_name).upper()), "")]
+        if facts.get("injury_status"):
+            rows.append(("UPDATE", "#ff8c8c", escape(str(facts["injury_status"]).upper()), ""))
+        status, colour, tag = "OFFICIAL INJURY", "#d2261e", "INJURY"
+    else:  # SUSPENSION
+        rows = [("CLUB", "#f5c518", escape(str(facts.get("club_name") or club_name).upper()), "")]
+        if facts.get("suspension_status"):
+            rows.append(("UPDATE", "#f5c518", escape(str(facts["suspension_status"]).upper()), ""))
+        if facts.get("suspension_length"):
+            rows.append(("LENGTH", "#f5c518", escape(str(facts["suspension_length"]).upper()), ""))
+        status, colour, tag = "OFFICIAL SUSPENSION", "#f5c518", "SUSPENSION"
+
+    html = _build_card_html(escape(player_name), status, colour,
+                            get_club_color(club_key), logo_uri, photo_uri,
+                            crest_uri, rows, source_text, tag)
+    if _render_card(html, filename):
+        return True
+    return False
+
+
+def _verified_club_key(name):
+    """Map a verified display name to a renderer key without guessing clubs."""
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
+    aliases = {"manchester_city": "Man_City", "manchester_united": "Man_Utd",
+               "tottenham_hotspur": "Spurs", "nottingham_forest": "Nottm_Forest",
+               "aston_villa": "Aston_Villa", "crystal_palace": "Crystal_Palace",
+               "west_ham_united": "West_Ham"}
+    return aliases.get(normalized, "_".join(part.title() for part in normalized.split("_")))
+
+
 def _club_cell(name, crest_uri):
     """Club name with an inline crest (or just the name)."""
     if crest_uri:

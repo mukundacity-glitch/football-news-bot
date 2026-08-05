@@ -42,6 +42,30 @@ def create_verified_card(
     if not decision.may_publish:
         raise ValueError("cannot render card for unverified decision")
     facts = decision.verified_facts
+
+    # Use the established FPL VORTEX player-card treatment whenever Playwright
+    # is available: player image, club crest, logo, channel name, and official
+    # source handle in the footer.  The adapter receives only V2 verified facts.
+    try:
+        from src.renderer import create_verified_branded_card
+        handles = []
+        for source_id in decision.source_ids:
+            profile = sources.get(source_id)
+            if profile and profile.handles:
+                handles.append(profile.handles[0])
+        if create_verified_branded_card(
+            decision.event_type.value,
+            str(facts.get("subject_name") or facts.get("club_name") or ""),
+            facts,
+            handles,
+            str(output_path),
+        ):
+            return str(output_path)
+    except Exception:
+        # A graphics dependency/network failure must never prevent a verified
+        # post; the local fact-only branded card below is the safe fallback.
+        pass
+
     image = Image.new("RGB", (1200, 675), _BG)
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((50, 45, 1150, 630), radius=28, fill=_PANEL)
