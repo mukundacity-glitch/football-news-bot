@@ -34,13 +34,19 @@ jobs:
         id: window
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            ET_HOUR="$(TZ=America/New_York date +%-H)"
-            if [ "$ET_HOUR" = "6" ] || [ "$ET_HOUR" = "19" ]; then
+            # GitHub scheduled jobs can start late. Do NOT decide using the
+            # runner's current hour, or a delayed 6AM ET run may be skipped at
+            # 7AM/8AM. Instead, use the cron expression that triggered the event
+            # plus the current Eastern offset to keep exactly two effective runs
+            # per day through DST.
+            SCHEDULE="${{ github.event.schedule }}"
+            ET_OFFSET="$(TZ=America/New_York date +%z)"
+            if [[ "$ET_OFFSET" == "-0400" && ( "$SCHEDULE" == "0 10 * * *" || "$SCHEDULE" == "0 23 * * *" ) ]] ||                [[ "$ET_OFFSET" == "-0500" && ( "$SCHEDULE" == "0 11 * * *" || "$SCHEDULE" == "0 0 * * *" ) ]]; then
               echo "should_run=true" >> "$GITHUB_OUTPUT"
-              echo "In posting window (hour $ET_HOUR ET) — proceeding."
+              echo "Scheduled posting slot $SCHEDULE is active for ET offset $ET_OFFSET — proceeding."
             else
               echo "should_run=false" >> "$GITHUB_OUTPUT"
-              echo "Outside posting windows (6AM/7PM ET; now $ET_HOUR ET) — skipping this scheduled run."
+              echo "Scheduled slot $SCHEDULE is inactive for ET offset $ET_OFFSET — skipping duplicate DST guard run."
             fi
           else
             echo "should_run=true" >> "$GITHUB_OUTPUT"
