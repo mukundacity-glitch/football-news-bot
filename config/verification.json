@@ -8,6 +8,9 @@
       "SUSPENSION"
     ],
     "publishable_statuses": [
+      "HERE_WE_GO",
+      "MEDICAL",
+      "AGREEMENT",
       "OFFICIAL",
       "COMPLETED"
     ],
@@ -21,7 +24,13 @@
     "unknown_dates_are_stale": true,
     "unknown_entities_are_invalid": true,
     "generated_text_must_be_template_only": true,
-    "require_source_url": true
+    "require_source_url": true,
+    "allow_elite_medical_transfer_confirmation": true,
+    "elite_medical_transfer_statuses": [
+      "AGREEMENT",
+      "MEDICAL",
+      "HERE_WE_GO"
+    ]
   },
   "thresholds": {
     "entity_certainty_min": 0.98,
@@ -257,7 +266,11 @@
         "\\bsign(?:s|ed)?\\s+(?!(?:a\\s+)?new\\s+(?:contract|deal)\\b)",
         "\\bsigning\\s+(?!(?:a\\s+)?new\\s+(?:contract|deal)\\b)",
         "\\bhere we go\\b",
-        "\\binterested in signing\\b"
+        "\\binterested in signing\\b",
+        "\\bmedical\\b",
+        "\\bdeal agreed\\b",
+        "\\bfee agreed\\b",
+        "\\bagreement in place\\b"
       ],
       "INJURY": [
         "\\bruled out\\b",
@@ -310,11 +323,17 @@
           "\\bhere we go\\b"
         ],
         "MEDICAL": [
-          "\\bmedical (?:booked|completed|passed|underway)\\b"
+          "\\bmedical (?:booked|completed|passed|underway)\\b",
+          "\\bpermission to (?:travel|undergo|hold) (?:for )?(?:a )?medical\\b",
+          "\\bgiven permission to (?:travel|undergo|hold) (?:for )?(?:a )?medical\\b",
+          "\\bset for (?:a )?medical\\b"
         ],
         "AGREEMENT": [
           "\\bagreement (?:reached|in place)\\b",
-          "\\bdeal agreed\\b"
+          "\\bdeal agreed\\b",
+          "\\bfee agreed\\b",
+          "\\bagree(?:d|s)? (?:a )?(?:fee|deal)\\b",
+          "\\bagreement in principle\\b"
         ],
         "BID": [
           "\\bbid (?:made|submitted|accepted)\\b"

@@ -41,7 +41,8 @@ def create_verified_card(
 ) -> str:
     if not decision.may_publish:
         raise ValueError("cannot render card for unverified decision")
-    facts = decision.verified_facts
+    facts = dict(decision.verified_facts)
+    facts["_event_status"] = decision.status.value
 
     # Use the established FPL VORTEX player-card treatment whenever Playwright
     # is available: player image, club crest, logo, channel name, and official
@@ -78,7 +79,11 @@ def create_verified_card(
     _draw_brand(draw, image)
 
     event_label = {
-        EventType.TRANSFER: "CONFIRMED TRANSFER",
+        EventType.TRANSFER: (
+            "MEDICAL / DEAL AGREED"
+            if facts.get("_event_status") in {"MEDICAL", "AGREEMENT", "HERE_WE_GO"}
+            else "CONFIRMED TRANSFER"
+        ),
         EventType.INJURY: "OFFICIAL INJURY UPDATE",
         EventType.SUSPENSION: "OFFICIAL SUSPENSION",
         EventType.MANAGER: "OFFICIAL MANAGER UPDATE",

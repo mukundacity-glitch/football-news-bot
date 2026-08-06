@@ -210,6 +210,7 @@ class VerificationEngine:
             "first_party_official": "first-party official confirmation",
             "configured_here_we_go": "configured elite milestone with independent fact agreement",
             "configured_nonofficial": "configured multi-publisher confirmation",
+            "configured_elite_medical": "elite source medical/deal-agreed transfer milestone",
             "none": "media/journalist evidence remains pending",
         }[confirmation_kind]
         if authoritative and not confirmation_ready:
@@ -436,6 +437,24 @@ class VerificationEngine:
             ]
             if milestone and len(support) >= int(self.config.policy("minimum_here_we_go_publishers")):
                 return support, "configured_here_we_go"
+
+        # Optional fast transfer mode: allow elite configured sources (Sky/BBC/
+        # The Athletic/Romano-level priors) to publish MEDICAL / DEAL AGREED
+        # transfer milestones. This never labels the card/caption as a completed
+        # transfer; renderer uses MEDICAL or DEAL AGREED based on status. It is
+        # limited to TRANSFER and still requires PL relevance, source URL,
+        # mandatory facts, freshness, and duplicate gates.
+        if event == EventType.TRANSFER and self.config.policy("allow_elite_medical_transfer_confirmation"):
+            allowed = {
+                EventStatus(value)
+                for value in self.config.policy("elite_medical_transfer_statuses")
+            }
+            support = [
+                claim for claim in independent
+                if claim.status in allowed
+            ]
+            if support:
+                return support, "configured_elite_medical"
 
         if self.config.policy("allow_non_official_confirmation"):
             support = [

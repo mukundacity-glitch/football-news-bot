@@ -42,8 +42,17 @@ class VerifiedPostRenderer:
             origin = facts.get("club_from_name")
             kind = str(facts.get("transfer_kind") or "").lower()
             route = f" from {origin}" if origin else ""
-            # Keep this sentence shape for audit/tests and human clarity.
-            line1 = f"✅ Confirmed transfer: {player} has joined {destination}{route}."
+            status = decision.status.value
+            if status == "MEDICAL":
+                line1 = f"🏥 Medical: {player} given permission for {destination} medical{route}."
+                fallback_detail = "Medical/deal milestone — awaiting club announcement."
+            elif status in {"AGREEMENT", "HERE_WE_GO"}:
+                line1 = f"🚨 Deal agreed: {player} to {destination}{route}."
+                fallback_detail = "Deal agreed — awaiting club completion announcement."
+            else:
+                # Keep this sentence shape for audit/tests and human clarity.
+                line1 = f"✅ Confirmed transfer: {player} has joined {destination}{route}."
+                fallback_detail = "Official club confirmation."
             details: List[str] = []
             if kind:
                 details.append(_title_move_kind(kind))
@@ -51,7 +60,7 @@ class VerifiedPostRenderer:
                 details.append(f"Fee: {facts['fee']}")
             if facts.get("contract_length"):
                 details.append(f"Contract: {facts['contract_length']}")
-            line2 = " • ".join(details) if details else "Official club confirmation."
+            line2 = " • ".join(details) if details else fallback_detail
 
         elif event == EventType.INJURY:
             player = str(required(facts, "subject_name"))

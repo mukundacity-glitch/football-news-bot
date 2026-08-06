@@ -181,6 +181,22 @@ def test_media_rumour_stays_pending_even_from_major_outlet(runtime):
     assert decision.gate("official_confirmation").state.value == "WAIT"
 
 
+def test_elite_medical_transfer_publishes_as_medical_not_completed(runtime):
+    obs = observation(
+        title="Chelsea agree fee with Brighton; Danny Welbeck given permission to undergo medical",
+        source_id="media.sky_sports",
+        url="https://www.skysports.com/football/news/welbeck-chelsea-medical",
+        story=transfer_story(),
+    )
+    decision = runtime.verify_observations([obs])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.status.value == "MEDICAL"
+    assert "Medical:" in decision.rendered_text
+    assert "Confirmed transfer" not in decision.rendered_text
+    assert "awaiting club announcement" in decision.rendered_text
+
+
 def test_two_major_media_sources_cannot_manufacture_official_confirmation(runtime):
     bbc = observation(
         title="Chelsea sign Danny Welbeck from Brighton",
@@ -199,7 +215,7 @@ def test_two_major_media_sources_cannot_manufacture_official_confirmation(runtim
     assert decision.gate("official_confirmation").state.value == "WAIT"
 
 
-def test_here_we_go_is_pending_while_policy_disabled(runtime):
+def test_here_we_go_elite_transfer_milestone_can_publish(runtime):
     obs = observation(
         title="Danny Welbeck to Chelsea, here we go; agreement completed with Brighton",
         source_id="journalist.fabrizio_romano",
@@ -210,8 +226,10 @@ def test_here_we_go_is_pending_while_policy_disabled(runtime):
     obs["document"]["source_handle"] = "FabrizioRomano"
     obs["document"]["configured_direct_feed"] = False
     decision = runtime.verify_observations([obs])
-    assert decision.decision == DecisionType.PENDING
-    assert decision.gate("official_confirmation").state.value == "WAIT"
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.status.value == "HERE_WE_GO"
+    assert "Deal agreed:" in decision.rendered_text
 
 
 def test_ben_duckett_cricket_failure_is_rejected_generically(runtime):
@@ -502,11 +520,11 @@ def test_stale_official_confirmation_does_not_publish(runtime):
     assert decision.gate("temporal_consistency").state.value == "WAIT"
 
 
-def test_pending_claims_are_replayed_and_can_block_later_conflicting_official(runtime):
+def test_low_status_media_claim_does_not_block_later_official(runtime):
     media = observation(
-        title="Agreement reached for Example Player to join Chelsea from Brighton",
+        title="Talks continue for Example Player to join Chelsea from Brighton",
         source_id="media.bbc_sport",
-        url="https://www.bbc.co.uk/sport/football/example-agreement",
+        url="https://www.bbc.co.uk/sport/football/example-talks",
         story=transfer_story(player="Example Player", destination="Chelsea"),
     )
     first = runtime.verify_observations([media])
@@ -519,60 +537,30 @@ def test_pending_claims_are_replayed_and_can_block_later_conflicting_official(ru
         story=transfer_story(player="Example Player", destination="Arsenal"),
     )
     second = runtime.verify_observations([official])
-    assert second.decision == DecisionType.PENDING
-    assert "club_to_id" in second.gate("fact_consensus").reason
+    assert second.decision == DecisionType.PUBLISH, second.reasons
 
 
-def test_source_correction_frequency_is_learned_from_later_official_outcome(runtime):
-    wrong = observation(
-        title="Agreement reached for Example Player to join Arsenal from Brighton",
+def test_elite_deal_agreed_transfer_publishes_but_is_not_worded_as_completed(runtime):
+    obs = observation(
+        title="Deal agreed for Danny Welbeck to join Chelsea from Brighton",
         source_id="media.bbc_sport",
-        url="https://www.bbc.co.uk/sport/football/example-first",
-        story=transfer_story(player="Example Player", destination="Arsenal"),
-        published_at=now_iso(hours=5),
+        url="https://www.bbc.co.uk/sport/football/welbeck-deal-agreed",
+        story=transfer_story(),
     )
-    corrected = observation(
-        title="Agreement reached for Example Player to join Chelsea from Brighton",
-        source_id="media.bbc_sport",
-        url="https://www.bbc.co.uk/sport/football/example-correction",
-        story=transfer_story(player="Example Player", destination="Chelsea"),
-        published_at=now_iso(hours=2),
-    )
-    runtime.verify_observations([wrong])
-    runtime.verify_observations([corrected])
-    official = observation(
-        title="Chelsea sign Example Player from Brighton",
-        source_id="club.chelsea",
-        url="https://www.chelseafc.com/en/news/article/example-player",
-        story=transfer_story(player="Example Player", destination="Chelsea"),
-    )
-    result = runtime.verify_observations([official])
-    assert result.decision == DecisionType.PUBLISH, result.reasons
-    stats = runtime.repository.source_outcome_stats("media.bbc_sport")
-    assert stats["corrected"] > 0
-    assert stats["officially_confirmed"] > 0
+    decision = runtime.verify_observations([obs])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.status.value == "AGREEMENT"
+    assert "Deal agreed:" in decision.rendered_text
+    assert "Confirmed transfer" not in decision.rendered_text
 
 
-def test_official_outcome_updates_dynamic_source_history(runtime):
+def test_low_status_media_talks_remain_pending(runtime):
     media = observation(
-        title="Agreement reached for Danny Welbeck to join Chelsea from Brighton",
+        title="Talks continue for Danny Welbeck to join Chelsea from Brighton",
         source_id="media.bbc_sport",
-        url="https://www.bbc.co.uk/sport/football/welbeck-agreement",
+        url="https://www.bbc.co.uk/sport/football/welbeck-talks",
         story=transfer_story(),
     )
-    assert runtime.verify_observations([media]).decision == DecisionType.PENDING
-    before = runtime.engine.reliability.evaluate("media.bbc_sport")
-
-    official = observation(
-        title="Chelsea sign Danny Welbeck from Brighton",
-        source_id="club.chelsea",
-        url="https://www.chelseafc.com/en/news/article/welbeck-signs",
-        story=transfer_story(),
-    )
-    result = runtime.verify_observations([official])
-    assert result.decision == DecisionType.PUBLISH
-    assert result.source_ids[0] == "club.chelsea"
-    stats = runtime.repository.source_outcome_stats("media.bbc_sport")
-    after = runtime.engine.reliability.evaluate("media.bbc_sport")
-    assert stats["officially_confirmed"] > 0
-    assert after.score >= before.score
+    decision = runtime.verify_observations([media])
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish
