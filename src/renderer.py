@@ -580,6 +580,7 @@ def _build_verified_broadcast_html(
     club_name="",
     club_code="",
     club_crest="",
+    club_color="",
     rows=None,
     source_text="Official source",
     footer_tag="TRANSFER",
@@ -597,6 +598,9 @@ def _build_verified_broadcast_html(
     badge_bg = "#FF3045" if is_injury_theme else "#27FF89"
     badge_fg = "#FFFFFF" if is_injury_theme else "#000000"
     icon_fg = "#FFFFFF" if is_injury_theme else "#07111D"
+    # The portrait panel is filled with the club's own colour. Falls back to
+    # the event accent so an unmapped club still themes sensibly.
+    club_color = str(club_color or "").strip() or accent
     logo_html = (
         f'<img class="brand-logo" src="{logo_uri}" alt="FPL VORTEX logo" />'
         if logo_uri else '<div class="brand-logo placeholder"></div>'
@@ -679,12 +683,17 @@ def _build_verified_broadcast_html(
       .brand-text {{ display:flex; flex-direction:column; justify-content:center; }}
       .subtitle {{ color:#A8B5C9; font-size:42px; font-weight:700; opacity:.92; margin-left:12px; margin-top:10px; white-space:nowrap; }}
       .badge {{ position:absolute; right:135px; top:75px; width:700px; height:160px; border-radius:60px; background:{badge_bg}; color:{badge_fg}; display:flex; align-items:center; justify-content:center; font-size:82px; font-weight:950; letter-spacing:1px; font-style:italic; z-index:3; box-shadow:0 0 30px rgba({accent_rgb},.42); }}
+      /* Rectangular portrait panel, filled with the club's own colour. */
       .portrait-wrap {{ position:absolute; left:165px; top:300px; width:1320px; height:1220px; z-index:2; display:flex; align-items:center; justify-content:center; }}
-      .portrait-ring {{ position:absolute; width:1100px; height:1100px; border-radius:50%; border:8px solid {accent2}; box-shadow:0 0 60px rgba({accent2_rgb},.84), inset 0 0 55px rgba({accent2_rgb},.18); }}
-      .portrait-lines {{ position:absolute; width:1030px; height:1030px; border-radius:50%; overflow:hidden; opacity:.72; }}
-      .portrait-lines::before {{ content:""; position:absolute; inset:-80px; background:repeating-linear-gradient(135deg, transparent 0 58px, rgba({accent2_rgb},.36) 59px 70px, transparent 71px 136px, rgba(26,107,255,.28) 137px 145px); filter:blur(1px); }}
-      .player-photo {{ position:relative; z-index:4; max-width:920px; max-height:1080px; object-fit:contain; filter:drop-shadow(0 28px 28px rgba(0,0,0,.60)); }}
-      .crest-fallback {{ width:640px; opacity:.92; }}
+      .portrait-ring {{ position:absolute; width:1080px; height:1180px; border-radius:32px; border:8px solid {accent2};
+        background:linear-gradient(158deg, {club_color} 0%, {club_color} 46%, rgba(4,9,18,.90) 100%);
+        box-shadow:0 0 60px rgba({accent2_rgb},.84), inset 0 0 70px rgba(0,0,0,.42); }}
+      .portrait-lines {{ position:absolute; width:1064px; height:1164px; border-radius:26px; overflow:hidden; opacity:.55; }}
+      .portrait-lines::before {{ content:""; position:absolute; inset:-80px; background:repeating-linear-gradient(135deg, transparent 0 58px, rgba(255,255,255,.16) 59px 70px, transparent 71px 136px, rgba(0,0,0,.22) 137px 145px); filter:blur(1px); }}
+      .player-photo {{ position:relative; z-index:4; max-width:940px; max-height:1120px; object-fit:contain; filter:drop-shadow(0 28px 28px rgba(0,0,0,.60)); }}
+      /* The crest stand-in sits on the club colour, so it needs its own
+         separation or a red crest disappears into a red panel. */
+      .crest-fallback {{ width:620px; opacity:.97; filter:drop-shadow(0 0 26px rgba(0,0,0,.75)) drop-shadow(0 10px 20px rgba(0,0,0,.55)); }}
       .player-fallback {{ font-size:190px; font-weight:950; color:rgba(255,255,255,.16); }}
       .right {{ position:absolute; left:1725px; right:125px; top:380px; bottom:315px; z-index:3; }}
       .left-player-name {{ position:absolute; left:95px; top:1540px; width:1460px; text-align:center; z-index:5; font-size:126px; line-height:.95; font-weight:950; letter-spacing:-2px; text-transform:uppercase; white-space:nowrap; text-shadow:0 10px 24px rgba(0,0,0,.80); }}
@@ -692,7 +701,9 @@ def _build_verified_broadcast_html(
       .transfer-panel {{ height:560px; display:flex; align-items:flex-start; justify-content:center; gap:92px; }}
       .club-block {{ width:420px; text-align:center; }}
       .club-code {{ font-size:90px; font-weight:950; letter-spacing:2px; margin-bottom:14px; text-shadow:0 5px 14px rgba(0,0,0,.7); }}
-      .club-box {{ width:320px; height:320px; margin:0 auto; border-radius:35px; background:#fff; border:6px solid {accent}; box-shadow:0 0 24px rgba({accent_rgb},.5); display:flex; align-items:center; justify-content:center; overflow:hidden; }}
+      /* No white plate behind the crest — it reads as a sticker on a dark
+         card. Transparent box, accent border only. */
+      .club-box {{ width:320px; height:320px; margin:0 auto; border-radius:35px; background:transparent; border:6px solid {accent}; box-shadow:0 0 24px rgba({accent_rgb},.5); display:flex; align-items:center; justify-content:center; overflow:hidden; }}
       .club-box img {{ max-width:240px; max-height:240px; object-fit:contain; }}
       .crest-placeholder {{ color:#0C1828; font-size:58px; font-weight:950; }}
       .arrow {{ font-size:190px; line-height:320px; padding-top:100px; color:{accent}; filter:drop-shadow(0 0 14px rgba({accent_rgb},.88)); }}
@@ -705,11 +716,11 @@ def _build_verified_broadcast_html(
       .info-row {{ min-height:110px; display:grid; grid-template-columns:100px minmax(0,1fr) minmax(420px,760px); align-items:center; gap:24px; border-top:4px solid rgba({table_rgb},.90); background:rgba(7,17,29,.74); padding:15px 26px 14px 0; box-shadow:0 0 16px rgba({table_rgb},.20); }}
       .info-row:last-child {{ border-bottom:4px solid rgba({table_rgb},.90); }}
       .info-icon {{ width:75px; height:75px; border-radius:50%; background:{table_accent}; color:{icon_fg}; display:flex; align-items:center; justify-content:center; font-size:48px; font-weight:950; margin-left:0; box-shadow:0 0 18px rgba({table_rgb},.58); }}
-      .info-label {{ font-size:62px; font-weight:950; color:#fff; white-space:nowrap; }}
+      .info-label {{ font-size:74px; font-weight:950; color:#fff; white-space:nowrap; }}
       /* Values are auto-fitted by fitValues() below rather than clipped: a
          real diagnosis ("UNSPECIFIED INJURY - UNAVAILABLE") must read in
          full, so it wraps to a second line and shrinks until it fits. */
-      .info-value {{ font-size:62px; font-weight:950; color:{accent}; text-align:right; max-width:760px; line-height:1.06; overflow-wrap:break-word; }}
+      .info-value {{ font-size:74px; font-weight:950; color:{accent}; text-align:right; max-width:760px; line-height:1.06; overflow-wrap:break-word; }}
       .footer {{ position:absolute; left:76px; right:76px; bottom:48px; height:150px; z-index:4; border:4px solid rgba({accent_rgb},.82); border-radius:26px; background:rgba(7,17,29,.92); box-shadow:0 0 25px rgba({accent_rgb},.52); display:grid; grid-template-columns:1.28fr .88fr .98fr; align-items:center; overflow:hidden; }}
       .foot-section {{ height:100%; display:flex; align-items:center; gap:30px; padding:0 50px; font-size:58px; font-weight:950; white-space:nowrap; }}
       .foot-section + .foot-section {{ border-left:5px solid {accent}; }}
@@ -747,7 +758,7 @@ def _build_verified_broadcast_html(
         // slightly smaller one.
         function fitValues() {{
           document.querySelectorAll('.info-value').forEach(function (el) {{
-            let fs = 62;
+            let fs = 74;
             el.style.fontSize = fs + 'px';
             const maxH = 150;
             while ((el.scrollWidth > el.clientWidth || el.scrollHeight > maxH) && fs > 26) {{
@@ -822,6 +833,7 @@ def create_verified_branded_card(event, subject, facts, source_handles, filename
             destination_name=destination,
             destination_code=_club_code_from_key(destination_key, destination),
             destination_crest=_crest_uri(destination_key),
+            club_color=get_club_color(destination_key),
             rows=rows,
             source_text=" · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE",
             footer_tag="TRANSFER",
@@ -847,6 +859,7 @@ def create_verified_branded_card(event, subject, facts, source_handles, filename
             club_name=club_name,
             club_code=_club_code_from_key(club_key, club_name),
             club_crest=_crest_uri(club_key),
+            club_color=get_club_color(club_key),
             rows=rows,
             source_text=" · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE",
             footer_tag="INJURY",
@@ -872,6 +885,7 @@ def create_verified_branded_card(event, subject, facts, source_handles, filename
             club_name=club_name,
             club_code=_club_code_from_key(club_key, club_name),
             club_crest=_crest_uri(club_key),
+            club_color=get_club_color(club_key),
             rows=rows,
             source_text=" · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE",
             footer_tag="SUSPENSION",
