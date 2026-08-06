@@ -268,14 +268,7 @@ def test_two_major_media_sources_cannot_manufacture_official_confirmation(runtim
     assert decision.gate("official_confirmation").state.value == "WAIT"
 
 
-def test_here_we_go_alone_does_not_publish_while_the_policy_is_off(runtime):
-    """HERE_WE_GO honours allow_here_we_go, which the shipped config sets false.
-
-    The medical/deal-agreed fast path used to list HERE_WE_GO among its own
-    statuses, which quietly re-enabled the milestone the config had turned
-    off — and on weaker terms than the dedicated path it bypassed. Turning
-    allow_here_we_go back on is the way to publish these.
-    """
+def _romano_here_we_go():
     obs = observation(
         title="Danny Welbeck to Chelsea, here we go; agreement completed with Brighton",
         source_id="journalist.fabrizio_romano",
@@ -285,9 +278,35 @@ def test_here_we_go_alone_does_not_publish_while_the_policy_is_off(runtime):
     )
     obs["document"]["source_handle"] = "FabrizioRomano"
     obs["document"]["configured_direct_feed"] = False
-    decision = runtime.verify_observations([obs])
+    return obs
+
+
+def test_here_we_go_needs_a_second_publisher(runtime):
+    """Even the milestone's own source cannot publish it alone.
+
+    HERE_WE_GO goes through the dedicated allow_here_we_go path, which wants
+    a source configured for the milestone AND minimum_here_we_go_publishers
+    independent claims at AGREEMENT or above. It previously leaked through
+    the medical fast path on a single claim with neither requirement.
+    """
+    decision = runtime.verify_observations([_romano_here_we_go()])
     assert decision.decision == DecisionType.PENDING
     assert not decision.may_publish
+
+
+def test_here_we_go_publishes_when_a_second_publisher_agrees(runtime):
+    corroboration = observation(
+        title="Danny Welbeck to join Chelsea from Brighton after fee agreed",
+        source_id="media.the_athletic",
+        url="https://www.nytimes.com/athletic/welbeck-here-we-go",
+        story=transfer_story(),
+    )
+    decision = runtime.verify_observations([_romano_here_we_go(), corroboration])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.status.value == "HERE_WE_GO"
+    assert "Deal agreed:" in decision.rendered_text
+    assert "Confirmed transfer" not in decision.rendered_text
 
 
 def test_ben_duckett_cricket_failure_is_rejected_generically(runtime):
