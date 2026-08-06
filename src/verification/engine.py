@@ -438,22 +438,35 @@ class VerificationEngine:
             if milestone and len(support) >= int(self.config.policy("minimum_here_we_go_publishers")):
                 return support, "configured_here_we_go"
 
-        # Optional fast transfer mode: allow elite configured sources (Sky/BBC/
-        # The Athletic/Romano-level priors) to publish MEDICAL / DEAL AGREED
-        # transfer milestones. This never labels the card/caption as a completed
-        # transfer; renderer uses MEDICAL or DEAL AGREED based on status. It is
-        # limited to TRANSFER and still requires PL relevance, source URL,
-        # mandatory facts, freshness, and duplicate gates.
+        # Optional fast transfer mode: allow elite sources to publish MEDICAL /
+        # DEAL AGREED transfer milestones. This never labels the card/caption as
+        # a completed transfer; renderer uses MEDICAL or DEAL AGREED based on
+        # status. It is limited to TRANSFER and still requires PL relevance,
+        # source URL, mandatory facts, freshness, and duplicate gates.
+        #
+        # "Elite" is enforced, not assumed: a source qualifies only if it is
+        # explicitly configured for that milestone via allowed_milestones. The
+        # reliability threshold alone is not a proxy for it — nearly every
+        # configured publisher clears that bar, which would let a single
+        # secondary outlet publish an unconfirmed transfer. The publisher
+        # minimum matches the sibling paths for the same reason.
         if event == EventType.TRANSFER and self.config.policy("allow_elite_medical_transfer_confirmation"):
-            allowed = {
-                EventStatus(value)
-                for value in self.config.policy("elite_medical_transfer_statuses")
-            }
+            allowed = set()
+            for value in self.config.policy("elite_medical_transfer_statuses"):
+                try:
+                    allowed.add(EventStatus(value))
+                except ValueError:
+                    # An unrecognised status in config must not publish and
+                    # must not abort verification — ignore it.
+                    continue
             support = [
                 claim for claim in independent
                 if claim.status in allowed
+                and claim.status.value
+                in self.sources.require(claim.source_id).allowed_milestones
             ]
-            if support:
+            minimum = int(self.config.policy("minimum_elite_medical_publishers"))
+            if len(support) >= minimum:
                 return support, "configured_elite_medical"
 
         if self.config.policy("allow_non_official_confirmation"):

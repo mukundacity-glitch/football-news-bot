@@ -182,6 +182,39 @@ def test_media_rumour_stays_pending_even_from_major_outlet(runtime):
 
 
 def test_elite_medical_transfer_publishes_as_medical_not_completed(runtime):
+    """Two milestone-configured outlets may publish a medical — as a medical.
+
+    The fast path exists so a booked medical can go out before the club
+    announcement, but it must never be worded as a completed transfer.
+    """
+    sky = observation(
+        title="Chelsea agree fee with Brighton; Danny Welbeck given permission to undergo medical",
+        source_id="media.sky_sports",
+        url="https://www.skysports.com/football/news/welbeck-chelsea-medical",
+        story=transfer_story(),
+    )
+    bbc = observation(
+        title="Danny Welbeck set for a medical at Chelsea after fee agreed with Brighton",
+        source_id="media.bbc_sport",
+        url="https://www.bbc.co.uk/sport/football/welbeck-medical",
+        story=transfer_story(),
+    )
+    decision = runtime.verify_observations([sky, bbc])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.status.value == "MEDICAL"
+    assert "Medical:" in decision.rendered_text
+    assert "Confirmed transfer" not in decision.rendered_text
+    assert "awaiting club announcement" in decision.rendered_text
+
+
+def test_single_elite_source_cannot_publish_a_medical(runtime):
+    """One outlet is not enough, however reliable it is.
+
+    Sky alone used to clear this path. A single report of an unannounced
+    move is exactly the claim that gets retracted, so it now waits for a
+    second independent publisher like every other non-official route.
+    """
     obs = observation(
         title="Chelsea agree fee with Brighton; Danny Welbeck given permission to undergo medical",
         source_id="media.sky_sports",
@@ -189,12 +222,32 @@ def test_elite_medical_transfer_publishes_as_medical_not_completed(runtime):
         story=transfer_story(),
     )
     decision = runtime.verify_observations([obs])
-    assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert decision.may_publish
-    assert decision.status.value == "MEDICAL"
-    assert "Medical:" in decision.rendered_text
-    assert "Confirmed transfer" not in decision.rendered_text
-    assert "awaiting club announcement" in decision.rendered_text
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish
+
+
+def test_reliable_but_unconfigured_outlets_cannot_publish_a_medical(runtime):
+    """Reliability alone does not make a source elite.
+
+    Nearly every configured publisher clears source_reliability_min, so if
+    the path keyed off that score it would be open to secondary outlets.
+    Qualification comes from allowed_milestones, which these do not have.
+    """
+    guardian = observation(
+        title="Danny Welbeck set for a medical at Chelsea after fee agreed with Brighton",
+        source_id="media.the_guardian",
+        url="https://www.theguardian.com/football/welbeck-medical",
+        story=transfer_story(),
+    )
+    espn = observation(
+        title="Chelsea agree fee with Brighton; Danny Welbeck given permission to undergo medical",
+        source_id="media.espn",
+        url="https://www.espn.com/soccer/story/welbeck-medical",
+        story=transfer_story(),
+    )
+    decision = runtime.verify_observations([guardian, espn])
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish
 
 
 def test_two_major_media_sources_cannot_manufacture_official_confirmation(runtime):
@@ -215,7 +268,7 @@ def test_two_major_media_sources_cannot_manufacture_official_confirmation(runtim
     assert decision.gate("official_confirmation").state.value == "WAIT"
 
 
-def test_here_we_go_elite_transfer_milestone_can_publish(runtime):
+def _romano_here_we_go():
     obs = observation(
         title="Danny Welbeck to Chelsea, here we go; agreement completed with Brighton",
         source_id="journalist.fabrizio_romano",
@@ -225,11 +278,35 @@ def test_here_we_go_elite_transfer_milestone_can_publish(runtime):
     )
     obs["document"]["source_handle"] = "FabrizioRomano"
     obs["document"]["configured_direct_feed"] = False
-    decision = runtime.verify_observations([obs])
+    return obs
+
+
+def test_here_we_go_needs_a_second_publisher(runtime):
+    """Even the milestone's own source cannot publish it alone.
+
+    HERE_WE_GO goes through the dedicated allow_here_we_go path, which wants
+    a source configured for the milestone AND minimum_here_we_go_publishers
+    independent claims at AGREEMENT or above. It previously leaked through
+    the medical fast path on a single claim with neither requirement.
+    """
+    decision = runtime.verify_observations([_romano_here_we_go()])
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish
+
+
+def test_here_we_go_publishes_when_a_second_publisher_agrees(runtime):
+    corroboration = observation(
+        title="Danny Welbeck to join Chelsea from Brighton after fee agreed",
+        source_id="media.the_athletic",
+        url="https://www.nytimes.com/athletic/welbeck-here-we-go",
+        story=transfer_story(),
+    )
+    decision = runtime.verify_observations([_romano_here_we_go(), corroboration])
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
     assert decision.may_publish
     assert decision.status.value == "HERE_WE_GO"
     assert "Deal agreed:" in decision.rendered_text
+    assert "Confirmed transfer" not in decision.rendered_text
 
 
 def test_ben_duckett_cricket_failure_is_rejected_generically(runtime):
@@ -541,13 +618,19 @@ def test_low_status_media_claim_does_not_block_later_official(runtime):
 
 
 def test_elite_deal_agreed_transfer_publishes_but_is_not_worded_as_completed(runtime):
-    obs = observation(
+    bbc = observation(
         title="Deal agreed for Danny Welbeck to join Chelsea from Brighton",
         source_id="media.bbc_sport",
         url="https://www.bbc.co.uk/sport/football/welbeck-deal-agreed",
         story=transfer_story(),
     )
-    decision = runtime.verify_observations([obs])
+    athletic = observation(
+        title="Danny Welbeck to join Chelsea from Brighton after fee agreed",
+        source_id="media.the_athletic",
+        url="https://www.nytimes.com/athletic/welbeck-fee-agreed",
+        story=transfer_story(),
+    )
+    decision = runtime.verify_observations([bbc, athletic])
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
     assert decision.status.value == "AGREEMENT"
     assert "Deal agreed:" in decision.rendered_text
