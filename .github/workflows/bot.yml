@@ -101,6 +101,21 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit $code
 
+      # The card only otherwise exists inside the tweet, so a rendering
+      # regression can only be reviewed after it is already public. Keep the
+      # generated cards for a few days so any run can be inspected without
+      # posting anything.
+      - name: Save generated cards for inspection
+        if: always() && steps.window.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cards-${{ github.run_id }}
+          retention-days: 5
+          if-no-files-found: ignore
+          path: |
+            queue/pending/*.png
+            queue/dryrun/*.png
+
       - name: Verification V2 shadow report
         if: steps.window.outputs.should_run == 'true'
         run: python tools/v2_report.py || true

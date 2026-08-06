@@ -19,7 +19,8 @@ from pilmoji import Pilmoji
 
 # Connected to Core Engines & Ground Truth Caches
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key
-from src.renderer import create_transfer_image, create_injury_image, _create_fallback_card
+from src.renderer import (create_transfer_image, create_injury_image, _create_fallback_card,
+                          create_verified_branded_card, image_is_blank)
 from src.parser import extract_story_fallback, detect_historical, passes_safety_gate, _clean_source_text
 from src.entity_guard import (is_postable_player, classify_entity,
                               is_staff_subject, staff_role_of, staff_action_of)
@@ -2472,6 +2473,38 @@ def _recent_post_count(data, within_seconds):
         if (now - t).total_seconds() <= within_seconds: n += 1
     return n
 
+def _dry_run_event(story: dict) -> str:
+    """Fixture story event -> the event name the V2 card renders."""
+    return {
+        "transfer": "TRANSFER", "loan": "TRANSFER", "loan_option": "TRANSFER",
+        "injury": "INJURY", "suspension": "SUSPENSION",
+    }.get(str(story.get("event") or "").lower(), "TRANSFER")
+
+
+def _dry_run_facts(story: dict) -> dict:
+    """Project a fixture story onto the V2 verified-facts shape.
+
+    Only for --dry-run: it lets the pre-flight render the real posting card
+    from fixture data. Nothing here reaches a live post, which is built from
+    the verification engine's own facts.
+    """
+    facts = {"subject_name": story.get("player", "")}
+    if _dry_run_event(story) == "TRANSFER":
+        facts["club_to_name"] = story.get("to_club") or ""
+        facts["club_from_name"] = story.get("from_club") or ""
+        for key, source in (("fee", "fee"), ("contract_length", "contract"),
+                            ("transfer_kind", "transfer_kind")):
+            if story.get(source):
+                facts[key] = story[source]
+    else:
+        facts["club_name"] = story.get("to_club") or story.get("from_club") or ""
+        if story.get("diagnosis"):
+            facts["injury_status"] = story["diagnosis"]
+        if story.get("expected_return"):
+            facts["return_date"] = story["expected_return"]
+    return facts
+
+
 async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
     print(f"\n[DRY-RUN] Using fixtures: {fixtures_path} (x{runs} pass(es))")
     init_club_data()
@@ -2522,16 +2555,33 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
             if not ok:
                 print(f"  [DRY] VERIFY FAILED ({vwhy}) — card skipped: {story.get('player')!r}")
                 continue
-            img_path = dryrun_dir / f"{re.sub(r'[^a-z0-9_]', '', story['key'])}.png"
-            try:
-                create_transfer_image(story, story["sources"], str(img_path), collapsed=(story.get("collapsed", False)))
-                if img_path.exists() and img_path.stat().st_size >= 1000: total_img_ok += 1
-                else:
+            slug = re.sub(r'[^a-z0-9_]', '', story['key'])
+            img_path = dryrun_dir / f"{slug}.png"
+            # Render BOTH cards. The legacy card is what this fixture path has
+            # always produced; the V2 branded card is what actually gets posted,
+            # and a pre-flight that never renders it proves nothing about a
+            # real run.
+            for label, render in (
+                ("legacy", lambda p: create_transfer_image(
+                    story, story["sources"], str(p),
+                    collapsed=(story.get("collapsed", False)))),
+                ("v2", lambda p: create_verified_branded_card(
+                    _dry_run_event(story), story.get("player", ""),
+                    _dry_run_facts(story), story["sources"], str(p))),
+            ):
+                path = img_path if label == "legacy" else dryrun_dir / f"{slug}_v2.png"
+                try:
+                    render(path)
+                    # Size alone cannot see a blank card: the fallback rectangle
+                    # is several KB of flat colour and passes any size check.
+                    if image_is_blank(path):
+                        total_img_fail += 1
+                        print(f"  [DRY] IMAGE BLANK ({label}): {story['key']}")
+                    else:
+                        total_img_ok += 1
+                except Exception as e:
                     total_img_fail += 1
-                    print(f"  [DRY] IMAGE FAILED to produce valid file: {story['key']}")
-            except Exception as e:
-                total_img_fail += 1
-                print(f"  [DRY] IMAGE EXCEPTION: {e}")
+                    print(f"  [DRY] IMAGE EXCEPTION ({label}): {e}")
             record_content_dedup(story, data)
             data["stories"][story["key"]] = {
                 "stage": story.get("stage", 1), "player": story["player"],
@@ -2547,8 +2597,8 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
     print(f"  Fixtures processed : {len(fixtures)} x {runs} pass(es)")
     print(f"  Unique accepted    : {total_accepted}")
     print(f"  Duplicates blocked : {total_dup_blocked}  (should be > 0 if runs>1)")
-    print(f"  Images OK (>=1KB)  : {total_img_ok}")
-    print(f"  Images FAILED      : {total_img_fail}  (MUST be 0)")
+    print(f"  Cards with content : {total_img_ok}  (legacy + V2 per story)")
+    print(f"  Blank/failed cards : {total_img_fail}  (MUST be 0)")
     print(f"  Daily cap          : {_cap_label(data['daily']['limit'])}")
     est = total_accepted if int(data['daily']['limit']) <= 0 else min(total_accepted, data['daily']['limit'])
     print(f"  Est. posts/day     : ~{est} (capped at {_cap_label(data['daily']['limit'])}; "
