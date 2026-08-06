@@ -418,6 +418,31 @@ def _ensure_upload_safe(filename, max_bytes: int = MAX_UPLOAD_BYTES) -> None:
         print(f"  [CARD] Could not downscale {filename}: {exc}")
 
 
+def image_is_blank(path, stddev_floor: float = 3.0) -> bool:
+    """True when a rendered card carries no visible content.
+
+    File size is not evidence of content: when Playwright cannot start, the
+    card paths fall back to a flat rectangle that still weighs several KB
+    and passes any size check. A real card is text and crests on a
+    background, so its pixels vary; a flat fill has almost zero variance.
+
+    A missing or unreadable file counts as blank — nothing to post either
+    way.
+    """
+    try:
+        from PIL import ImageStat
+        p = Path(path)
+        if not p.exists() or p.stat().st_size < 100:
+            return True
+        with Image.open(p) as im:
+            # Downscale first: variance survives, and this stays fast on 4K.
+            small = im.convert("RGB").resize((96, 54), Image.Resampling.BILINEAR)
+            stat = ImageStat.Stat(small)
+        return max(stat.stddev) < stddev_floor
+    except Exception:
+        return True
+
+
 def _render_card(html_content, filename, width=1380, height=776) -> bool:
     """Render HTML to PNG via the threaded Playwright helper. Returns True on success."""
     try:

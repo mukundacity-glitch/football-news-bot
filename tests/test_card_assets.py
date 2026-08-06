@@ -19,7 +19,7 @@ from PIL import Image  # noqa: E402
 
 from src.renderer import (  # noqa: E402
     MAX_UPLOAD_BYTES, _ensure_upload_safe, _name_tokens, _strip_accents,
-    _wiki_page_is_player,
+    _wiki_page_is_player, image_is_blank,
 )
 
 
@@ -70,6 +70,53 @@ class WikipediaIdentityGuard(unittest.TestCase):
     def test_rejects_an_empty_page(self):
         self.assertFalse(_wiki_page_is_player({}, "Veljko Milosavljevic"))
         self.assertFalse(_wiki_page_is_player(summary("X", "footballer"), ""))
+
+
+class BlankCardDetection(unittest.TestCase):
+    """A card can render to a flat rectangle and still weigh several KB.
+
+    That is exactly what happens when Playwright cannot start: the card
+    paths fall back to `Image.new(...)`. The old pre-flight checked file
+    size only, so a completely empty card reported as a pass.
+    """
+
+    def setUp(self):
+        self.tmp = Path(__file__).resolve().parent / "_tmp_blank.png"
+
+    def tearDown(self):
+        if self.tmp.exists():
+            self.tmp.unlink()
+
+    def test_the_fallback_rectangle_is_recognised_as_blank(self):
+        # The exact fallback the renderer produces on a failed render.
+        Image.new("RGB", (1380, 776), color=(11, 18, 32)).save(self.tmp)
+        self.assertGreater(self.tmp.stat().st_size, 1000,
+                           "fixture must be big enough to pass a size check")
+        self.assertTrue(image_is_blank(self.tmp))
+
+    def test_a_card_with_content_is_not_blank(self):
+        from PIL import ImageDraw
+        image = Image.new("RGB", (600, 340), color=(11, 18, 32))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((40, 40, 560, 140), fill=(255, 48, 69))
+        draw.rectangle((40, 180, 400, 300), fill=(255, 255, 255))
+        image.save(self.tmp)
+        self.assertFalse(image_is_blank(self.tmp))
+
+    def test_a_missing_file_counts_as_blank(self):
+        self.assertTrue(image_is_blank(Path("/nonexistent/card.png")))
+
+    def test_a_truncated_file_counts_as_blank(self):
+        self.tmp.write_bytes(b"\x89PNG\r\n")
+        self.assertTrue(image_is_blank(self.tmp))
+
+    def test_a_faint_watermark_alone_still_counts_as_blank(self):
+        """Near-uniform is blank: one barely-visible mark is not a card."""
+        from PIL import ImageDraw
+        image = Image.new("RGB", (600, 340), color=(11, 18, 32))
+        ImageDraw.Draw(image).point((300, 170), fill=(12, 19, 33))
+        image.save(self.tmp)
+        self.assertTrue(image_is_blank(self.tmp))
 
 
 class UploadSizeGuard(unittest.TestCase):
