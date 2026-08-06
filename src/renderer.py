@@ -10,6 +10,7 @@ import base64
 import hashlib
 import urllib.request
 import urllib.parse
+import unicodedata
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -146,6 +147,100 @@ def _crest_uri(club_key) -> str:
     return _data_uri(cp)
 
 
+def _strip_accents(text: str) -> str:
+    """'Milosavljević' -> 'Milosavljevic' — feeds name comparison only."""
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", str(text))
+        if not unicodedata.combining(c)
+    )
+
+
+def _name_tokens(text: str):
+    cleaned = re.sub(r"\([^)]*\)", " ", _strip_accents(text).lower())
+    return {t for t in re.findall(r"[a-z]{2,}", cleaned)}
+
+
+# Words that mean the article is about a footballer. A page can only supply a
+# player photo if it is actually about a player.
+_WIKI_FOOTBALL_TERMS = (
+    "footballer", "football player", "soccer player", "association football",
+    "football club", "premier league", "midfielder", "defender", "goalkeeper",
+    "forward", "striker", "winger",
+)
+
+
+def _wiki_page_is_player(summary: dict, player_name: str) -> bool:
+    """Is this article the footballer we are looking for?
+
+    Two independent checks, because a wrong photo is far worse than no photo:
+    the article has to describe a footballer, AND its title has to carry the
+    player's surname. Without the second check a search for an obscure player
+    happily returns a politician or a village and we would print their face
+    on a verified news card.
+    """
+    title = str(summary.get("title") or "")
+    blurb = " ".join(str(summary.get(k) or "")
+                     for k in ("description", "extract")).lower()
+    if not any(term in blurb for term in _WIKI_FOOTBALL_TERMS):
+        return False
+    wanted = _name_tokens(player_name)
+    got = _name_tokens(title)
+    if not wanted or not got:
+        return False
+    surname = sorted(wanted, key=len)[-1]
+    return surname in got
+
+
+def _wiki_summary(title: str):
+    url = ("https://en.wikipedia.org/api/rest_v1/page/summary/"
+           + urllib.parse.quote(str(title).replace(" ", "_"), safe=""))
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "FPLVortexBot/1.0 (football-news-bot)"})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _wikipedia_player_image(player_name: str) -> str:
+    """Best available Wikipedia lead image for this player, or "".
+
+    The old version guessed the article title straight from the name, so any
+    player written with diacritics — 'Veljko Milosavljević' — missed every
+    time, which is precisely the kind of new signing that has no FPL headshot
+    either. This resolves the real title through the search API first, then
+    verifies the page before trusting its picture.
+    """
+    candidates = []
+    try:
+        search = ("https://en.wikipedia.org/w/api.php?action=query&list=search"
+                  "&format=json&srlimit=5&srsearch="
+                  + urllib.parse.quote(f"{player_name} footballer"))
+        req = urllib.request.Request(
+            search, headers={"User-Agent": "FPLVortexBot/1.0 (football-news-bot)"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        candidates = [hit.get("title") for hit
+                      in data.get("query", {}).get("search", []) if hit.get("title")]
+    except Exception as exc:
+        print(f"  [PHOTO] Wikipedia search failed for {player_name!r}: {exc}")
+
+    # The plain name still goes first — for well-known players it is the
+    # article title and saves a round trip.
+    for title in [player_name] + [c for c in candidates if c != player_name]:
+        try:
+            summary = _wiki_summary(title)
+        except Exception:
+            continue
+        if not _wiki_page_is_player(summary, player_name):
+            continue
+        # Prefer the full-resolution original: the summary thumbnail is only
+        # ~320px, which is visibly soft in the card's portrait area.
+        original = (summary.get("originalimage") or {}).get("source") or ""
+        thumb = (summary.get("thumbnail") or {}).get("source") or ""
+        if original or thumb:
+            return original or thumb
+    return ""
+
+
 def _img_assets(story):
     """Shared: resolve the verified player, display name, brand logo and player photo."""
     fpl = fetch_fpl_data()
@@ -174,30 +269,20 @@ def _img_assets(story):
         photo_uri = _data_uri(mp)
 
     # Wikipedia fallback: if neither FPL API nor media_url produced a photo,
-    # query the Wikipedia REST summary API for the player's lead image.
-    # This covers players not in the FPL dataset (foreign signings, new arrivals).
+    # resolve the player's article and take its lead image.
+    # This covers players not in the FPL dataset (foreign signings, academy
+    # players, brand-new arrivals) — exactly the ones with no FPL headshot.
     if not photo_uri:
         pname = story.get("player", "")
         if pname:
-            try:
-                wiki_api = ("https://en.wikipedia.org/api/rest_v1/page/summary/"
-                            + urllib.parse.quote(pname.replace(" ", "_")))
-                req = urllib.request.Request(
-                    wiki_api,
-                    headers={"User-Agent": "FPLVortexBot/1.0 (football-news-bot)"}
-                )
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    wdata = json.loads(resp.read().decode("utf-8"))
-                thumb = wdata.get("thumbnail", {}).get("source", "")
-                if thumb:
-                    wp = Path("players/wiki_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".jpg")
-                    if not wp.exists():
-                        _download_asset(thumb, wp)
-                    if wp.exists() and wp.stat().st_size > 500:
-                        photo_uri = _data_uri(wp)
-                        print(f"  [PHOTO] Wikipedia image found for {pname!r}")
-            except Exception as _we:
-                print(f"  [PHOTO] Wikipedia lookup failed for {pname!r}: {_we}")
+            thumb = _wikipedia_player_image(pname)
+            if thumb:
+                wp = Path("players/wiki_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".jpg")
+                if not wp.exists():
+                    _download_asset(thumb, wp)
+                if wp.exists() and wp.stat().st_size > 500:
+                    photo_uri = _data_uri(wp)
+                    print(f"  [PHOTO] Wikipedia image found for {pname!r}")
 
     # ESPN fallback: search the ESPN athletes API and fetch their headshot.
     if not photo_uri:
@@ -300,6 +385,39 @@ def _img_assets(story):
     return player_el, player_name, logo_uri, photo_uri
 
 
+# X rejects PNG uploads over 5 MB. The 4K card lands around 4.5 MB before a
+# player photo is composited in, so a good render can still fail at upload
+# time — after the story has been marked as posted. Stay clearly under.
+MAX_UPLOAD_BYTES = 4_400_000
+
+
+def _ensure_upload_safe(filename, max_bytes: int = MAX_UPLOAD_BYTES) -> None:
+    """Downscale an oversized card until X will accept it.
+
+    Full 4K is kept whenever it fits; only cards that would be rejected are
+    stepped down, so quality is never given away for nothing.
+    """
+    try:
+        path = Path(filename)
+        if not path.exists() or path.stat().st_size <= max_bytes:
+            return
+        for target_width in (3200, 2560, 1920, 1600):
+            with Image.open(path) as im:
+                if im.width <= target_width:
+                    continue
+                ratio = target_width / im.width
+                resized = im.convert("RGB").resize(
+                    (target_width, max(1, int(im.height * ratio))), Image.LANCZOS)
+            resized.save(path, format="PNG", optimize=True)
+            size = path.stat().st_size
+            print(f"  [CARD] Downscaled to {target_width}px for upload "
+                  f"({size // 1024} KB)")
+            if size <= max_bytes:
+                return
+    except Exception as exc:
+        print(f"  [CARD] Could not downscale {filename}: {exc}")
+
+
 def _render_card(html_content, filename, width=1380, height=776) -> bool:
     """Render HTML to PNG via the threaded Playwright helper. Returns True on success."""
     try:
@@ -311,6 +429,7 @@ def _render_card(html_content, filename, width=1380, height=776) -> bool:
         if error_box:
             print("  [THREAD TRACEBACK]\n" + error_box[0])
         if Path(filename).exists() and Path(filename).stat().st_size >= 1000:
+            _ensure_upload_safe(filename)
             return True
     except Exception:
         import traceback
@@ -421,99 +540,37 @@ def _fpl_team_for_player(player_el, fpl_data):
     return key, name, code
 
 
-def _fpl_position(player_el, fpl_data):
-    if not player_el or not fpl_data:
-        return ""
-    et = player_el.get("element_type")
-    if et:
-        record = next((x for x in fpl_data.get("element_types", []) if x.get("id") == et), None)
-        if record:
-            return str(record.get("singular_name") or record.get("singular_name_short") or "").upper()
-    return str(player_el.get("position") or "").upper()
-
-
-def _fpl_price(player_el):
-    if not player_el:
-        return ""
-    try:
-        value = float(player_el.get("now_cost")) / 10
-        return f"£{value:.1f}M"
-    except Exception:
-        return ""
-
-
-def _optional_age(player_el, facts):
-    raw = facts.get("age") or (player_el or {}).get("age")
-    if raw:
-        return str(raw)
-    birth = facts.get("birth_date") or (player_el or {}).get("birth_date")
-    if birth:
-        try:
-            from datetime import date
-            year, month, day = [int(x) for x in str(birth)[:10].split("-")]
-            today = date.today()
-            age = today.year - year - ((today.month, today.day) < (month, day))
-            return str(age)
-        except Exception:
-            pass
-    return ""
-
-
-def _optional_nationality(player_el, facts):
-    for key in ("nationality", "country", "country_name", "region", "region_name"):
-        val = facts.get(key) or (player_el or {}).get(key)
-        if val:
-            return str(val).upper()
-    return ""
-
-
-def _display_name_parts(name: str):
-    parts = [p for p in str(name or "PLAYER").upper().split() if p]
-    if len(parts) <= 1:
-        return "", parts[0] if parts else "PLAYER"
-    return " ".join(parts[:-1]), parts[-1]
-
-
-def _build_info_rows(player_el, fpl_data, facts, *, event):
-    rows = []
-    age = _optional_age(player_el, facts)
-    nat = _optional_nationality(player_el, facts)
-    pos = _fpl_position(player_el, fpl_data) or str(facts.get("position") or "").upper()
-    price = _fpl_price(player_el)
-    if age:
-        rows.append(("◌", "AGE", age))
-    if nat:
-        rows.append(("◉", "NATIONALITY", nat))
-    if pos:
-        rows.append(("▣", "POSITION", pos))
-    if price:
-        rows.append(("£", "FPL PRICE", price))
-    if event == "INJURY" and facts.get("injury_status"):
-        rows.insert(0, ("✚", "INJURY", str(facts["injury_status"]).upper()))
-    if event == "SUSPENSION" and facts.get("suspension_status"):
-        rows.insert(0, ("!", "SUSPENSION", str(facts["suspension_status"]).upper()))
-    return rows[:4]
-
-
-def _rows_html(rows):
+def _split_player_name_html(name: str) -> str:
     from html import escape
-    return "".join(
-        '<div class="info-row">'
-        f'<div class="icon">{escape(str(icon))}</div>'
-        f'<div class="label">{escape(str(label))}</div>'
-        f'<div class="value">{escape(str(value))}</div>'
-        '</div>'
-        for icon, label, value in rows[:4]
-    )
+    parts = [p for p in str(name or "OFFICIAL UPDATE").upper().split() if p]
+    if len(parts) <= 1:
+        return f'<span class="name-green">{escape(parts[0] if parts else "UPDATE")}</span>'
+    first = escape(" ".join(parts[:-1]))
+    last = escape(parts[-1])
+    return f'<span>{first}</span> <span class="name-green">{last}</span>'
 
 
-def _build_premium_card_html(
+def _broadcast_rows_html(rows):
+    from html import escape
+    html = []
+    for icon, label, value in rows[:3]:
+        html.append(
+            '<div class="info-row">'
+            f'<div class="info-icon">{escape(str(icon))}</div>'
+            f'<div class="info-label">{escape(str(label))}:</div>'
+            f'<div class="info-value">{escape(str(value))}</div>'
+            '</div>'
+        )
+    return "".join(html)
+
+
+def _build_verified_broadcast_html(
     *,
     event,
     player_name,
+    status,
     logo_uri,
     photo_uri,
-    source_text,
     origin_name="",
     origin_code="",
     origin_crest="",
@@ -524,183 +581,305 @@ def _build_premium_card_html(
     club_code="",
     club_crest="",
     rows=None,
-    status_label="",
+    source_text="Official source",
+    footer_tag="TRANSFER",
 ):
+    """4K premium broadcast template for V2 verified cards only."""
     from html import escape
-    event = str(event).upper()
     rows = rows or []
-    is_injury = event == "INJURY"
-    is_suspension = event == "SUSPENSION"
-    accent = "#FF3045" if is_injury else "#00FF66"
-    accent2 = "#FF4B5E" if is_injury else "#7CFF00"
-    accent_rgb = "255,48,69" if is_injury else "0,255,102"
-    badge_text = status_label or ("✚ INJURY" if is_injury else ("SUSPENSION" if is_suspension else "CONFIRMED"))
-    status_value = "OFFICIALLY CONFIRMED"
-    if badge_text == "MEDICAL":
-        status_value = "MEDICAL BOOKED"
-    elif badge_text == "DEAL AGREED":
-        status_value = "DEAL AGREED"
-    badge_fg = "#FFFFFF" if is_injury else "#00FF66"
-    first, surname = _display_name_parts(player_name)
-    logo_html = f'<img src="{logo_uri}" class="brand-logo" />' if logo_uri else ''
-    player_visual = f'<img src="{photo_uri}" class="player-img" />' if photo_uri else '<div class="player-fallback">FPL</div>'
-
-    def club_block(kind, name, code, crest):
-        if not name and not crest:
-            return ""
-        crest_html = f'<img src="{crest}" />' if crest else '<div class="crest-fallback">CLUB</div>'
-        return f"""
-        <div class="club-block">
-          <div class="club-heading">{escape(kind)}</div>
-          <div class="club-logo">{crest_html}</div>
-          <div class="club-name">{escape(name or code)}</div>
-        </div>"""
-
-    if event == "TRANSFER":
-        from_block = club_block("FROM", origin_name, origin_code, origin_crest)
-        to_block = club_block("TO", destination_name, destination_code, destination_crest)
-        if from_block and to_block:
-            transfer_html = f'<div class="transfer-panel">{from_block}<div class="transfer-arrow">➜</div>{to_block}</div>'
-        elif to_block:
-            transfer_html = f'<div class="transfer-panel single-transfer">{to_block}</div>'
-        else:
-            transfer_html = '<div class="transfer-panel single-transfer"><div class="confirmed-only">OFFICIALLY CONFIRMED</div></div>'
+    is_injury_theme = str(event).upper() == "INJURY"
+    accent = "#FF3045" if is_injury_theme else "#27FF89"
+    accent2 = "#FF4B5E" if is_injury_theme else "#2CFF95"
+    accent_rgb = "255,48,69" if is_injury_theme else "39,255,137"
+    accent2_rgb = "255,75,94" if is_injury_theme else "44,255,149"
+    table_accent = "#FF3045" if is_injury_theme else "#D4AF37"
+    table_rgb = "255,48,69" if is_injury_theme else "212,175,55"
+    badge_bg = "#FF3045" if is_injury_theme else "#27FF89"
+    badge_fg = "#FFFFFF" if is_injury_theme else "#000000"
+    icon_fg = "#FFFFFF" if is_injury_theme else "#07111D"
+    logo_html = (
+        f'<img class="brand-logo" src="{logo_uri}" alt="FPL VORTEX logo" />'
+        if logo_uri else '<div class="brand-logo placeholder"></div>'
+    )
+    if photo_uri:
+        player_visual = f'<img class="player-photo" src="{photo_uri}" alt="{escape(player_name)}" />'
     else:
-        transfer_html = f"""<div class="transfer-panel single-transfer">
-            {club_block("CLUB", club_name, club_code, club_crest)}
-        </div>"""
+        fallback_crest = club_crest or destination_crest or origin_crest
+        if fallback_crest:
+            player_visual = f'<img class="player-photo crest-fallback" src="{fallback_crest}" alt="club crest" />'
+        else:
+            player_visual = '<div class="player-photo player-fallback">FPL</div>'
 
-    position_text = next((v for _i, l, v in rows if l == "POSITION"), "PREMIER LEAGUE")
-    return f"""<!doctype html><html><head><meta charset="utf-8" />
+    is_transfer = str(event).upper() == "TRANSFER"
+    if is_transfer:
+        origin_img = f'<img src="{origin_crest}" alt="{escape(origin_name)}" />' if origin_crest else '<div class="crest-placeholder">FROM</div>'
+        destination_img = f'<img src="{destination_crest}" alt="{escape(destination_name)}" />' if destination_crest else '<div class="crest-placeholder">TO</div>'
+        origin_box = f"""
+            <div class="club-block">
+              <div class="club-code">{escape(origin_code or "FROM")}</div>
+              <div class="club-box">{origin_img}</div>
+            </div>"""
+        destination_box = f"""
+            <div class="club-block">
+              <div class="club-code">{escape(destination_code or "TO")}</div>
+              <div class="club-box">{destination_img}</div>
+            </div>"""
+        transfer_panel = f'<div class="transfer-panel">{origin_box}<div class="arrow">➜</div>{destination_box}</div>'
+    else:
+        club_img = f'<img src="{club_crest}" alt="{escape(club_name)}" />' if club_crest else '<div class="crest-placeholder">CLUB</div>'
+        transfer_panel = f"""
+            <div class="transfer-panel single-club">
+              <div class="club-block">
+                <div class="club-code">{escape(club_code or "PL")}</div>
+                <div class="club-box">{club_img}</div>
+              </div>
+              <div class="event-panel"><div>{escape(status)}</div><span>{escape(club_name or "Premier League")}</span></div>
+            </div>"""
+
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8" />
     <style>
       * {{ box-sizing:border-box; }}
-      html,body {{ margin:0; width:1920px; height:1080px; overflow:hidden; background:#060606; }}
-      body {{ font-family: Montserrat, DejaVu Sans, Arial, sans-serif; color:#fff; position:relative;
-        background: radial-gradient(circle at 35% 45%, rgba({accent_rgb},.35), transparent 27%), #060606; }}
-      .vortex {{ position:absolute; left:160px; top:110px; width:820px; height:820px; border-radius:50%;
-        background: repeating-conic-gradient(from 20deg, rgba({accent_rgb},.38) 0 7deg, transparent 7deg 19deg);
-        filter:blur(8px); opacity:.72; transform:rotate(-18deg); }}
-      .vortex::after {{ content:""; position:absolute; inset:78px; border-radius:50%; background:#060606; filter:blur(25px); opacity:.72; }}
-      .particles {{ position:absolute; inset:0; background:
-        radial-gradient(circle at 18% 24%, #FFD54F 0 2px, transparent 3px),
-        radial-gradient(circle at 42% 16%, rgba({accent_rgb},.8) 0 2px, transparent 3px),
-        radial-gradient(circle at 68% 34%, rgba({accent_rgb},.45) 0 2px, transparent 3px),
-        radial-gradient(circle at 28% 78%, #FFD54F 0 2px, transparent 3px); opacity:.9; }}
-      .card-border {{ position:absolute; inset:18px; border:2px solid rgba({accent_rgb},.72); border-radius:28px; box-shadow:0 0 22px rgba({accent_rgb},.55); }}
-      .brand {{ position:absolute; left:45px; top:35px; height:110px; display:flex; align-items:center; gap:25px; z-index:5; }}
-      .brand-logo {{ width:110px; height:110px; object-fit:contain; filter:drop-shadow(0 0 12px rgba({accent_rgb},.55)); }}
-      .brand-word {{ font-weight:950; font-style:italic; font-size:64px; line-height:.82; letter-spacing:-2px; }}
-      .brand-word span {{ color:{accent}; text-shadow:0 0 8px rgba({accent_rgb},.85); }}
-      .subtitle {{ font-size:18px; letter-spacing:6px; color:#D0D0D0; margin-top:12px; }}
-      .badge {{ position:absolute; right:50px; top:35px; width:250px; height:90px; border:3px solid {accent}; border-radius:18px;
-        display:flex; align-items:center; justify-content:center; color:{badge_fg}; font-size:48px; font-weight:950; font-style:italic; background:rgba(0,50,25,.62); box-shadow:0 0 20px rgba({accent_rgb},.85); }}
-      .player-wrap {{ position:absolute; left:40px; bottom:190px; width:910px; height:820px; z-index:3; display:flex; align-items:flex-end; justify-content:center; }}
-      .player-img {{ max-height:820px; max-width:900px; object-fit:contain; filter:drop-shadow(0 25px 22px rgba(0,0,0,.72)) drop-shadow(0 0 18px rgba({accent_rgb},.45)); }}
-      .player-fallback {{ font-size:120px; color:rgba(255,255,255,.2); font-weight:950; margin-bottom:300px; }}
-      .player-name {{ position:absolute; left:70px; bottom:92px; width:900px; z-index:4; }}
-      .first-name {{ font-size:40px; font-weight:700; font-style:italic; color:#fff; text-shadow:0 3px 8px #000; }}
-      .surname {{ font-size:108px; line-height:.86; font-weight:950; font-style:italic; color:{accent2}; text-shadow:0 0 12px rgba({accent_rgb},.9), 0 4px 12px #000; }}
-      .position-bar {{ display:inline-flex; align-items:center; justify-content:center; min-width:560px; height:65px; padding:0 32px; border:2px solid {accent}; background:#080808; transform:skewX(-8deg); margin-left:40px; margin-top:8px; }}
-      .position-bar span {{ transform:skewX(8deg); font-size:34px; font-weight:900; letter-spacing:4px; color:#fff; }}
-      .right-panel {{ position:absolute; left:1000px; top:155px; width:820px; z-index:4; }}
-      .transfer-panel {{ display:flex; align-items:center; justify-content:center; gap:42px; min-height:270px; margin-bottom:22px; }}
-      .single-transfer {{ justify-content:center; }}
-      .club-block {{ width:240px; text-align:center; }}
-      .club-heading {{ font-size:34px; font-weight:950; margin-bottom:8px; }}
-      .club-logo {{ width:220px; height:220px; margin:0 auto; border:2px solid {accent}; border-radius:18px; display:flex; align-items:center; justify-content:center; background:rgba(16,16,16,.72); box-shadow:0 0 15px rgba({accent_rgb},.55); }}
-      .club-logo img {{ max-width:150px; max-height:150px; object-fit:contain; filter:drop-shadow(0 0 10px rgba({accent_rgb},.45)); }}
-      .crest-fallback {{ color:#fff; font-size:28px; font-weight:900; opacity:.6; }}
-      .club-name {{ font-size:28px; font-weight:950; margin-top:8px; color:#fff; }}
-      .transfer-arrow {{ font-size:90px; color:{accent}; filter:drop-shadow(0 0 15px rgba({accent_rgb},.9)); }}
-      .confirmed-only {{ width:520px; height:130px; border:3px solid {accent}; border-radius:20px; display:flex; align-items:center; justify-content:center; color:{accent}; font-size:54px; font-weight:950; box-shadow:0 0 20px rgba({accent_rgb},.6); }}
-      .info {{ margin-top:12px; border-top:1px solid rgba({accent_rgb},.28); }}
-      .info-row {{ height:95px; display:grid; grid-template-columns:74px 205px 1fr; align-items:center; gap:18px; border-bottom:1px solid rgba({accent_rgb},.28); }}
-      .icon {{ width:46px; height:46px; border:3px solid {accent}; color:{accent}; display:flex; align-items:center; justify-content:center; font-size:29px; margin-left:10px; box-shadow:0 0 8px rgba({accent_rgb},.55); }}
-      .label {{ color:#D0D0D0; font-size:24px; font-weight:600; }}
-      .value {{ color:#fff; font-size:34px; font-weight:950; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-      .status-bar {{ margin-top:20px; height:120px; width:100%; border:3px solid {accent}; border-radius:20px; box-shadow:0 0 18px rgba({accent_rgb},.7); display:flex; align-items:center; padding:0 34px; background:rgba(16,16,16,.82); }}
-      .tick {{ width:60px; height:60px; border-radius:50%; background:{accent}; color:#060606; display:flex; align-items:center; justify-content:center; font-size:42px; font-weight:950; margin-right:26px; }}
-      .status-label {{ color:#fff; font-size:36px; font-weight:950; margin-right:18px; }}
-      .status-value {{ color:{accent}; font-size:60px; font-weight:950; font-style:italic; text-shadow:0 0 10px rgba({accent_rgb},.9); }}
-      .footer {{ position:absolute; left:0; right:0; bottom:0; height:85px; border-top:2px solid {accent}; display:grid; grid-template-columns:1fr 1fr 1fr; background:#060606; z-index:6; }}
-      .foot {{ display:flex; align-items:center; gap:18px; padding:0 58px; font-size:28px; font-weight:900; color:#fff; }}
-      .foot:nth-child(2), .foot:nth-child(3) {{ border-left:1px solid rgba({accent_rgb},.45); }}
-      .foot-icon {{ color:{accent}; font-size:36px; }}
-      .yt {{ width:52px; height:36px; background:#FF0000; border-radius:8px; position:relative; }}
-      .yt::after {{ content:""; position:absolute; left:21px; top:9px; border-top:9px solid transparent; border-bottom:9px solid transparent; border-left:14px solid #fff; }}
-      .x {{ color:#fff; font-size:42px; }}
+      html, body {{ margin:0; width:3840px; height:2160px; overflow:hidden; }}
+      body {{
+        font-family: "Montserrat", "DejaVu Sans", Arial, sans-serif;
+        color:#fff;
+        background:
+          radial-gradient(circle at 18% 52%, rgba({accent_rgb},0.18), transparent 30%),
+          radial-gradient(circle at 82% 22%, rgba(26,107,255,0.17), transparent 25%),
+          linear-gradient(135deg,#07111D 0%,#0C1828 100%);
+        position:relative;
+      }}
+      body::before {{
+        content:""; position:absolute; inset:-240px;
+        background:
+          repeating-linear-gradient(125deg,
+            transparent 0 74px,
+            rgba({accent_rgb},0.14) 75px 80px,
+            transparent 81px 168px,
+            rgba(26,107,255,0.18) 169px 174px,
+            transparent 175px 260px);
+        filter:blur(0.2px); opacity:0.72; transform:skewX(-6deg); pointer-events:none;
+      }}
+      body::after {{
+        content:""; position:absolute; inset:0;
+        background:radial-gradient(circle at center, transparent 42%, rgba(0,0,0,0.38) 100%);
+        pointer-events:none;
+      }}
+      .safe {{
+        position:absolute; inset:60px; border:4px solid rgba({accent_rgb},0.70);
+        border-radius:45px; box-shadow:0 0 20px rgba({accent_rgb},0.65), inset 0 0 24px rgba({accent_rgb},0.16);
+        z-index:1;
+      }}
+      .brand {{ position:absolute; left:78px; top:36px; height:420px; display:flex; align-items:center; z-index:3; }}
+      .brand-logo {{ width:650px; height:420px; object-fit:contain; margin-right:26px; filter:drop-shadow(0 0 34px rgba({accent_rgb},.78)); }}
+      .brand-logo.placeholder {{ border-radius:50%; border:5px solid {accent}; }}
+      .brand-title {{ font-size:126px; font-weight:950; letter-spacing:-4px; line-height:.9; font-style:italic; text-shadow:0 6px 18px rgba(0,0,0,.75); margin-left:8px; }}
+      .brand-title .fpl {{ color:#fff; }}
+      .brand-title .vortex {{ color:{accent}; margin-left:24px; text-shadow:0 0 22px rgba({accent_rgb},.58); }}
+      .brand-text {{ display:flex; flex-direction:column; justify-content:center; }}
+      .subtitle {{ color:#A8B5C9; font-size:42px; font-weight:700; opacity:.92; margin-left:12px; margin-top:10px; white-space:nowrap; }}
+      .badge {{ position:absolute; right:135px; top:75px; width:700px; height:160px; border-radius:60px; background:{badge_bg}; color:{badge_fg}; display:flex; align-items:center; justify-content:center; font-size:82px; font-weight:950; letter-spacing:1px; font-style:italic; z-index:3; box-shadow:0 0 30px rgba({accent_rgb},.42); }}
+      .portrait-wrap {{ position:absolute; left:165px; top:300px; width:1320px; height:1220px; z-index:2; display:flex; align-items:center; justify-content:center; }}
+      .portrait-ring {{ position:absolute; width:1100px; height:1100px; border-radius:50%; border:8px solid {accent2}; box-shadow:0 0 60px rgba({accent2_rgb},.84), inset 0 0 55px rgba({accent2_rgb},.18); }}
+      .portrait-lines {{ position:absolute; width:1030px; height:1030px; border-radius:50%; overflow:hidden; opacity:.72; }}
+      .portrait-lines::before {{ content:""; position:absolute; inset:-80px; background:repeating-linear-gradient(135deg, transparent 0 58px, rgba({accent2_rgb},.36) 59px 70px, transparent 71px 136px, rgba(26,107,255,.28) 137px 145px); filter:blur(1px); }}
+      .player-photo {{ position:relative; z-index:4; max-width:920px; max-height:1080px; object-fit:contain; filter:drop-shadow(0 28px 28px rgba(0,0,0,.60)); }}
+      .crest-fallback {{ width:640px; opacity:.92; }}
+      .player-fallback {{ font-size:190px; font-weight:950; color:rgba(255,255,255,.16); }}
+      .right {{ position:absolute; left:1725px; right:125px; top:380px; bottom:315px; z-index:3; }}
+      .left-player-name {{ position:absolute; left:95px; top:1540px; width:1460px; text-align:center; z-index:5; font-size:126px; line-height:.95; font-weight:950; letter-spacing:-2px; text-transform:uppercase; white-space:nowrap; text-shadow:0 10px 24px rgba(0,0,0,.80); }}
+      .left-player-name .fit-name {{ display:inline-block; max-width:1420px; }}
+      .transfer-panel {{ height:560px; display:flex; align-items:flex-start; justify-content:center; gap:92px; }}
+      .club-block {{ width:420px; text-align:center; }}
+      .club-code {{ font-size:90px; font-weight:950; letter-spacing:2px; margin-bottom:14px; text-shadow:0 5px 14px rgba(0,0,0,.7); }}
+      .club-box {{ width:320px; height:320px; margin:0 auto; border-radius:35px; background:#fff; border:6px solid {accent}; box-shadow:0 0 24px rgba({accent_rgb},.5); display:flex; align-items:center; justify-content:center; overflow:hidden; }}
+      .club-box img {{ max-width:240px; max-height:240px; object-fit:contain; }}
+      .crest-placeholder {{ color:#0C1828; font-size:58px; font-weight:950; }}
+      .arrow {{ font-size:190px; line-height:320px; padding-top:100px; color:{accent}; filter:drop-shadow(0 0 14px rgba({accent_rgb},.88)); }}
+      .single-club {{ justify-content:flex-start; gap:80px; }}
+      .event-panel {{ flex:1; min-height:320px; border-left:6px solid {accent}; padding:52px 0 0 72px; font-size:86px; line-height:1; font-weight:950; color:{accent}; text-shadow:0 0 14px rgba({accent_rgb},.35); }}
+      .event-panel span {{ display:block; margin-top:36px; font-size:58px; color:#fff; }}
+      .player-name {{ margin-top:20px; font-size:158px; line-height:.95; font-weight:950; letter-spacing:-2px; text-transform:uppercase; white-space:nowrap; text-shadow:0 10px 24px rgba(0,0,0,.75); }}
+      .name-green {{ color:{accent}; text-shadow:0 0 24px rgba({accent_rgb},.55); }}
+      .divider {{ height:5px; background:linear-gradient(90deg,transparent,{table_accent},transparent); margin:28px 0 32px 0; box-shadow:0 0 18px rgba({table_rgb},.75); }}
+      .info-row {{ min-height:110px; display:grid; grid-template-columns:100px minmax(0,1fr) minmax(420px,760px); align-items:center; gap:24px; border-top:4px solid rgba({table_rgb},.90); background:rgba(7,17,29,.74); padding:15px 26px 14px 0; box-shadow:0 0 16px rgba({table_rgb},.20); }}
+      .info-row:last-child {{ border-bottom:4px solid rgba({table_rgb},.90); }}
+      .info-icon {{ width:75px; height:75px; border-radius:50%; background:{table_accent}; color:{icon_fg}; display:flex; align-items:center; justify-content:center; font-size:48px; font-weight:950; margin-left:0; box-shadow:0 0 18px rgba({table_rgb},.58); }}
+      .info-label {{ font-size:62px; font-weight:950; color:#fff; white-space:nowrap; }}
+      /* Values are auto-fitted by fitValues() below rather than clipped: a
+         real diagnosis ("UNSPECIFIED INJURY - UNAVAILABLE") must read in
+         full, so it wraps to a second line and shrinks until it fits. */
+      .info-value {{ font-size:62px; font-weight:950; color:{accent}; text-align:right; max-width:760px; line-height:1.06; overflow-wrap:break-word; }}
+      .footer {{ position:absolute; left:76px; right:76px; bottom:48px; height:150px; z-index:4; border:4px solid rgba({accent_rgb},.82); border-radius:26px; background:rgba(7,17,29,.92); box-shadow:0 0 25px rgba({accent_rgb},.52); display:grid; grid-template-columns:1.28fr .88fr .98fr; align-items:center; overflow:hidden; }}
+      .foot-section {{ height:100%; display:flex; align-items:center; gap:30px; padding:0 50px; font-size:58px; font-weight:950; white-space:nowrap; }}
+      .foot-section + .foot-section {{ border-left:5px solid {accent}; }}
+      .foot-icon {{ font-size:76px; color:{accent}; line-height:1; }}
+      .youtube {{ width:150px; height:104px; background:#FF0000; border-radius:24px; position:relative; box-shadow:0 0 24px rgba(255,0,0,.55); flex:0 0 auto; }}
+      .youtube::after {{ content:""; position:absolute; left:58px; top:25px; width:0; height:0; border-top:27px solid transparent; border-bottom:27px solid transparent; border-left:42px solid white; }}
+      .x-icon {{ font-size:126px; color:#fff; font-weight:300; line-height:.85; }}
+      .fit-name {{ display:inline-block; max-width:1840px; }}
     </style></head><body>
-      <div class="vortex"></div><div class="particles"></div><div class="card-border"></div>
-      <div class="brand">{logo_html}<div><div class="brand-word">FPL<span>.VORTEX</span></div><div class="subtitle">YOUR FPL EDGE</div></div></div>
-      <div class="badge">{escape(badge_text)}</div>
-      <div class="player-wrap">{player_visual}</div>
-      <div class="player-name"><div class="first-name">{escape(first)}</div><div class="surname">{escape(surname)}</div><div class="position-bar"><span>{escape(position_text)}</span></div></div>
-      <div class="right-panel">{transfer_html}<div class="info">{_rows_html(rows)}</div><div class="status-bar"><div class="tick">✓</div><div class="status-label">STATUS:</div><div class="status-value">{escape(status_value)}</div></div></div>
-      <div class="footer"><div class="foot"><span class="foot-icon">◎</span><span>SOURCE: {escape(source_text.upper())}</span></div><div class="foot"><span class="yt"></span><span>@FPLVORTEX</span></div><div class="foot"><span class="x">𝕏</span><span>@FPLVORTEX</span></div></div>
+      <div class="safe"></div>
+      <div class="brand">{logo_html}<div class="brand-text"><div class="brand-title"><span class="fpl">FPL</span><span class="vortex">VORTEX</span></div><div class="subtitle">Verified Premier League News</div></div></div>
+      <div class="badge">{escape(status)}</div>
+      <div class="portrait-wrap"><div class="portrait-ring"></div><div class="portrait-lines"></div>{player_visual}</div>
+      <div class="left-player-name"><span class="fit-name">{_split_player_name_html(player_name)}</span></div>
+      <main class="right">
+        {transfer_panel}
+        <div class="divider"></div>
+        <div class="info-rows">{_broadcast_rows_html(rows)}</div>
+      </main>
+      <footer class="footer">
+        <div class="foot-section"><span class="foot-icon">◎</span><span>SOURCE: {escape(source_text.upper())}</span></div>
+        <div class="foot-section"><span class="youtube"></span><span>@FPLVORTEX</span></div>
+        <div class="foot-section"><span class="x-icon">𝕏</span><span>{escape(CHANNEL_HANDLE.upper())}</span></div>
+      </footer>
+      <script>
+        function fitName() {{
+          const el = document.querySelector('.left-player-name .fit-name');
+          if (!el) return;
+          let fs = 126;
+          el.parentElement.style.fontSize = fs + 'px';
+          while (el.scrollWidth > 1420 && fs > 70) {{ fs -= 2; el.parentElement.style.fontSize = fs + 'px'; }}
+        }}
+        // Shrink each value until it fits its cell on at most two lines.
+        // Nothing is ever cut off — a truncated diagnosis is worse than a
+        // slightly smaller one.
+        function fitValues() {{
+          document.querySelectorAll('.info-value').forEach(function (el) {{
+            let fs = 62;
+            el.style.fontSize = fs + 'px';
+            const maxH = 150;
+            while ((el.scrollWidth > el.clientWidth || el.scrollHeight > maxH) && fs > 26) {{
+              fs -= 2;
+              el.style.fontSize = fs + 'px';
+            }}
+          }});
+        }}
+        function fitAll() {{ fitName(); fitValues(); }}
+        document.addEventListener('DOMContentLoaded', fitAll);
+        window.addEventListener('load', fitAll);
+      </script>
     </body></html>"""
 
 
 def create_verified_branded_card(event, subject, facts, source_handles, filename):
-    """Render the premium FPL VORTEX broadcast card from verified facts only.
+    """Render the premium 4K FPL VORTEX broadcast card from verified facts only.
 
-    Robust rule: never display a blank/fake FROM club. Use verified facts first,
-    then the official FPL current club for the player, otherwise omit the FROM
-    block instead of guessing.
+    This adapter is deliberately data-in/data-out: it never performs a news
+    classification and never invents a fee, diagnosis, timeline, or source.
     """
     event = str(event).upper()
     subject = str(subject or "OFFICIAL UPDATE")
-    fpl = fetch_fpl_data()
-    player_el = find_player_in_fpl(subject, fpl) if fpl else None
-    player_name = (player_el.get("web_name") if player_el else subject) or subject
-    logo_uri = _data_uri(Path("Logo.png"))
-    seed_club = str(facts.get("club_to_name") or facts.get("club_name") or facts.get("club_from_name") or "")
-    seed_key = _verified_club_key(seed_club)
-    _, player_name, _logo_from_assets, photo_uri = _img_assets({"player": subject, "to_key": seed_key, "from_key": seed_key})
-    logo_uri = logo_uri or _logo_from_assets
-    source_text = " · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE"
+
+    # A confirmed signing, a booked medical and an agreed deal are different
+    # claims and the badge has to say which — the engine tells us via
+    # _event_status, and the card must never call a medical a done deal.
+    _status = str(facts.get("_event_status") or "")
+    transfer_badge = (
+        "MEDICAL" if _status == "MEDICAL"
+        else "DEAL AGREED" if _status in {"AGREEMENT", "HERE_WE_GO"}
+        else "CONFIRMED"
+    )
 
     if event == "TRANSFER":
-        destination = str(facts.get("club_to_name") or "")
-        destination_key = _verified_club_key(destination)
         origin = str(facts.get("club_from_name") or "")
-        origin_key = _verified_club_key(origin) if origin else ""
-        origin_code = _club_code_from_key(origin_key, origin)
+        destination = str(facts.get("club_to_name") or "")
+        origin_key = _verified_club_key(origin)
+        destination_key = _verified_club_key(destination)
+        # Never show a blank or guessed FROM club: if the story did not name
+        # one, take the player's current club from the official FPL data, and
+        # only if it differs from where they are going.
         if not origin:
-            fpl_key, fpl_name, fpl_code = _fpl_team_for_player(player_el, fpl)
+            _fpl = fetch_fpl_data()
+            _el = find_player_in_fpl(subject, _fpl) if _fpl else None
+            fpl_key, fpl_name, fpl_code = _fpl_team_for_player(_el, _fpl)
             if fpl_name and _verified_club_key(fpl_name) != destination_key:
-                origin, origin_key, origin_code = fpl_name, fpl_key, fpl_code
-        rows = _build_info_rows(player_el, fpl, facts, event=event)
-        html = _build_premium_card_html(
+                origin, origin_key = fpl_name, fpl_key
+        story = {"player": subject, "to_key": destination_key or origin_key, "from_key": origin_key or destination_key}
+        _, player_name, logo_uri, photo_uri = _img_assets(story)
+        rows = []
+        if facts.get("fee"):
+            rows.append(("£", "TRANSFER FEE", str(facts["fee"]).upper()))
+        if facts.get("contract_length"):
+            rows.append(("▣", "CONTRACT PERIOD", str(facts["contract_length"]).upper()))
+        if facts.get("transfer_kind"):
+            rows.append(("✓", "MOVE TYPE", str(facts["transfer_kind"]).upper()))
+        if not rows:
+            rows.append(("✓", "STATUS", {
+                "MEDICAL": "MEDICAL BOOKED",
+                "DEAL AGREED": "DEAL AGREED",
+            }.get(transfer_badge, "OFFICIALLY CONFIRMED")))
+        html = _build_verified_broadcast_html(
             event=event,
             player_name=player_name,
+            status=transfer_badge,
             logo_uri=logo_uri,
             photo_uri=photo_uri,
-            source_text=source_text,
             origin_name=origin,
-            origin_code=origin_code,
-            origin_crest=_crest_uri(origin_key) if origin_key else "",
+            origin_code=_club_code_from_key(origin_key, origin),
+            origin_crest=_crest_uri(origin_key),
             destination_name=destination,
             destination_code=_club_code_from_key(destination_key, destination),
             destination_crest=_crest_uri(destination_key),
             rows=rows,
-            status_label=("MEDICAL" if str(facts.get("_event_status")) == "MEDICAL" else "DEAL AGREED" if str(facts.get("_event_status")) in {"AGREEMENT", "HERE_WE_GO"} else "CONFIRMED"),
+            source_text=" · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE",
+            footer_tag="TRANSFER",
         )
-    else:
+    elif event == "INJURY":
         club_name = str(facts.get("club_name") or "")
         club_key = _verified_club_key(club_name)
-        rows = _build_info_rows(player_el, fpl, facts, event=event)
-        html = _build_premium_card_html(
+        story = {"player": subject, "to_key": club_key, "from_key": club_key}
+        _, player_name, logo_uri, photo_uri = _img_assets(story)
+        rows = []
+        if facts.get("injury_status"):
+            rows.append(("✚", "INJURY UPDATE", str(facts["injury_status"]).upper()))
+        if facts.get("return_date"):
+            rows.append(("▣", "RETURN", str(facts["return_date"]).upper()))
+        if not rows:
+            rows.append(("✚", "STATUS", "OFFICIALLY CONFIRMED"))
+        html = _build_verified_broadcast_html(
             event=event,
             player_name=player_name,
+            status="✚ INJURY",
             logo_uri=logo_uri,
             photo_uri=photo_uri,
-            source_text=source_text,
             club_name=club_name,
             club_code=_club_code_from_key(club_key, club_name),
             club_crest=_crest_uri(club_key),
             rows=rows,
+            source_text=" · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE",
+            footer_tag="INJURY",
         )
-    return _render_card(html, filename, width=1920, height=1080)
+    else:  # SUSPENSION
+        club_name = str(facts.get("club_name") or "")
+        club_key = _verified_club_key(club_name)
+        story = {"player": subject, "to_key": club_key, "from_key": club_key}
+        _, player_name, logo_uri, photo_uri = _img_assets(story)
+        rows = []
+        if facts.get("suspension_status"):
+            rows.append(("!", "SUSPENSION", str(facts["suspension_status"]).upper()))
+        if facts.get("suspension_length"):
+            rows.append(("▣", "LENGTH", str(facts["suspension_length"]).upper()))
+        if not rows:
+            rows.append(("✓", "STATUS", "OFFICIALLY CONFIRMED"))
+        html = _build_verified_broadcast_html(
+            event=event,
+            player_name=player_name,
+            status="SUSPENSION",
+            logo_uri=logo_uri,
+            photo_uri=photo_uri,
+            club_name=club_name,
+            club_code=_club_code_from_key(club_key, club_name),
+            club_crest=_crest_uri(club_key),
+            rows=rows,
+            source_text=" · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE",
+            footer_tag="SUSPENSION",
+        )
+
+    if _render_card(html, filename, width=3840, height=2160):
+        return True
+    return False
 
 
 def _verified_club_key(name):
