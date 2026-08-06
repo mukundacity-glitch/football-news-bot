@@ -685,16 +685,16 @@ def _build_verified_broadcast_html(
       .badge {{ position:absolute; right:135px; top:75px; width:700px; height:160px; border-radius:60px; background:{badge_bg}; color:{badge_fg}; display:flex; align-items:center; justify-content:center; font-size:82px; font-weight:950; letter-spacing:1px; font-style:italic; z-index:3; box-shadow:0 0 30px rgba({accent_rgb},.42); }}
       /* Rectangular portrait panel, filled with the club's own colour. */
       .portrait-wrap {{ position:absolute; left:165px; top:300px; width:1320px; height:1220px; z-index:2; display:flex; align-items:center; justify-content:center; }}
+      /* Solid club colour — flat fill, no gradient. */
       .portrait-ring {{ position:absolute; width:1080px; height:1180px; border-radius:32px; border:8px solid {accent2};
-        background:linear-gradient(158deg, {club_color} 0%, {club_color} 46%, rgba(4,9,18,.90) 100%);
-        box-shadow:0 0 60px rgba({accent2_rgb},.84), inset 0 0 70px rgba(0,0,0,.42); }}
-      .portrait-lines {{ position:absolute; width:1064px; height:1164px; border-radius:26px; overflow:hidden; opacity:.55; }}
-      .portrait-lines::before {{ content:""; position:absolute; inset:-80px; background:repeating-linear-gradient(135deg, transparent 0 58px, rgba(255,255,255,.16) 59px 70px, transparent 71px 136px, rgba(0,0,0,.22) 137px 145px); filter:blur(1px); }}
+        background:{club_color}; box-shadow:0 0 60px rgba({accent2_rgb},.84); }}
+      .portrait-lines {{ position:absolute; width:1064px; height:1164px; border-radius:26px; overflow:hidden; opacity:.30; }}
+      .portrait-lines::before {{ content:""; position:absolute; inset:-80px; background:repeating-linear-gradient(135deg, transparent 0 58px, rgba(255,255,255,.14) 59px 70px, transparent 71px 136px, rgba(0,0,0,.16) 137px 145px); }}
       .player-photo {{ position:relative; z-index:4; max-width:940px; max-height:1120px; object-fit:contain; filter:drop-shadow(0 28px 28px rgba(0,0,0,.60)); }}
       /* The crest stand-in sits on the club colour, so it needs its own
          separation or a red crest disappears into a red panel. */
       .crest-fallback {{ width:620px; opacity:.97; filter:drop-shadow(0 0 26px rgba(0,0,0,.75)) drop-shadow(0 10px 20px rgba(0,0,0,.55)); }}
-      .player-fallback {{ font-size:190px; font-weight:950; color:rgba(255,255,255,.16); }}
+      .player-fallback {{ font-size:190px; font-weight:950; color:rgba(255,255,255,.42); text-shadow:0 6px 18px rgba(0,0,0,.55); }}
       .right {{ position:absolute; left:1725px; right:125px; top:380px; bottom:315px; z-index:3; }}
       .left-player-name {{ position:absolute; left:95px; top:1540px; width:1460px; text-align:center; z-index:5; font-size:126px; line-height:.95; font-weight:950; letter-spacing:-2px; text-transform:uppercase; white-space:nowrap; text-shadow:0 10px 24px rgba(0,0,0,.80); }}
       .left-player-name .fit-name {{ display:inline-block; max-width:1420px; }}
@@ -705,7 +705,13 @@ def _build_verified_broadcast_html(
          card. Transparent box, accent border only. */
       .club-box {{ width:320px; height:320px; margin:0 auto; border-radius:35px; background:transparent; border:6px solid {accent}; box-shadow:0 0 24px rgba({accent_rgb},.5); display:flex; align-items:center; justify-content:center; overflow:hidden; }}
       .club-box img {{ max-width:240px; max-height:240px; object-fit:contain; }}
-      .crest-placeholder {{ color:#0C1828; font-size:58px; font-weight:950; }}
+      /* No crest available: a solid club-coloured block carrying the club
+         code, not bare text. The box behind it is transparent now, so dark
+         text on a dark card would simply vanish. */
+      .crest-placeholder {{ width:100%; height:100%; background:{club_color};
+        color:#fff; font-size:76px; font-weight:950; letter-spacing:2px;
+        display:flex; align-items:center; justify-content:center;
+        text-shadow:0 4px 12px rgba(0,0,0,.75); }}
       .arrow {{ font-size:190px; line-height:320px; padding-top:100px; color:{accent}; filter:drop-shadow(0 0 14px rgba({accent_rgb},.88)); }}
       .single-club {{ justify-content:flex-start; gap:80px; }}
       .event-panel {{ flex:1; min-height:320px; border-left:6px solid {accent}; padding:52px 0 0 72px; font-size:86px; line-height:1; font-weight:950; color:{accent}; text-shadow:0 0 14px rgba({accent_rgb},.35); }}
