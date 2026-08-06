@@ -565,366 +565,347 @@ def _fpl_team_for_player(player_el, fpl_data):
     return key, name, code
 
 
-def _split_player_name_html(name: str) -> str:
-    from html import escape
-    parts = [p for p in str(name or "OFFICIAL UPDATE").upper().split() if p]
+def _safe_card_text(value, fallback=""):
+    text = " ".join(str(value or "").split()).strip()
+    if not text or text.lower() in {"none", "null", "unknown", "n/a", "na"}:
+        return fallback
+    if text.isdigit():
+        return fallback
+    return text
+
+
+def _display_name_parts(name: str):
+    parts = [p for p in str(name or "PLAYER").upper().split() if p]
     if len(parts) <= 1:
-        return f'<span class="name-green">{escape(parts[0] if parts else "UPDATE")}</span>'
-    first = escape(" ".join(parts[:-1]))
-    last = escape(parts[-1])
-    return f'<span>{first}</span> <span class="name-green">{last}</span>'
+        return "", parts[0] if parts else "PLAYER"
+    return " ".join(parts[:-1]), parts[-1]
 
 
-def _broadcast_rows_html(rows):
+def _fpl_position(player_el, fpl_data):
+    if not player_el or not fpl_data:
+        return ""
+    et = player_el.get("element_type")
+    if et:
+        record = next((x for x in fpl_data.get("element_types", []) if x.get("id") == et), None)
+        if record:
+            return str(record.get("singular_name") or record.get("singular_name_short") or "").upper()
+    return str(player_el.get("position") or "").upper()
+
+
+def _fpl_price(player_el):
+    if not player_el:
+        return ""
+    try:
+        return f"£{float(player_el.get('now_cost')) / 10:.1f}M"
+    except Exception:
+        return ""
+
+
+def _optional_age(player_el, facts):
+    raw = facts.get("age") or (player_el or {}).get("age")
+    if raw:
+        return str(raw)
+    birth = facts.get("birth_date") or (player_el or {}).get("birth_date")
+    if birth:
+        try:
+            from datetime import date
+            year, month, day = [int(x) for x in str(birth)[:10].split("-")]
+            today = date.today()
+            return str(today.year - year - ((today.month, today.day) < (month, day)))
+        except Exception:
+            return ""
+    return ""
+
+
+def _optional_nationality(player_el, facts):
+    for key in ("nationality", "country", "country_name", "region_name"):
+        value = _safe_card_text(facts.get(key) or (player_el or {}).get(key))
+        if value:
+            return value.upper()
+    return ""
+
+
+def _compact_status_text(value, fallback="NOT REPORTED"):
+    text = _safe_card_text(value, fallback=fallback).upper()
+    text = re.sub(r"\s+-\s+UNKNOWN.*$", "", text).strip()
+    text = text.replace("UNSPECIFIED INJURY", "NOT REPORTED")
+    return text or fallback
+
+
+def _card_theme(event: str, status: str = ""):
+    event = str(event or "").upper()
+    status = str(status or "").upper()
+    if event == "INJURY":
+        return {"heading": "+ INJURY", "accent": "#E83A57", "accent_rgb": "232,58,87", "heading_text": "#FFFFFF"}
+    if event == "SUSPENSION":
+        return {"heading": "SUSPENSION", "accent": "#E6B800", "accent_rgb": "230,184,0", "heading_text": "#05070B"}
+    if event in {"PRESS", "PRESS_CONFERENCE", "TEAM_NEWS"}:
+        return {"heading": "PRESS CONFERENCE", "accent": "#FFFFFF", "accent_rgb": "255,255,255", "heading_text": "#05070B"}
+    if status == "MEDICAL":
+        return {"heading": "MEDICAL", "accent": "#00E676", "accent_rgb": "0,230,118", "heading_text": "#05070B"}
+    if status in {"AGREEMENT", "HERE_WE_GO", "DEAL AGREED"}:
+        return {"heading": "DEAL AGREED", "accent": "#00E676", "accent_rgb": "0,230,118", "heading_text": "#05070B"}
+    return {"heading": "TRANSFER CONFIRMED", "accent": "#00E676", "accent_rgb": "0,230,118", "heading_text": "#05070B"}
+
+
+def _html_escape(value):
     from html import escape
-    html = []
-    for icon, label, value in rows[:3]:
-        html.append(
-            '<div class="info-row">'
-            f'<div class="info-icon">{escape(str(icon))}</div>'
-            f'<div class="info-label">{escape(str(label))}:</div>'
-            f'<div class="info-value">{escape(str(value))}</div>'
-            '</div>'
-        )
-    return "".join(html)
+    return escape(str(value or ""))
 
 
-def _build_verified_broadcast_html(
-    *,
-    event,
-    player_name,
-    status,
-    logo_uri,
-    photo_uri,
-    origin_name="",
-    origin_code="",
-    origin_crest="",
-    destination_name="",
-    destination_code="",
-    destination_crest="",
-    club_name="",
-    club_code="",
-    club_crest="",
-    club_color="",
-    rows=None,
-    source_text="Official source",
-    footer_tag="TRANSFER",
-):
-    """4K premium broadcast template for V2 verified cards only."""
-    from html import escape
-    rows = rows or []
-    is_injury_theme = str(event).upper() == "INJURY"
-    accent = "#FF3045" if is_injury_theme else "#27FF89"
-    accent2 = "#FF4B5E" if is_injury_theme else "#2CFF95"
-    accent_rgb = "255,48,69" if is_injury_theme else "39,255,137"
-    accent2_rgb = "255,75,94" if is_injury_theme else "44,255,149"
-    table_accent = "#FF3045" if is_injury_theme else "#D4AF37"
-    table_rgb = "255,48,69" if is_injury_theme else "212,175,55"
-    badge_bg = "#FF3045" if is_injury_theme else "#27FF89"
-    badge_fg = "#FFFFFF" if is_injury_theme else "#000000"
-    icon_fg = "#FFFFFF" if is_injury_theme else "#07111D"
-    # The portrait panel is filled with the club's own colour. Falls back to
-    # the event accent so an unmapped club still themes sensibly.
-    club_color = str(club_color or "").strip() or accent
-    logo_html = (
-        f'<img class="brand-logo" src="{logo_uri}" alt="FPL VORTEX logo" />'
-        if logo_uri else '<div class="brand-logo placeholder"></div>'
+def _value_or_not_disclosed(value):
+    return _safe_card_text(value, "NOT DISCLOSED").upper()
+
+
+def _fact_grid_items(player_el, fpl_data, facts, event):
+    items = []
+    age = _optional_age(player_el, facts)
+    position = _safe_card_text(facts.get("position") or _fpl_position(player_el, fpl_data))
+    price = _fpl_price(player_el)
+    nationality = _optional_nationality(player_el, facts)
+    if age:
+        items.append(("AGE", age))
+    if position:
+        items.append(("POSITION", position.upper()))
+    if price:
+        items.append(("FPL PRICE", price))
+    if nationality:
+        items.append(("NATIONALITY", nationality))
+    return items[:3]
+
+
+def _metric_tile(label, value, sub=""):
+    return (
+        '<div class="metric-tile">'
+        f'<div class="tile-label">{_html_escape(label)}</div>'
+        f'<div class="tile-value fit-text" data-max="118" data-min="48">{_html_escape(value)}</div>'
+        f'<div class="tile-sub fit-text" data-max="34" data-min="24">{_html_escape(sub)}</div>'
+        '</div>'
     )
-    if photo_uri:
-        player_visual = f'<img class="player-photo" src="{photo_uri}" alt="{escape(player_name)}" />'
-    else:
-        fallback_crest = club_crest or destination_crest or origin_crest
-        if fallback_crest:
-            player_visual = f'<img class="player-photo crest-fallback" src="{fallback_crest}" alt="club crest" />'
+
+
+def _mini_tiles(items):
+    return "".join(
+        '<div class="mini-tile">'
+        f'<div class="mini-label">{_html_escape(label)}</div>'
+        f'<div class="mini-value fit-text" data-max="48" data-min="26">{_html_escape(value)}</div>'
+        '</div>'
+        for label, value in (items or [])[:3]
+    )
+
+
+def _club_node(kind, name, code, crest_uri):
+    if not name and not crest_uri:
+        return ""
+    crest = f'<img class="club-logo-img" src="{crest_uri}" alt="{_html_escape(name)}" />' if crest_uri else '<div class="club-placeholder">CLUB</div>'
+    return f'''
+      <div class="club-node">
+        <div class="club-kind">{_html_escape(kind)}</div>
+        <div class="club-logo-box">{crest}</div>
+        <div class="club-name fit-text" data-max="72" data-min="30">{_html_escape(name or code)}</div>
+      </div>
+    '''
+
+
+def _build_responsive_verified_card_html(
+    *, event, status, player_name, logo_uri, photo_uri, source_text,
+    origin_name="", origin_code="", origin_crest="",
+    destination_name="", destination_code="", destination_crest="",
+    club_name="", club_code="", club_crest="",
+    transfer_fee="", contract_length="", contract_expiry="",
+    facts_grid=None, status_detail="", position_text="",
+):
+    event = str(event or "").upper()
+    status = str(status or "").upper()
+    theme = _card_theme(event, status)
+    accent = theme["accent"]
+    accent_rgb = theme["accent_rgb"]
+    first, surname = _display_name_parts(player_name)
+    facts_grid = facts_grid or []
+    brand_logo = f'<img class="brand-logo" src="{logo_uri}" />' if logo_uri else ""
+    player = f'<img class="player-img" src="{photo_uri}" />' if photo_uri else '<div class="player-silhouette"><div class="sil-head"></div><div class="sil-body"></div></div>'
+    position_text = _safe_card_text(position_text, "PREMIER LEAGUE").upper()
+    status_detail = _safe_card_text(status_detail, "OFFICIALLY CONFIRMED").upper()
+    if event == "TRANSFER":
+        from_node = _club_node("FROM", origin_name, origin_code, origin_crest)
+        to_node = _club_node("TO", destination_name, destination_code, destination_crest)
+        if from_node and to_node:
+            flow_html = f'{from_node}<div class="flow-arrow">➜</div>{to_node}'
+        elif to_node:
+            flow_html = f'<div class="single-flow">{to_node}</div>'
         else:
-            player_visual = '<div class="player-photo player-fallback">FPL</div>'
-
-    is_transfer = str(event).upper() == "TRANSFER"
-    if is_transfer:
-        origin_img = f'<img src="{origin_crest}" alt="{escape(origin_name)}" />' if origin_crest else '<div class="crest-placeholder">FROM</div>'
-        destination_img = f'<img src="{destination_crest}" alt="{escape(destination_name)}" />' if destination_crest else '<div class="crest-placeholder">TO</div>'
-        origin_box = f"""
-            <div class="club-block">
-              <div class="club-code">{escape(origin_code or "FROM")}</div>
-              <div class="club-box">{origin_img}</div>
-            </div>"""
-        destination_box = f"""
-            <div class="club-block">
-              <div class="club-code">{escape(destination_code or "TO")}</div>
-              <div class="club-box">{destination_img}</div>
-            </div>"""
-        transfer_panel = f'<div class="transfer-panel">{origin_box}<div class="arrow">➜</div>{destination_box}</div>'
+            flow_html = '<div class="flow-message fit-text" data-max="64" data-min="34">TRANSFER UPDATE</div>'
+        main_panel = f'''
+          <section class="contract-panel">
+            {_metric_tile("TRANSFER FEE", _value_or_not_disclosed(transfer_fee), "OFFICIAL / VERIFIED")}
+            {_metric_tile("CONTRACT LENGTH", _value_or_not_disclosed(contract_length), _safe_card_text(contract_expiry, "DETAILS NOT DISCLOSED").upper())}
+          </section>
+        '''
     else:
-        club_img = f'<img src="{club_crest}" alt="{escape(club_name)}" />' if club_crest else '<div class="crest-placeholder">CLUB</div>'
-        transfer_panel = f"""
-            <div class="transfer-panel single-club">
-              <div class="club-block">
-                <div class="club-code">{escape(club_code or "PL")}</div>
-                <div class="club-box">{club_img}</div>
-              </div>
-              <div class="event-panel"><div>{escape(status)}</div><span>{escape(club_name or "Premier League")}</span></div>
-            </div>"""
-
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8" />
+        node = _club_node("CLUB", club_name, club_code, club_crest)
+        flow_html = f'<div class="single-flow">{node}</div>' if node else '<div class="flow-message fit-text" data-max="64" data-min="34">PREMIER LEAGUE UPDATE</div>'
+        main_panel = f'''
+          <section class="contract-panel single">
+            {_metric_tile(event, status_detail, "VERIFIED UPDATE")}
+          </section>
+        '''
+    return f'''<!doctype html><html><head><meta charset="utf-8" />
     <style>
       * {{ box-sizing:border-box; }}
-      html, body {{ margin:0; width:3840px; height:2160px; overflow:hidden; }}
-      body {{
-        font-family: "Montserrat", "DejaVu Sans", Arial, sans-serif;
-        color:#fff;
-        background:
-          radial-gradient(circle at 18% 52%, rgba({accent_rgb},0.18), transparent 30%),
-          radial-gradient(circle at 82% 22%, rgba(26,107,255,0.17), transparent 25%),
-          linear-gradient(135deg,#07111D 0%,#0C1828 100%);
-        position:relative;
-      }}
-      body::before {{
-        content:""; position:absolute; inset:-240px;
-        background:
-          repeating-linear-gradient(125deg,
-            transparent 0 74px,
-            rgba({accent_rgb},0.14) 75px 80px,
-            transparent 81px 168px,
-            rgba(26,107,255,0.18) 169px 174px,
-            transparent 175px 260px);
-        filter:blur(0.2px); opacity:0.72; transform:skewX(-6deg); pointer-events:none;
-      }}
-      body::after {{
-        content:""; position:absolute; inset:0;
-        background:radial-gradient(circle at center, transparent 42%, rgba(0,0,0,0.38) 100%);
-        pointer-events:none;
-      }}
-      .safe {{
-        position:absolute; inset:60px; border:4px solid rgba({accent_rgb},0.70);
-        border-radius:45px; box-shadow:0 0 20px rgba({accent_rgb},0.65), inset 0 0 24px rgba({accent_rgb},0.16);
-        z-index:1;
-      }}
-      .brand {{ position:absolute; left:78px; top:36px; height:420px; display:flex; align-items:center; z-index:3; }}
-      .brand-logo {{ width:650px; height:420px; object-fit:contain; margin-right:26px; filter:drop-shadow(0 0 34px rgba({accent_rgb},.78)); }}
-      .brand-logo.placeholder {{ border-radius:50%; border:5px solid {accent}; }}
-      .brand-title {{ font-size:126px; font-weight:950; letter-spacing:-4px; line-height:.9; font-style:italic; text-shadow:0 6px 18px rgba(0,0,0,.75); margin-left:8px; }}
-      .brand-title .fpl {{ color:#fff; }}
-      .brand-title .vortex {{ color:{accent}; margin-left:24px; text-shadow:0 0 22px rgba({accent_rgb},.58); }}
-      .brand-text {{ display:flex; flex-direction:column; justify-content:center; }}
-      .subtitle {{ color:#A8B5C9; font-size:42px; font-weight:700; opacity:.92; margin-left:12px; margin-top:10px; white-space:nowrap; }}
-      .badge {{ position:absolute; right:135px; top:75px; width:700px; height:160px; border-radius:60px; background:{badge_bg}; color:{badge_fg}; display:flex; align-items:center; justify-content:center; font-size:82px; font-weight:950; letter-spacing:1px; font-style:italic; z-index:3; box-shadow:0 0 30px rgba({accent_rgb},.42); }}
-      /* Rectangular portrait panel, filled with the club's own colour. */
-      .portrait-wrap {{ position:absolute; left:165px; top:300px; width:1320px; height:1220px; z-index:2; display:flex; align-items:center; justify-content:center; }}
-      /* Solid club colour — flat fill, no gradient. */
-      .portrait-ring {{ position:absolute; width:1080px; height:1180px; border-radius:32px; border:8px solid {accent2};
-        background:{club_color}; box-shadow:0 0 60px rgba({accent2_rgb},.84); }}
-      .portrait-lines {{ position:absolute; width:1064px; height:1164px; border-radius:26px; overflow:hidden; opacity:.30; }}
-      .portrait-lines::before {{ content:""; position:absolute; inset:-80px; background:repeating-linear-gradient(135deg, transparent 0 58px, rgba(255,255,255,.14) 59px 70px, transparent 71px 136px, rgba(0,0,0,.16) 137px 145px); }}
-      .player-photo {{ position:relative; z-index:4; max-width:940px; max-height:1120px; object-fit:contain; filter:drop-shadow(0 28px 28px rgba(0,0,0,.60)); }}
-      /* The crest stand-in sits on the club colour, so it needs its own
-         separation or a red crest disappears into a red panel. */
-      .crest-fallback {{ width:620px; opacity:.97; filter:drop-shadow(0 0 26px rgba(0,0,0,.75)) drop-shadow(0 10px 20px rgba(0,0,0,.55)); }}
-      .player-fallback {{ font-size:190px; font-weight:950; color:rgba(255,255,255,.42); text-shadow:0 6px 18px rgba(0,0,0,.55); }}
-      .right {{ position:absolute; left:1725px; right:125px; top:380px; bottom:315px; z-index:3; }}
-      .left-player-name {{ position:absolute; left:95px; top:1540px; width:1460px; text-align:center; z-index:5; font-size:126px; line-height:.95; font-weight:950; letter-spacing:-2px; text-transform:uppercase; white-space:nowrap; text-shadow:0 10px 24px rgba(0,0,0,.80); }}
-      .left-player-name .fit-name {{ display:inline-block; max-width:1420px; }}
-      .transfer-panel {{ height:560px; display:flex; align-items:flex-start; justify-content:center; gap:92px; }}
-      .club-block {{ width:420px; text-align:center; }}
-      .club-code {{ font-size:90px; font-weight:950; letter-spacing:2px; margin-bottom:14px; text-shadow:0 5px 14px rgba(0,0,0,.7); }}
-      /* No white plate behind the crest — it reads as a sticker on a dark
-         card. Transparent box, accent border only. */
-      .club-box {{ width:320px; height:320px; margin:0 auto; border-radius:35px; background:transparent; border:6px solid {accent}; box-shadow:0 0 24px rgba({accent_rgb},.5); display:flex; align-items:center; justify-content:center; overflow:hidden; }}
-      .club-box img {{ max-width:240px; max-height:240px; object-fit:contain; }}
-      /* No crest available: a solid club-coloured block carrying the club
-         code, not bare text. The box behind it is transparent now, so dark
-         text on a dark card would simply vanish. */
-      .crest-placeholder {{ width:100%; height:100%; background:{club_color};
-        color:#fff; font-size:76px; font-weight:950; letter-spacing:2px;
-        display:flex; align-items:center; justify-content:center;
-        text-shadow:0 4px 12px rgba(0,0,0,.75); }}
-      .arrow {{ font-size:190px; line-height:320px; padding-top:100px; color:{accent}; filter:drop-shadow(0 0 14px rgba({accent_rgb},.88)); }}
-      .single-club {{ justify-content:flex-start; gap:80px; }}
-      .event-panel {{ flex:1; min-height:320px; border-left:6px solid {accent}; padding:52px 0 0 72px; font-size:86px; line-height:1; font-weight:950; color:{accent}; text-shadow:0 0 14px rgba({accent_rgb},.35); }}
-      .event-panel span {{ display:block; margin-top:36px; font-size:58px; color:#fff; }}
-      .player-name {{ margin-top:20px; font-size:158px; line-height:.95; font-weight:950; letter-spacing:-2px; text-transform:uppercase; white-space:nowrap; text-shadow:0 10px 24px rgba(0,0,0,.75); }}
-      .name-green {{ color:{accent}; text-shadow:0 0 24px rgba({accent_rgb},.55); }}
-      .divider {{ height:5px; background:linear-gradient(90deg,transparent,{table_accent},transparent); margin:28px 0 32px 0; box-shadow:0 0 18px rgba({table_rgb},.75); }}
-      .info-row {{ min-height:110px; display:grid; grid-template-columns:100px minmax(0,1fr) minmax(420px,760px); align-items:center; gap:24px; border-top:4px solid rgba({table_rgb},.90); background:rgba(7,17,29,.74); padding:15px 26px 14px 0; box-shadow:0 0 16px rgba({table_rgb},.20); }}
-      .info-row:last-child {{ border-bottom:4px solid rgba({table_rgb},.90); }}
-      .info-icon {{ width:75px; height:75px; border-radius:50%; background:{table_accent}; color:{icon_fg}; display:flex; align-items:center; justify-content:center; font-size:48px; font-weight:950; margin-left:0; box-shadow:0 0 18px rgba({table_rgb},.58); }}
-      .info-label {{ font-size:74px; font-weight:950; color:#fff; white-space:nowrap; }}
-      /* Values are auto-fitted by fitValues() below rather than clipped: a
-         real diagnosis ("UNSPECIFIED INJURY - UNAVAILABLE") must read in
-         full, so it wraps to a second line and shrinks until it fits. */
-      .info-value {{ font-size:74px; font-weight:950; color:{accent}; text-align:right; max-width:760px; line-height:1.06; overflow-wrap:break-word; }}
-      .footer {{ position:absolute; left:76px; right:76px; bottom:48px; height:150px; z-index:4; border:4px solid rgba({accent_rgb},.82); border-radius:26px; background:rgba(7,17,29,.92); box-shadow:0 0 25px rgba({accent_rgb},.52); display:grid; grid-template-columns:1.28fr .88fr .98fr; align-items:center; overflow:hidden; }}
-      .foot-section {{ height:100%; display:flex; align-items:center; gap:30px; padding:0 50px; font-size:58px; font-weight:950; white-space:nowrap; }}
-      .foot-section + .foot-section {{ border-left:5px solid {accent}; }}
-      .foot-icon {{ font-size:76px; color:{accent}; line-height:1; }}
-      .youtube {{ width:150px; height:104px; background:#FF0000; border-radius:24px; position:relative; box-shadow:0 0 24px rgba(255,0,0,.55); flex:0 0 auto; }}
-      .youtube::after {{ content:""; position:absolute; left:58px; top:25px; width:0; height:0; border-top:27px solid transparent; border-bottom:27px solid transparent; border-left:42px solid white; }}
-      .x-icon {{ font-size:126px; color:#fff; font-weight:300; line-height:.85; }}
-      .fit-name {{ display:inline-block; max-width:1840px; }}
-    </style></head><body>
-      <div class="safe"></div>
-      <div class="brand">{logo_html}<div class="brand-text"><div class="brand-title"><span class="fpl">FPL</span><span class="vortex">VORTEX</span></div><div class="subtitle">Verified Premier League News</div></div></div>
-      <div class="badge">{escape(status)}</div>
-      <div class="portrait-wrap"><div class="portrait-ring"></div><div class="portrait-lines"></div>{player_visual}</div>
-      <div class="left-player-name"><span class="fit-name">{_split_player_name_html(player_name)}</span></div>
-      <main class="right">
-        {transfer_panel}
-        <div class="divider"></div>
-        <div class="info-rows">{_broadcast_rows_html(rows)}</div>
-      </main>
-      <footer class="footer">
-        <div class="foot-section"><span class="foot-icon">◎</span><span>SOURCE: {escape(source_text.upper())}</span></div>
-        <div class="foot-section"><span class="youtube"></span><span>@FPLVORTEX</span></div>
-        <div class="foot-section"><span class="x-icon">𝕏</span><span>{escape(CHANNEL_HANDLE.upper())}</span></div>
-      </footer>
-      <script>
-        function fitName() {{
-          const el = document.querySelector('.left-player-name .fit-name');
-          if (!el) return;
-          let fs = 126;
-          el.parentElement.style.fontSize = fs + 'px';
-          while (el.scrollWidth > 1420 && fs > 70) {{ fs -= 2; el.parentElement.style.fontSize = fs + 'px'; }}
+      html,body {{ margin:0; width:3840px; height:2160px; overflow:hidden; background:#05070B; }}
+      body {{ font-family: Inter, Montserrat, DejaVu Sans, Arial, sans-serif; color:#FFFFFF; }}
+      .stage {{ width:3840px; height:2160px; padding:80px; display:grid; grid-template-rows:260px minmax(0,1fr) 215px; gap:32px; position:relative; background:linear-gradient(135deg,#05070B 0%,#0B1220 100%); }}
+      .stage::before {{ content:""; position:absolute; inset:0; opacity:.10; pointer-events:none; background:repeating-linear-gradient(125deg, transparent 0 128px, rgba({accent_rgb},.55) 130px 133px, transparent 135px 260px); }}
+      .stage::after {{ content:""; position:absolute; inset:0; pointer-events:none; background:radial-gradient(circle at 22% 42%, rgba({accent_rgb},.18), transparent 30%); }}
+      .border {{ position:absolute; inset:40px; border:3px solid rgba({accent_rgb},.62); border-radius:52px; box-shadow:0 0 28px rgba({accent_rgb},.28); pointer-events:none; }}
+      header, main, footer {{ position:relative; z-index:2; }}
+      header {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:32px; align-items:center; }}
+      .brand {{ min-width:0; display:flex; align-items:center; gap:42px; }}
+      .brand-logo {{ width:188px; height:188px; object-fit:contain; filter:drop-shadow(0 0 18px rgba({accent_rgb},.35)); }}
+      .brand-title {{ font-family:Montserrat, DejaVu Sans, Arial, sans-serif; font-size:132px; line-height:.86; font-weight:950; font-style:italic; white-space:nowrap; }}
+      .brand-title .vortex {{ color:{accent}; text-shadow:0 0 16px rgba({accent_rgb},.42); margin-left:56px; }}
+      .brand-sub {{ color:#C7CDD8; font-size:44px; font-weight:850; margin-top:22px; white-space:nowrap; }}
+      .headline {{ height:128px; min-width:780px; padding:0 64px; border:3px solid {accent}; border-radius:28px; display:flex; align-items:center; justify-content:center; color:{theme['heading_text']}; background:rgba({accent_rgb},.14); box-shadow:0 0 28px rgba({accent_rgb},.36); font-size:86px; font-weight:950; font-style:italic; white-space:nowrap; }}
+      main {{ min-height:0; display:grid; grid-template-columns:48fr 52fr; gap:80px; }}
+      .hero {{ min-width:0; display:grid; grid-template-rows:minmax(0,1fr) auto; gap:20px; padding-right:24px; border-right:2px solid rgba({accent_rgb},.35); }}
+      .player-area {{ min-height:0; display:flex; align-items:center; justify-content:center; overflow:hidden; }}
+      .player-img {{ max-width:92%; max-height:100%; object-fit:contain; filter:drop-shadow(0 34px 44px rgba(0,0,0,.62)) drop-shadow(0 0 22px rgba({accent_rgb},.30)); }}
+      .player-silhouette {{ width:54%; height:86%; position:relative; filter:drop-shadow(0 34px 44px rgba(0,0,0,.62)); }}
+      .sil-head {{ position:absolute; left:34%; top:8%; width:32%; aspect-ratio:1/1; border-radius:50%; background:rgba(255,255,255,.18); border:5px solid rgba({accent_rgb},.50); }}
+      .sil-body {{ position:absolute; left:14%; right:14%; bottom:0; height:65%; border-radius:170px 170px 38px 38px; background:rgba({accent_rgb},.20); border:5px solid rgba({accent_rgb},.42); }}
+      .player-copy {{ min-width:0; padding:0 40px 0 0; }}
+      .first-name {{ color:#FFFFFF; font-size:68px; font-weight:900; font-style:italic; white-space:nowrap; }}
+      .surname {{ color:#FFFFFF; font-size:176px; line-height:.9; font-weight:950; font-style:italic; white-space:nowrap; text-shadow:0 10px 18px rgba(0,0,0,.75); }}
+      .position {{ display:inline-flex; align-items:center; justify-content:center; margin-top:20px; min-height:76px; padding:8px 52px; border:3px solid {accent}; background:rgba(0,0,0,.62); color:{accent}; font-size:54px; font-weight:950; letter-spacing:6px; white-space:nowrap; }}
+      .details {{ min-width:0; display:grid; grid-template-rows:440px 330px 145px 142px minmax(0,1fr); gap:32px; align-content:start; }}
+      .flow {{ display:flex; align-items:center; justify-content:center; gap:70px; min-height:0; }}
+      .single-flow {{ width:100%; display:flex; align-items:center; justify-content:center; }}
+      .club-node {{ width:440px; min-width:0; display:flex; flex-direction:column; align-items:center; gap:18px; }}
+      .club-kind {{ font-size:58px; line-height:1; font-weight:950; color:#FFFFFF; }}
+      .club-logo-box {{ width:340px; height:340px; padding:38px; display:flex; align-items:center; justify-content:center; border:3px solid {accent}; border-radius:28px; background:rgba(0,0,0,.40); box-shadow:0 0 22px rgba({accent_rgb},.30); }}
+      .club-logo-img {{ width:100%; height:100%; object-fit:contain; filter:drop-shadow(0 0 14px rgba({accent_rgb},.25)); }}
+      .club-placeholder {{ font-size:40px; font-weight:950; opacity:.55; }}
+      .club-name {{ max-width:100%; color:#FFFFFF; font-size:72px; font-weight:950; line-height:1; text-align:center; white-space:nowrap; }}
+      .flow-arrow {{ color:{accent}; font-size:150px; filter:drop-shadow(0 0 24px rgba({accent_rgb},.55)); }}
+      .flow-message {{ color:{accent}; font-size:64px; font-weight:950; white-space:nowrap; }}
+      .contract-panel {{ display:grid; grid-template-columns:1fr 1fr; border:4px solid #B8860B; border-radius:28px; background:linear-gradient(180deg,rgba(255,213,79,.10),rgba(0,0,0,.62)); box-shadow:0 0 18px rgba(255,195,60,.24); overflow:hidden; }}
+      .contract-panel.single {{ grid-template-columns:1fr; }}
+      .metric-tile {{ min-width:0; padding:48px 56px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; }}
+      .metric-tile + .metric-tile {{ border-left:2px solid rgba(184,134,11,.70); }}
+      .tile-label {{ color:#FFD54F; font-size:54px; font-weight:950; white-space:nowrap; }}
+      .tile-value {{ color:#FFD54F; font-size:118px; line-height:1; font-weight:950; white-space:nowrap; }}
+      .tile-sub {{ color:#FFFFFF; font-size:34px; font-weight:850; white-space:nowrap; }}
+      .mini-panel {{ min-height:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:24px; }}
+      .mini-tile {{ min-width:0; padding:20px 28px; border:3px solid rgba(184,134,11,.82); border-radius:18px; background:rgba(0,0,0,.45); }}
+      .mini-label {{ color:#8A94A6; font-size:34px; font-weight:850; white-space:nowrap; }}
+      .mini-value {{ color:#FFFFFF; font-size:48px; font-weight:950; white-space:nowrap; }}
+      .status-panel {{ min-height:0; display:grid; grid-template-columns:100px auto minmax(0,1fr); align-items:center; gap:32px; padding:24px 48px; border:3px solid {accent}; border-radius:24px; background:rgba(0,0,0,.52); box-shadow:0 0 20px rgba({accent_rgb},.26); }}
+      .check {{ width:82px; height:82px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:{accent}; color:#05070B; font-size:60px; font-weight:950; }}
+      .status-label {{ font-size:58px; font-weight:950; white-space:nowrap; }}
+      .status-value {{ color:{accent}; font-size:58px; font-weight:950; white-space:nowrap; }}
+      footer {{ min-height:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); border:3px solid rgba({accent_rgb},.58); border-radius:20px; overflow:hidden; background:rgba(0,0,0,.68); }}
+      .foot {{ min-width:0; display:flex; align-items:center; justify-content:center; gap:28px; padding:0 40px; font-size:44px; font-weight:950; white-space:nowrap; }}
+      .foot + .foot {{ border-left:2px solid rgba({accent_rgb},.45); }}
+      .foot-icon {{ color:{accent}; font-size:58px; flex:0 0 auto; }}
+      .yt {{ width:82px; height:58px; border-radius:12px; background:#FF0000; position:relative; flex:0 0 auto; }}
+      .yt::after {{ content:""; position:absolute; left:33px; top:15px; border-top:14px solid transparent; border-bottom:14px solid transparent; border-left:22px solid #FFFFFF; }}
+      .x-icon {{ font-size:64px; color:#FFFFFF; flex:0 0 auto; }}
+      .fit-text {{ display:block; overflow:visible; }}
+      .invalid {{ outline:8px solid red; }}
+    </style></head><body><section class="stage"><div class="border"></div>
+      <header><div class="brand">{brand_logo}<div><div class="brand-title">FPL <span class="vortex">VORTEX</span></div><div class="brand-sub">Verified Premier League News</div></div></div><div class="headline fit-text" data-max="86" data-min="44">{_html_escape(theme['heading'])}</div></header>
+      <main><section class="hero"><div class="player-area">{player}</div><div class="player-copy"><div class="first-name fit-text" data-max="68" data-min="36">{_html_escape(first)}</div><div class="surname fit-text" data-max="176" data-min="88">{_html_escape(surname)}</div><div class="position fit-text" data-max="54" data-min="30">{_html_escape(position_text)}</div></div></section>
+      <section class="details"><section class="flow">{flow_html}</section>{main_panel}<section class="mini-panel">{_mini_tiles(facts_grid)}</section><section class="status-panel"><div class="check">✓</div><div class="status-label fit-text" data-max="58" data-min="34">STATUS:</div><div class="status-value fit-text" data-max="58" data-min="34">{_html_escape(status_detail)}</div></section></section></main>
+      <footer><div class="foot"><span class="foot-icon">◎</span><span class="fit-text" data-max="44" data-min="28">SOURCE: {_html_escape(source_text.upper())}</span></div><div class="foot"><span class="yt"></span><span class="fit-text" data-max="44" data-min="30">@FPLVORTEX</span></div><div class="foot"><span class="x-icon">𝕏</span><span class="fit-text" data-max="44" data-min="30">@FPLVORTEX</span></div></footer>
+    </section><script>
+      function fitText(el) {{
+        const max = Number(el.dataset.max || 64);
+        const min = Number(el.dataset.min || 24);
+        let fs = max;
+        el.style.fontSize = fs + 'px';
+        el.style.whiteSpace = 'nowrap';
+        while ((el.scrollWidth > el.clientWidth + 2 || el.scrollHeight > el.clientHeight + 4) && fs > min) {{
+          fs -= Math.max(1, Math.ceil(fs * 0.05));
+          el.style.fontSize = fs + 'px';
         }}
-        // Shrink each value until it fits its cell on at most two lines.
-        // Nothing is ever cut off — a truncated diagnosis is worse than a
-        // slightly smaller one.
-        function fitValues() {{
-          document.querySelectorAll('.info-value').forEach(function (el) {{
-            let fs = 74;
-            el.style.fontSize = fs + 'px';
-            const maxH = 150;
-            while ((el.scrollWidth > el.clientWidth || el.scrollHeight > maxH) && fs > 26) {{
-              fs -= 2;
-              el.style.fontSize = fs + 'px';
-            }}
-          }});
-        }}
-        function fitAll() {{ fitName(); fitValues(); }}
-        document.addEventListener('DOMContentLoaded', fitAll);
-        window.addEventListener('load', fitAll);
-      </script>
-    </body></html>"""
+      }}
+      function validateLayout() {{
+        let ok = true;
+        document.querySelectorAll('.fit-text').forEach(function(el) {{
+          fitText(el);
+          if (el.scrollWidth > el.clientWidth + 2 || el.scrollHeight > el.clientHeight + 4) {{
+            el.classList.add('invalid'); ok = false;
+          }}
+        }});
+        window.__CARD_VALID__ = ok;
+      }}
+      document.addEventListener('DOMContentLoaded', validateLayout);
+      window.addEventListener('load', validateLayout);
+    </script></body></html>'''
 
 
 def create_verified_branded_card(event, subject, facts, source_handles, filename):
-    """Render the premium 4K FPL VORTEX broadcast card from verified facts only.
+    """Render the responsive production verified card.
 
-    This adapter is deliberately data-in/data-out: it never performs a news
-    classification and never invents a fee, diagnosis, timeline, or source.
+    The card is content-driven: CSS Grid/Flexbox controls layout and fitText()
+    shrinks only measured overflow. No player-specific coordinates or facts are
+    hardcoded.
     """
-    event = str(event).upper()
+    event = str(event or "").upper()
     subject = str(subject or "OFFICIAL UPDATE")
-
-    # A confirmed signing, a booked medical and an agreed deal are different
-    # claims and the badge has to say which — the engine tells us via
-    # _event_status, and the card must never call a medical a done deal.
-    _status = str(facts.get("_event_status") or "")
-    transfer_badge = (
-        "MEDICAL" if _status == "MEDICAL"
-        else "DEAL AGREED" if _status in {"AGREEMENT", "HERE_WE_GO"}
-        else "CONFIRMED"
-    )
-
+    fpl = fetch_fpl_data()
+    player_el = find_player_in_fpl(subject, fpl) if fpl else None
+    status = str(facts.get("_event_status") or "").upper()
+    logo_uri = _data_uri(Path("Logo.png"))
+    source_text = " · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE"
+    club_name = str(facts.get("club_name") or "")
+    club_key = _verified_club_key(club_name)
+    origin = str(facts.get("club_from_name") or "")
+    destination = str(facts.get("club_to_name") or "")
+    origin_key = _verified_club_key(origin)
+    destination_key = _verified_club_key(destination)
     if event == "TRANSFER":
-        origin = str(facts.get("club_from_name") or "")
-        destination = str(facts.get("club_to_name") or "")
-        origin_key = _verified_club_key(origin)
-        destination_key = _verified_club_key(destination)
-        # Never show a blank or guessed FROM club: if the story did not name
-        # one, take the player's current club from the official FPL data, and
-        # only if it differs from where they are going.
         if not origin:
-            _fpl = fetch_fpl_data()
-            _el = find_player_in_fpl(subject, _fpl) if _fpl else None
-            fpl_key, fpl_name, fpl_code = _fpl_team_for_player(_el, _fpl)
+            fpl_key, fpl_name, _fpl_code = _fpl_team_for_player(player_el, fpl)
             if fpl_name and _verified_club_key(fpl_name) != destination_key:
                 origin, origin_key = fpl_name, fpl_key
-        story = {"player": subject, "to_key": destination_key or origin_key, "from_key": origin_key or destination_key}
-        _, player_name, logo_uri, photo_uri = _img_assets(story)
-        rows = []
-        if facts.get("fee"):
-            rows.append(("£", "TRANSFER FEE", str(facts["fee"]).upper()))
-        if facts.get("contract_length"):
-            rows.append(("▣", "CONTRACT PERIOD", str(facts["contract_length"]).upper()))
-        if facts.get("transfer_kind"):
-            rows.append(("✓", "MOVE TYPE", str(facts["transfer_kind"]).upper()))
-        if not rows:
-            rows.append(("✓", "STATUS", {
-                "MEDICAL": "MEDICAL BOOKED",
-                "DEAL AGREED": "DEAL AGREED",
-            }.get(transfer_badge, "OFFICIALLY CONFIRMED")))
-        html = _build_verified_broadcast_html(
-            event=event,
-            player_name=player_name,
-            status=transfer_badge,
-            logo_uri=logo_uri,
-            photo_uri=photo_uri,
-            origin_name=origin,
-            origin_code=_club_code_from_key(origin_key, origin),
-            origin_crest=_crest_uri(origin_key),
-            destination_name=destination,
-            destination_code=_club_code_from_key(destination_key, destination),
-            destination_crest=_crest_uri(destination_key),
-            club_color=get_club_color(destination_key),
-            rows=rows,
-            source_text=" · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE",
-            footer_tag="TRANSFER",
+        seed_key = destination_key or origin_key
+    else:
+        seed_key = club_key
+    _, player_name, asset_logo_uri, photo_uri = _img_assets({"player": subject, "to_key": seed_key, "from_key": seed_key})
+    logo_uri = logo_uri or asset_logo_uri
+    if photo_uri and seed_key and photo_uri == _crest_uri(seed_key):
+        photo_uri = ""
+    position = _safe_card_text(facts.get("position") or _fpl_position(player_el, fpl), "PREMIER LEAGUE").upper()
+    facts_grid = _fact_grid_items(player_el, fpl, facts, event)
+    if event == "TRANSFER":
+        if status == "MEDICAL":
+            status_detail = "MEDICAL BOOKED"
+        elif status in {"AGREEMENT", "HERE_WE_GO"}:
+            status_detail = "DEAL AGREED"
+        else:
+            status_detail = "OFFICIALLY CONFIRMED"
+        html = _build_responsive_verified_card_html(
+            event=event, status=status, player_name=player_name, logo_uri=logo_uri,
+            photo_uri=photo_uri, source_text=source_text, origin_name=origin,
+            origin_code=_club_code_from_key(origin_key, origin), origin_crest=_crest_uri(origin_key),
+            destination_name=destination, destination_code=_club_code_from_key(destination_key, destination),
+            destination_crest=_crest_uri(destination_key), transfer_fee=facts.get("fee") or "",
+            contract_length=facts.get("contract_length") or "", contract_expiry=facts.get("contract_expiry") or facts.get("expiry_date") or "",
+            facts_grid=facts_grid, status_detail=status_detail, position_text=position,
         )
-    elif event == "INJURY":
-        club_name = str(facts.get("club_name") or "")
-        club_key = _verified_club_key(club_name)
-        story = {"player": subject, "to_key": club_key, "from_key": club_key}
-        _, player_name, logo_uri, photo_uri = _img_assets(story)
-        rows = []
-        if facts.get("injury_status"):
-            rows.append(("✚", "INJURY UPDATE", str(facts["injury_status"]).upper()))
-        if facts.get("return_date"):
-            rows.append(("▣", "RETURN", str(facts["return_date"]).upper()))
-        if not rows:
-            rows.append(("✚", "STATUS", "OFFICIALLY CONFIRMED"))
-        html = _build_verified_broadcast_html(
-            event=event,
-            player_name=player_name,
-            status="✚ INJURY",
-            logo_uri=logo_uri,
-            photo_uri=photo_uri,
-            club_name=club_name,
-            club_code=_club_code_from_key(club_key, club_name),
-            club_crest=_crest_uri(club_key),
-            club_color=get_club_color(club_key),
-            rows=rows,
-            source_text=" · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE",
-            footer_tag="INJURY",
+    else:
+        status_detail = _compact_status_text(
+            facts.get("injury_status") if event == "INJURY" else facts.get("suspension_status"),
+            fallback="OFFICIALLY CONFIRMED",
         )
-    else:  # SUSPENSION
-        club_name = str(facts.get("club_name") or "")
-        club_key = _verified_club_key(club_name)
-        story = {"player": subject, "to_key": club_key, "from_key": club_key}
-        _, player_name, logo_uri, photo_uri = _img_assets(story)
-        rows = []
-        if facts.get("suspension_status"):
-            rows.append(("!", "SUSPENSION", str(facts["suspension_status"]).upper()))
-        if facts.get("suspension_length"):
-            rows.append(("▣", "LENGTH", str(facts["suspension_length"]).upper()))
-        if not rows:
-            rows.append(("✓", "STATUS", "OFFICIALLY CONFIRMED"))
-        html = _build_verified_broadcast_html(
-            event=event,
-            player_name=player_name,
-            status="SUSPENSION",
-            logo_uri=logo_uri,
-            photo_uri=photo_uri,
-            club_name=club_name,
-            club_code=_club_code_from_key(club_key, club_name),
-            club_crest=_crest_uri(club_key),
-            club_color=get_club_color(club_key),
-            rows=rows,
-            source_text=" · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE",
-            footer_tag="SUSPENSION",
+        html = _build_responsive_verified_card_html(
+            event=event, status=status, player_name=player_name, logo_uri=logo_uri,
+            photo_uri=photo_uri, source_text=source_text, club_name=club_name,
+            club_code=_club_code_from_key(club_key, club_name), club_crest=_crest_uri(club_key),
+            facts_grid=facts_grid, status_detail=status_detail, position_text=position,
         )
-
-    if _render_card(html, filename, width=3840, height=2160):
-        return True
-    return False
+    return _render_card(html, filename, width=3840, height=2160)
 
 
 def _verified_club_key(name):
