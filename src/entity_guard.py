@@ -5,6 +5,13 @@ Deterministic classifier that decides WHAT KIND of entity an extracted "player"
 is, BEFORE any story can be posted. It is knowledge- and logic-based (no network,
 no per-failure name hacks) so it generalises and is fully testable.
 
+CLOSED WORLD. The blacklists below (journalists, sponsors, stadiums, clubs,
+competitions, junk fragments) only ever REJECT. They never promote a name to
+PLAYER. The single route to PLAYER is resolving against the squad registry —
+the live FPL roster plus vouched-for, expiring manual overrides (see
+``src.squad_registry``). An unrecognised name is UNKNOWN, which is a hard
+reject, no matter how official the source or how confident the wording.
+
 Taxonomy (classify_entity_detailed):
     PLAYER                                  -> enters transfer/injury validation
     COACH / MANAGER / ASSISTANT_COACH       -> staff-event pipeline (postable)
@@ -14,7 +21,8 @@ Taxonomy (classify_entity_detailed):
     STADIUM / CLUB                           -> rejected
     COUNTRY / COMPETITION / LEAGUE            -> rejected (a national team,
                                                  tournament, or league is never a transfer subject)
-    UNKNOWN                                  -> rejected (junk / RSS fragment / noise)
+    UNKNOWN                                  -> rejected (junk, RSS fragment, noise,
+                                                 OR any name absent from the squad registry)
 
 Hard invariant: an entity classified as COUNTRY or COMPETITION/LEAGUE can NEVER become
 PLAYER. This check runs unconditionally, before the default PLAYER fallback, and is
@@ -36,6 +44,7 @@ import unicodedata
 from pathlib import Path
 from src.constants import MANAGER_SURNAMES
 from src.fpl_feed import find_player_in_fpl
+from src import squad_registry
 
 _DATA = Path(__file__).resolve().parent.parent / "data"
 
@@ -332,7 +341,7 @@ def sponsorship_context(text) -> bool:
     return any(cue in t for cue in _SPONSOR_CONTEXT)
 
 
-def classify_entity_detailed(name, text="", fpl_data=None):
+def classify_entity_detailed(name, text="", fpl_data=None, role_hint=None):
     """Return (entity_type, reason) using the full taxonomy. Order = most-specific
     rejections first, postable staff next, PLAYER last — EXCEPT a name already
     verified against the live FPL feed, which short-circuits to PLAYER
@@ -405,7 +414,12 @@ def classify_entity_detailed(name, text="", fpl_data=None):
         return "EXECUTIVE", _reason("EXECUTIVE", "executive_entity")
 
     # 8. Postable football staff: coach / assistant coach / manager.
-    role = staff_role_of(name, text, fpl_data)
+    #    ``role_hint`` carries a role the pipeline already bound to THIS subject
+    #    upstream (parser ``staff_role``). It is evidence, not a guess, so it
+    #    counts alongside a role cue found in the text here — a coach appointment
+    #    whose announcement names the role in a different field than the one this
+    #    classifier sees must not fall through to the player allowlist.
+    role = staff_role_of(name, text, fpl_data) or (role_hint or None)
     if role:
         rl = role.lower()
         if "assistant" in rl:
@@ -414,8 +428,22 @@ def classify_entity_detailed(name, text="", fpl_data=None):
             return "MANAGER", "manager_or_head_coach"
         return "COACH", "coach"
 
-    # 8. Default: a real player.
-    return "PLAYER", "player_ok"
+    # 9. CLOSED-WORLD ALLOWLIST — the final and only route to PLAYER.
+    #
+    # Everything above this line is a blacklist: it removes names we have
+    # already learned are not players. A blacklist can never be complete, so it
+    # must not be the thing that DECIDES a name is a player. It isn't. A name
+    # reaches this point having merely survived the known-bad checks, and it
+    # becomes a PLAYER only by resolving against the squad registry (the live
+    # FPL roster plus vouched-for, expiring manual overrides).
+    #
+    # This is what stops the whole class of "Manchester United Website has
+    # joined Man Utd" failures at the source: that phrase survives every
+    # blacklist ever written, and resolves against no squad on earth.
+    if squad_registry.is_known_player(name, fpl_data):
+        return "PLAYER", "squad_registry_verified"
+
+    return "UNKNOWN", "not_in_squad_registry"
 
 
 # Coarse categories map (backward-compatible with the previous 6-way classifier).

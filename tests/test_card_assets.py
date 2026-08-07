@@ -174,3 +174,37 @@ class UploadSizeGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── "OFFICIAL" is a claim about provenance, never a default ──────────────
+
+def test_injury_card_without_status_does_not_claim_official():
+    """A card must not stamp OFFICIALLY CONFIRMED on a field it has no data for.
+
+    Found by rendering a real injury card with no reported status: the template
+    printed "OFFICIALLY CONFIRMED" beside a tick, asserting first-party
+    provenance the source never gave.
+    """
+    from src.renderer import _build_responsive_verified_card_html
+
+    for event in ("INJURY", "SUSPENSION"):
+        html = _build_responsive_verified_card_html(
+            event=event, status="", player_name="Carlos Baleba", logo_uri="",
+            photo_uri="", source_text="@OfficialFPL", club_name="Brighton",
+            status_detail="",
+        )
+        assert "OFFICIALLY CONFIRMED" not in html, event
+        assert "NOT REPORTED" in html, event
+
+
+def test_caller_supplied_official_status_is_still_honoured():
+    """The guard blocks an invented default, not a verified fact."""
+    from src.renderer import _build_responsive_verified_card_html
+
+    html = _build_responsive_verified_card_html(
+        event="TRANSFER", status="OFFICIAL", player_name="Carlos Baleba",
+        logo_uri="", photo_uri="", source_text="@BHAFC",
+        origin_name="Chelsea", destination_name="Brighton",
+        status_detail="OFFICIALLY CONFIRMED",
+    )
+    assert "OFFICIALLY CONFIRMED" in html

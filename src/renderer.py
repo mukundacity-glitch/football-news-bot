@@ -107,20 +107,57 @@ def get_club_color(club_key):
     color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
     return f"rgb({color_tuple[0]}, {color_tuple[1]}, {color_tuple[2]})"
 
-def _render_html_sync(html_content, filename, error_box=None, width=1380, height=776):
+# Every card ships at 4K UHD, 16:9 — the master resolution. Templates keep
+# their own CSS design size; the renderer scales the browser's device pixel
+# ratio to reach this output, so a template laid out at 1380x776 produces a
+# genuinely 3840x2160 image rather than an upscaled 1380x776 one. Text, crests
+# and borders are re-rasterised at the higher density, not stretched.
+CARD_OUTPUT_W, CARD_OUTPUT_H = 3840, 2160
+
+
+def _render_html_sync(html_content, filename, error_box=None, width=1380, height=776,
+                      scale=1.0):
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": width, "height": height}, device_scale_factor=1)
+            page = browser.new_page(viewport={"width": width, "height": height},
+                                    device_scale_factor=scale)
             page.set_content(html_content, wait_until="domcontentloaded")
             page.wait_for_timeout(500)
+            # The template reports text it could not fit rather than outlining it
+            # in red on the image. Surface it here so a layout regression shows up
+            # in the run log instead of on the published card.
+            try:
+                overflow = page.evaluate("window.__CARD_OVERFLOW__ || []")
+                for item in overflow or []:
+                    print(f"  [CARD] text overflow — {item}")
+            except Exception:
+                pass
             page.screenshot(path=filename)
             browser.close()
     except Exception:
         if error_box is not None:
             import traceback
             error_box.append(traceback.format_exc())
+
+
+def _normalise_card_size(filename) -> None:
+    """Force the rendered card to exactly 3840x2160.
+
+    A template's design aspect can be a hair off 16:9 (1380x776 is 1.7784 vs
+    1.7778), and device_scale_factor rounds to whole pixels. Both leave the
+    screenshot a few pixels short of the target, which downstream consumers —
+    X's media pipeline especially — treat as a non-standard size. The correction
+    is sub-0.1% so it costs nothing visually.
+    """
+    try:
+        with Image.open(filename) as im:
+            if im.size == (CARD_OUTPUT_W, CARD_OUTPUT_H):
+                return
+            im.convert("RGB").resize((CARD_OUTPUT_W, CARD_OUTPUT_H), Image.LANCZOS).save(filename)
+    except Exception:
+        pass  # A card that renders slightly off-size still beats no card.
 
 
 # ── SHARED ASSET / RENDER HELPERS ─────────────────────────────────────────
@@ -444,16 +481,25 @@ def image_is_blank(path, stddev_floor: float = 3.0) -> bool:
 
 
 def _render_card(html_content, filename, width=1380, height=776) -> bool:
-    """Render HTML to PNG via the threaded Playwright helper. Returns True on success."""
+    """Render HTML to PNG at 4K via the threaded Playwright helper.
+
+    ``width``/``height`` are the template's CSS design size, not the output
+    size — the output is always CARD_OUTPUT_W x CARD_OUTPUT_H. The device pixel
+    ratio does the work, so a template does not have to be rewritten in 4K units
+    to ship a 4K card.
+    """
     try:
         import threading
         error_box = []
-        t = threading.Thread(target=_render_html_sync, args=(html_content, filename, error_box, width, height))
+        scale = max(1.0, CARD_OUTPUT_W / float(width or CARD_OUTPUT_W))
+        t = threading.Thread(target=_render_html_sync,
+                             args=(html_content, filename, error_box, width, height, scale))
         t.start()
         t.join()
         if error_box:
             print("  [THREAD TRACEBACK]\n" + error_box[0])
         if Path(filename).exists() and Path(filename).stat().st_size >= 1000:
+            _normalise_card_size(filename)
             _ensure_upload_safe(filename)
             return True
     except Exception:
@@ -635,12 +681,14 @@ def _compact_status_text(value, fallback="NOT REPORTED"):
 def _card_theme(event: str, status: str = ""):
     event = str(event or "").upper()
     status = str(status or "").upper()
+    # Accents follow docs/CARD_SPEC.md: the colour alone must separate official
+    # from unofficial, and medical from administrative, before a word is read.
     if event == "INJURY":
-        return {"heading": "+ INJURY", "accent": "#E83A57", "accent_rgb": "232,58,87", "heading_text": "#FFFFFF"}
+        return {"heading": "INJURY UPDATE", "accent": "#FF5555", "accent_rgb": "255,85,85", "heading_text": "#FFFFFF"}
     if event == "SUSPENSION":
-        return {"heading": "SUSPENSION", "accent": "#E6B800", "accent_rgb": "230,184,0", "heading_text": "#05070B"}
+        return {"heading": "SUSPENSION", "accent": "#FFA500", "accent_rgb": "255,165,0", "heading_text": "#05070B"}
     if event in {"PRESS", "PRESS_CONFERENCE", "TEAM_NEWS"}:
-        return {"heading": "PRESS CONFERENCE", "accent": "#FFFFFF", "accent_rgb": "255,255,255", "heading_text": "#05070B"}
+        return {"heading": "PRESS CONFERENCE", "accent": "#00BFFF", "accent_rgb": "0,191,255", "heading_text": "#05070B"}
     if status == "MEDICAL":
         return {"heading": "MEDICAL", "accent": "#00E676", "accent_rgb": "0,230,118", "heading_text": "#05070B"}
     if status in {"AGREEMENT", "HERE_WE_GO", "DEAL AGREED"}:
@@ -695,14 +743,18 @@ def _mini_tiles(items):
 
 
 def _club_node(kind, name, code, crest_uri):
+    """Club name ABOVE its crest. ``kind`` (FROM/TO/CLUB) is kept as an
+    accessible label but not drawn — the arrow between two nodes carries the
+    direction, and a name reads faster than a four-letter code."""
     if not name and not crest_uri:
         return ""
-    crest = f'<img class="club-logo-img" src="{crest_uri}" alt="{_html_escape(name)}" />' if crest_uri else '<div class="club-placeholder">CLUB</div>'
+    label = name or code
+    crest = (f'<img class="club-crest" src="{crest_uri}" alt="{_html_escape(label)}" />'
+             if crest_uri else f'<div class="club-crest-fallback">{_html_escape(code or "")}</div>')
     return f'''
-      <div class="club-node">
-        <div class="club-kind">{_html_escape(kind)}</div>
-        <div class="club-logo-box">{crest}</div>
-        <div class="club-name fit-text" data-max="72" data-min="30">{_html_escape(name or code)}</div>
+      <div class="club-node" data-kind="{_html_escape(kind)}">
+        <div class="club-name fit-text" data-max="62" data-min="30">{_html_escape(label)}</div>
+        {crest}
       </div>
     '''
 
@@ -725,7 +777,17 @@ def _build_responsive_verified_card_html(
     brand_logo = f'<img class="brand-logo" src="{logo_uri}" />' if logo_uri else ""
     player = f'<img class="player-img" src="{photo_uri}" />' if photo_uri else '<div class="player-silhouette"><div class="sil-head"></div><div class="sil-body"></div></div>'
     position_text = _safe_card_text(position_text, "PREMIER LEAGUE").upper()
-    status_detail = _safe_card_text(status_detail, "OFFICIALLY CONFIRMED").upper()
+    # An empty line is not a blank line — it is a zero-height box that fitText
+    # then flags as overflowing and outlines in red on the finished card. A
+    # single-name player (Costinha, Rodri) has no first name to draw, so the
+    # element must not exist rather than exist empty.
+    first_html = (f'<div class="first-name fit-text" data-max="64" data-min="34">'
+                  f'{_html_escape(first)}</div>') if first else ""
+    position_html = (f'<div class="position fit-text" data-max="64" data-min="34">'
+                     f'{_html_escape(position_text)}</div>') if position_text else ""
+    # Neutral fallback: only a caller that has checked the evidence may pass
+    # "OFFICIALLY CONFIRMED" in. The template must never mint it for itself.
+    status_detail = _safe_card_text(status_detail, "NOT REPORTED").upper()
     if event == "TRANSFER":
         from_node = _club_node("FROM", origin_name, origin_code, origin_crest)
         to_node = _club_node("TO", destination_name, destination_code, destination_crest)
@@ -737,8 +799,8 @@ def _build_responsive_verified_card_html(
             flow_html = '<div class="flow-message fit-text" data-max="64" data-min="34">TRANSFER UPDATE</div>'
         main_panel = f'''
           <section class="contract-panel">
-            {_metric_tile("TRANSFER FEE", _value_or_not_disclosed(transfer_fee), "OFFICIAL / VERIFIED")}
-            {_metric_tile("CONTRACT LENGTH", _value_or_not_disclosed(contract_length), _safe_card_text(contract_expiry, "DETAILS NOT DISCLOSED").upper())}
+            {_metric_tile("CONTRACT FEE", _value_or_not_disclosed(transfer_fee), "CONFIRMED TRANSFER FEE" if transfer_fee else "FEE NOT DISCLOSED")}
+            {_metric_tile("CONTRACT DURATION", _value_or_not_disclosed(contract_length), _safe_card_text(contract_expiry, "DURATION NOT DISCLOSED").upper())}
           </section>
         '''
     else:
@@ -752,92 +814,120 @@ def _build_responsive_verified_card_html(
     return f'''<!doctype html><html><head><meta charset="utf-8" />
     <style>
       * {{ box-sizing:border-box; }}
-      html,body {{ margin:0; width:3840px; height:2160px; overflow:hidden; background:#05070B; }}
+      html,body {{ margin:0; width:3840px; height:2160px; overflow:hidden; background:#000000; }}
       body {{ font-family: Inter, Montserrat, DejaVu Sans, Arial, sans-serif; color:#FFFFFF; }}
-      .stage {{ width:3840px; height:2160px; padding:80px; display:grid; grid-template-rows:260px minmax(0,1fr) 215px; gap:32px; position:relative; background:linear-gradient(135deg,#05070B 0%,#0B1220 100%); }}
-      .stage::before {{ content:""; position:absolute; inset:0; opacity:.10; pointer-events:none; background:repeating-linear-gradient(125deg, transparent 0 128px, rgba({accent_rgb},.55) 130px 133px, transparent 135px 260px); }}
-      .stage::after {{ content:""; position:absolute; inset:0; pointer-events:none; background:radial-gradient(circle at 22% 42%, rgba({accent_rgb},.18), transparent 30%); }}
-      .border {{ position:absolute; inset:40px; border:3px solid rgba({accent_rgb},.62); border-radius:52px; box-shadow:0 0 28px rgba({accent_rgb},.28); pointer-events:none; }}
+      .stage {{ width:3840px; height:2160px; display:grid; grid-template-rows:300px minmax(0,1fr) 190px; position:relative; background:#000000; overflow:hidden; }}
+      /* Soft accent bloom behind the subject, and a thin rail down the left
+         edge — the only two decorations. The sample's impact comes from a
+         near-black field and one accent colour, not from texture. */
+      .stage::before {{ content:""; position:absolute; left:0; top:0; bottom:0; width:10px; background:linear-gradient(180deg,transparent,{accent},transparent); opacity:.9; }}
+      .stage::after {{ content:""; position:absolute; inset:0; pointer-events:none; background:radial-gradient(ellipse at 20% 60%, rgba({accent_rgb},.16), transparent 46%); }}
       header, main, footer {{ position:relative; z-index:2; }}
-      header {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:32px; align-items:center; }}
-      .brand {{ min-width:0; display:flex; align-items:center; gap:42px; }}
-      .brand-logo {{ width:188px; height:188px; object-fit:contain; filter:drop-shadow(0 0 18px rgba({accent_rgb},.35)); }}
-      .brand-title {{ font-family:Montserrat, DejaVu Sans, Arial, sans-serif; font-size:132px; line-height:.86; font-weight:950; font-style:italic; white-space:nowrap; }}
-      .brand-title .vortex {{ color:{accent}; text-shadow:0 0 16px rgba({accent_rgb},.42); margin-left:56px; }}
-      .brand-sub {{ color:#C7CDD8; font-size:44px; font-weight:850; margin-top:22px; white-space:nowrap; }}
-      .headline {{ height:128px; min-width:780px; padding:0 64px; border:3px solid {accent}; border-radius:28px; display:flex; align-items:center; justify-content:center; color:{theme['heading_text']}; background:rgba({accent_rgb},.14); box-shadow:0 0 28px rgba({accent_rgb},.36); font-size:86px; font-weight:950; font-style:italic; white-space:nowrap; }}
-      main {{ min-height:0; display:grid; grid-template-columns:48fr 52fr; gap:80px; }}
-      .hero {{ min-width:0; display:grid; grid-template-rows:minmax(0,1fr) auto; gap:20px; padding-right:24px; border-right:2px solid rgba({accent_rgb},.35); }}
-      .player-area {{ min-height:0; display:flex; align-items:center; justify-content:center; overflow:hidden; }}
-      .player-img {{ max-width:92%; max-height:100%; object-fit:contain; filter:drop-shadow(0 34px 44px rgba(0,0,0,.62)) drop-shadow(0 0 22px rgba({accent_rgb},.30)); }}
-      .player-silhouette {{ width:54%; height:86%; position:relative; filter:drop-shadow(0 34px 44px rgba(0,0,0,.62)); }}
-      .sil-head {{ position:absolute; left:34%; top:8%; width:32%; aspect-ratio:1/1; border-radius:50%; background:rgba(255,255,255,.18); border:5px solid rgba({accent_rgb},.50); }}
-      .sil-body {{ position:absolute; left:14%; right:14%; bottom:0; height:65%; border-radius:170px 170px 38px 38px; background:rgba({accent_rgb},.20); border:5px solid rgba({accent_rgb},.42); }}
-      .player-copy {{ min-width:0; padding:0 40px 0 0; }}
-      .first-name {{ color:#FFFFFF; font-size:68px; font-weight:900; font-style:italic; white-space:nowrap; }}
-      .surname {{ color:#FFFFFF; font-size:176px; line-height:.9; font-weight:950; font-style:italic; white-space:nowrap; text-shadow:0 10px 18px rgba(0,0,0,.75); }}
-      .position {{ display:inline-flex; align-items:center; justify-content:center; margin-top:20px; min-height:76px; padding:8px 52px; border:3px solid {accent}; background:rgba(0,0,0,.62); color:{accent}; font-size:54px; font-weight:950; letter-spacing:6px; white-space:nowrap; }}
-      .details {{ min-width:0; display:grid; grid-template-rows:440px 330px 145px 142px minmax(0,1fr); gap:32px; align-content:start; }}
-      .flow {{ display:flex; align-items:center; justify-content:center; gap:70px; min-height:0; }}
+
+      header {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:40px; align-items:center; padding:44px 64px 0 56px; }}
+      .brand {{ min-width:0; display:flex; align-items:center; gap:40px; }}
+      .brand-logo {{ width:224px; height:224px; object-fit:contain; border-radius:24px; }}
+      .brand-title {{ font-family:Montserrat, DejaVu Sans, Arial, sans-serif; font-size:128px; line-height:.9; font-weight:950; font-style:italic; letter-spacing:-2px; white-space:nowrap; }}
+      .brand-title .vortex {{ color:{accent}; margin-left:28px; }}
+      .brand-sub {{ display:flex; align-items:center; gap:20px; color:#FFFFFF; font-size:46px; font-weight:850; margin-top:14px; white-space:nowrap; }}
+      .verified-tick {{ width:52px; height:52px; border-radius:50%; background:#1D9BF0; color:#FFFFFF; font-size:34px; font-weight:950; display:flex; align-items:center; justify-content:center; flex:0 0 auto; }}
+      .headline {{ height:150px; min-width:900px; padding:0 72px; border:5px solid {accent}; border-radius:26px; display:flex; align-items:center; justify-content:center; gap:36px; color:{accent}; background:rgba({accent_rgb},.08); box-shadow:0 0 46px rgba({accent_rgb},.34), inset 0 0 40px rgba({accent_rgb},.10); font-size:92px; font-weight:950; font-style:italic; letter-spacing:1px; white-space:nowrap; }}
+      .headline-tick {{ width:82px; height:82px; border-radius:50%; border:5px solid {accent}; display:flex; align-items:center; justify-content:center; font-size:48px; font-style:normal; flex:0 0 auto; }}
+
+      main {{ min-height:0; display:grid; grid-template-columns:42fr 58fr; gap:56px; padding:24px 64px 0 56px; }}
+
+      /* HERO — the cutout runs to the floor of the panel and the name sits ON
+         it, which is what gives the sample its poster feel. A photo boxed in
+         its own tile with the name underneath always reads as a database row. */
+      .hero {{ position:relative; min-width:0; overflow:hidden; }}
+      .player-area {{ position:absolute; inset:0 0 0 0; display:flex; align-items:flex-end; justify-content:center; }}
+      .player-img {{ max-width:100%; max-height:100%; object-fit:contain; object-position:center bottom; filter:drop-shadow(0 40px 60px rgba(0,0,0,.85)); }}
+      .player-silhouette {{ width:62%; height:78%; position:relative; align-self:flex-end; }}
+      .sil-head {{ position:absolute; left:34%; top:2%; width:32%; aspect-ratio:1/1; border-radius:50%; background:rgba(255,255,255,.10); border:6px solid rgba({accent_rgb},.42); }}
+      .sil-body {{ position:absolute; left:12%; right:12%; bottom:0; height:68%; border-radius:190px 190px 30px 30px; background:rgba({accent_rgb},.12); border:6px solid rgba({accent_rgb},.34); }}
+      .player-copy {{ position:absolute; left:0; right:0; bottom:0; padding:0 0 8px 0; z-index:3; }}
+      .first-name {{ color:#FFFFFF; font-size:64px; font-weight:900; letter-spacing:4px; opacity:.92; text-shadow:0 6px 22px rgba(0,0,0,.95); }}
+      .surname {{ color:#FFFFFF; font-size:210px; line-height:.86; font-weight:950; letter-spacing:-4px; white-space:nowrap; text-shadow:0 14px 40px rgba(0,0,0,.98), 0 0 90px rgba(0,0,0,.9); }}
+      .position {{ color:{accent}; font-size:64px; font-weight:950; letter-spacing:8px; margin-top:8px; white-space:nowrap; text-shadow:0 6px 22px rgba(0,0,0,.95); }}
+
+      /* Auto rows + space-evenly: the flow, the gold panel and the status bar
+         each take only the height they need and share the slack. A 1fr row for
+         the flow gave it every spare pixel and left a canyon above the panel. */
+      .details {{ min-width:0; display:grid; grid-template-rows:auto auto auto auto; gap:40px; align-content:space-evenly; padding:20px 0 12px; }}
+
+      /* CLUB FLOW — name above crest, arrow between. */
+      .flow {{ display:flex; align-items:center; justify-content:center; gap:60px; min-height:0; }}
       .single-flow {{ width:100%; display:flex; align-items:center; justify-content:center; }}
-      .club-node {{ width:440px; min-width:0; display:flex; flex-direction:column; align-items:center; gap:18px; }}
-      .club-kind {{ font-size:58px; line-height:1; font-weight:950; color:#FFFFFF; }}
-      .club-logo-box {{ width:340px; height:340px; padding:38px; display:flex; align-items:center; justify-content:center; border:3px solid {accent}; border-radius:28px; background:rgba(0,0,0,.40); box-shadow:0 0 22px rgba({accent_rgb},.30); }}
-      .club-logo-img {{ width:100%; height:100%; object-fit:contain; filter:drop-shadow(0 0 14px rgba({accent_rgb},.25)); }}
-      .club-placeholder {{ font-size:40px; font-weight:950; opacity:.55; }}
-      .club-name {{ max-width:100%; color:#FFFFFF; font-size:72px; font-weight:950; line-height:1; text-align:center; white-space:nowrap; }}
-      .flow-arrow {{ color:{accent}; font-size:150px; filter:drop-shadow(0 0 24px rgba({accent_rgb},.55)); }}
-      .flow-message {{ color:{accent}; font-size:64px; font-weight:950; white-space:nowrap; }}
-      .contract-panel {{ display:grid; grid-template-columns:1fr 1fr; border:4px solid #B8860B; border-radius:28px; background:linear-gradient(180deg,rgba(255,213,79,.10),rgba(0,0,0,.62)); box-shadow:0 0 18px rgba(255,195,60,.24); overflow:hidden; }}
+      .club-node {{ flex:1 1 0; min-width:0; display:flex; flex-direction:column; align-items:center; gap:30px; }}
+      .club-name {{ max-width:100%; color:#FFFFFF; font-size:62px; font-weight:950; letter-spacing:1px; line-height:1; text-align:center; white-space:nowrap; }}
+      .club-crest {{ width:300px; height:300px; object-fit:contain; filter:drop-shadow(0 12px 34px rgba(0,0,0,.9)); }}
+      .club-crest-fallback {{ width:300px; height:300px; border-radius:50%; border:6px solid rgba({accent_rgb},.55); display:flex; align-items:center; justify-content:center; font-size:84px; font-weight:950; color:rgba(255,255,255,.55); }}
+      .flow-arrow {{ color:{accent}; font-size:132px; line-height:1; margin-top:70px; flex:0 0 auto; filter:drop-shadow(0 0 30px rgba({accent_rgb},.7)); }}
+      .flow-message {{ color:{accent}; font-size:72px; font-weight:950; white-space:nowrap; }}
+
+      /* FACT PANEL — gold frame, gold values, quiet white caption. */
+      .contract-panel {{ display:grid; grid-template-columns:1fr 1fr; border:5px solid #C99A2E; border-radius:26px; background:linear-gradient(180deg,rgba(201,154,46,.16),rgba(0,0,0,.86)); box-shadow:0 0 40px rgba(201,154,46,.26); overflow:hidden; }}
       .contract-panel.single {{ grid-template-columns:1fr; }}
-      .metric-tile {{ min-width:0; padding:48px 56px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; }}
-      .metric-tile + .metric-tile {{ border-left:2px solid rgba(184,134,11,.70); }}
-      .tile-label {{ color:#FFD54F; font-size:54px; font-weight:950; white-space:nowrap; }}
-      .tile-value {{ color:#FFD54F; font-size:118px; line-height:1; font-weight:950; white-space:nowrap; }}
-      .tile-sub {{ color:#FFFFFF; font-size:34px; font-weight:850; white-space:nowrap; }}
-      .mini-panel {{ min-height:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:24px; }}
-      .mini-tile {{ min-width:0; padding:20px 28px; border:3px solid rgba(184,134,11,.82); border-radius:18px; background:rgba(0,0,0,.45); }}
-      .mini-label {{ color:#8A94A6; font-size:34px; font-weight:850; white-space:nowrap; }}
-      .mini-value {{ color:#FFFFFF; font-size:48px; font-weight:950; white-space:nowrap; }}
-      .status-panel {{ min-height:0; display:grid; grid-template-columns:100px auto minmax(0,1fr); align-items:center; gap:32px; padding:24px 48px; border:3px solid {accent}; border-radius:24px; background:rgba(0,0,0,.52); box-shadow:0 0 20px rgba({accent_rgb},.26); }}
-      .check {{ width:82px; height:82px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:{accent}; color:#05070B; font-size:60px; font-weight:950; }}
-      .status-label {{ font-size:58px; font-weight:950; white-space:nowrap; }}
-      .status-value {{ color:{accent}; font-size:58px; font-weight:950; white-space:nowrap; }}
-      footer {{ min-height:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); border:3px solid rgba({accent_rgb},.58); border-radius:20px; overflow:hidden; background:rgba(0,0,0,.68); }}
-      .foot {{ min-width:0; display:flex; align-items:center; justify-content:center; gap:28px; padding:0 40px; font-size:44px; font-weight:950; white-space:nowrap; }}
-      .foot + .foot {{ border-left:2px solid rgba({accent_rgb},.45); }}
-      .foot-icon {{ color:{accent}; font-size:58px; flex:0 0 auto; }}
-      .yt {{ width:82px; height:58px; border-radius:12px; background:#FF0000; position:relative; flex:0 0 auto; }}
-      .yt::after {{ content:""; position:absolute; left:33px; top:15px; border-top:14px solid transparent; border-bottom:14px solid transparent; border-left:22px solid #FFFFFF; }}
-      .x-icon {{ font-size:64px; color:#FFFFFF; flex:0 0 auto; }}
+      .metric-tile {{ min-width:0; padding:40px 48px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; }}
+      .metric-tile + .metric-tile {{ border-left:3px solid rgba(201,154,46,.62); }}
+      .tile-label {{ color:#FFFFFF; font-size:52px; font-weight:950; letter-spacing:2px; white-space:nowrap; }}
+      .tile-value {{ color:#F2CE63; font-size:126px; line-height:1; font-weight:950; letter-spacing:-1px; white-space:nowrap; text-shadow:0 0 34px rgba(242,206,99,.34); }}
+      .tile-sub {{ color:#FFFFFF; font-size:36px; font-weight:800; letter-spacing:2px; opacity:.85; white-space:nowrap; }}
+
+      .mini-panel {{ min-height:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:26px; }}
+      .mini-tile {{ min-width:0; padding:22px 34px; border:3px solid rgba(201,154,46,.62); border-radius:18px; background:rgba(0,0,0,.6); }}
+      .mini-label {{ color:#8A94A6; font-size:34px; font-weight:850; letter-spacing:2px; white-space:nowrap; }}
+      .mini-value {{ color:#FFFFFF; font-size:52px; font-weight:950; white-space:nowrap; }}
+
+      .status-panel {{ min-height:0; display:grid; grid-template-columns:96px auto minmax(0,1fr); align-items:center; gap:34px; padding:30px 52px; border:4px solid {accent}; border-radius:24px; background:rgba(0,0,0,.72); box-shadow:0 0 34px rgba({accent_rgb},.3); }}
+      .check {{ width:88px; height:88px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:{accent}; color:#000000; font-size:58px; font-weight:950; }}
+      .status-label {{ font-size:62px; font-weight:950; letter-spacing:1px; white-space:nowrap; border-bottom:5px solid rgba(255,255,255,.55); padding-bottom:4px; }}
+      .status-value {{ color:{accent}; font-size:62px; font-weight:950; text-align:right; white-space:nowrap; }}
+
+      footer {{ min-height:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); border-top:4px solid rgba({accent_rgb},.5); background:#000000; margin-top:20px; }}
+      .foot {{ min-width:0; display:flex; align-items:center; justify-content:center; gap:30px; padding:0 44px; font-size:48px; font-weight:950; letter-spacing:1px; white-space:nowrap; }}
+      .foot + .foot {{ border-left:3px solid rgba({accent_rgb},.34); }}
+      .foot-icon {{ color:{accent}; font-size:60px; flex:0 0 auto; }}
+      .yt {{ width:88px; height:62px; border-radius:14px; background:#FF0000; position:relative; flex:0 0 auto; }}
+      .yt::after {{ content:""; position:absolute; left:35px; top:16px; border-top:15px solid transparent; border-bottom:15px solid transparent; border-left:24px solid #FFFFFF; }}
+      .x-icon {{ font-size:66px; color:#FFFFFF; flex:0 0 auto; }}
       .fit-text {{ display:block; overflow:visible; }}
-      .invalid {{ outline:8px solid red; }}
-    </style></head><body><section class="stage"><div class="border"></div>
-      <header><div class="brand">{brand_logo}<div><div class="brand-title">FPL <span class="vortex">VORTEX</span></div><div class="brand-sub">Verified Premier League News</div></div></div><div class="headline fit-text" data-max="86" data-min="44">{_html_escape(theme['heading'])}</div></header>
-      <main><section class="hero"><div class="player-area">{player}</div><div class="player-copy"><div class="first-name fit-text" data-max="68" data-min="36">{_html_escape(first)}</div><div class="surname fit-text" data-max="176" data-min="88">{_html_escape(surname)}</div><div class="position fit-text" data-max="54" data-min="30">{_html_escape(position_text)}</div></div></section>
-      <section class="details"><section class="flow">{flow_html}</section>{main_panel}<section class="mini-panel">{_mini_tiles(facts_grid)}</section><section class="status-panel"><div class="check">✓</div><div class="status-label fit-text" data-max="58" data-min="34">STATUS:</div><div class="status-value fit-text" data-max="58" data-min="34">{_html_escape(status_detail)}</div></section></section></main>
-      <footer><div class="foot"><span class="foot-icon">◎</span><span class="fit-text" data-max="44" data-min="28">SOURCE: {_html_escape(source_text.upper())}</span></div><div class="foot"><span class="yt"></span><span class="fit-text" data-max="44" data-min="30">@FPLVORTEX</span></div><div class="foot"><span class="x-icon">𝕏</span><span class="fit-text" data-max="44" data-min="30">@FPLVORTEX</span></div></footer>
+      /* Overflow is REPORTED (window.__CARD_OVERFLOW__), never drawn. A debug
+         outline on a published card is a defect the viewer sees; the renderer
+         logs it instead. */
+    </style></head><body><section class="stage">
+      <header><div class="brand">{brand_logo}<div><div class="brand-title">FPL <span class="vortex">VORTEX</span></div><div class="brand-sub">Verified Premier League News<span class="verified-tick">✓</span></div></div></div><div class="headline"><span class="fit-text" data-max="92" data-min="46">{_html_escape(theme['heading'])}</span><span class="headline-tick">✓</span></div></header>
+      <main><section class="hero"><div class="player-area">{player}</div><div class="player-copy">{first_html}<div class="surname fit-text" data-max="210" data-min="96">{_html_escape(surname)}</div>{position_html}</div></section>
+      <section class="details"><section class="flow">{flow_html}</section>{main_panel}<section class="mini-panel">{_mini_tiles(facts_grid)}</section><section class="status-panel"><div class="check">✓</div><div class="status-label">STATUS:</div><div class="status-value fit-text" data-max="62" data-min="32">{_html_escape(status_detail)}</div></section></section></main>
+      <footer><div class="foot"><span class="foot-icon">⊕</span><span class="fit-text" data-max="48" data-min="26">SOURCE: {_html_escape(source_text.upper())}</span></div><div class="foot"><span class="yt"></span><span class="fit-text" data-max="48" data-min="30">@FPLVORTEX</span></div><div class="foot"><span class="x-icon">𝕏</span><span class="fit-text" data-max="48" data-min="30">@FPLVORTEX</span></div></footer>
     </section><script>
+      // fitText shrinks only genuinely overflowing text. These elements are all
+      // white-space:nowrap, so they cannot wrap and their HEIGHT is fixed by font
+      // metrics, not by content. Measuring height therefore reports overflow for
+      // any tight line-height (the surname sits at .86) and shrank names that fit
+      // perfectly well — width is the only meaningful test here.
+      function overflowsWidth(el) {{ return el.scrollWidth > el.clientWidth + 2; }}
       function fitText(el) {{
         const max = Number(el.dataset.max || 64);
         const min = Number(el.dataset.min || 24);
         let fs = max;
         el.style.fontSize = fs + 'px';
         el.style.whiteSpace = 'nowrap';
-        while ((el.scrollWidth > el.clientWidth + 2 || el.scrollHeight > el.clientHeight + 4) && fs > min) {{
+        while (overflowsWidth(el) && fs > min) {{
           fs -= Math.max(1, Math.ceil(fs * 0.05));
           el.style.fontSize = fs + 'px';
         }}
       }}
       function validateLayout() {{
-        let ok = true;
+        const over = [];
         document.querySelectorAll('.fit-text').forEach(function(el) {{
           fitText(el);
-          if (el.scrollWidth > el.clientWidth + 2 || el.scrollHeight > el.clientHeight + 4) {{
-            el.classList.add('invalid'); ok = false;
+          if (overflowsWidth(el)) {{
+            over.push((el.className || 'fit-text') + ': ' + (el.textContent || '').slice(0, 60));
           }}
         }});
-        window.__CARD_VALID__ = ok;
+        window.__CARD_OVERFLOW__ = over;
+        window.__CARD_VALID__ = over.length === 0;
       }}
       document.addEventListener('DOMContentLoaded', validateLayout);
       window.addEventListener('load', validateLayout);
@@ -895,9 +985,14 @@ def create_verified_branded_card(event, subject, facts, source_handles, filename
             facts_grid=facts_grid, status_detail=status_detail, position_text=position,
         )
     else:
+        # An injury/suspension card with no reported status must NOT fall back to
+        # "OFFICIALLY CONFIRMED" — that stamps a provenance claim, next to a tick,
+        # onto the one field we do not have. Saying nothing is known is honest and
+        # still useful; claiming it is official when the source never said so is
+        # the same failure mode as inventing the subject.
         status_detail = _compact_status_text(
             facts.get("injury_status") if event == "INJURY" else facts.get("suspension_status"),
-            fallback="OFFICIALLY CONFIRMED",
+            fallback="NOT REPORTED",
         )
         html = _build_responsive_verified_card_html(
             event=event, status=status, player_name=player_name, logo_uri=logo_uri,
@@ -993,7 +1088,7 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                             main_crest, rows, source_text, footer_tag)
 
     if not _render_card(html, filename):
-        Image.new('RGB', (1380, 776), color=(11, 18, 32)).save(filename)
+        Image.new('RGB', (CARD_OUTPUT_W, CARD_OUTPUT_H), color=(11, 18, 32)).save(filename)
 
 
 def create_injury_image(story, sources, filename):

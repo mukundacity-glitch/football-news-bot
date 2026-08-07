@@ -220,7 +220,11 @@ def evaluate(story, *, player_verified=False, official_source=False,
     text = " . ".join(str(story.get(k, "") or "") for k in
                       ("raw_text", "body", "headline"))
     name = story.get("player") or ""
-    etype, ereason = classify_entity_detailed(name, text, fpl_data)
+    # A staff_role set by the parser is a role the pipeline already bound to this
+    # subject; hand it to the classifier so a coach appointment is judged as
+    # staff rather than falling through to the player allowlist and rejecting.
+    role_hint = story.get("staff_role") if story.get("event") == "manager" else None
+    etype, ereason = classify_entity_detailed(name, text, fpl_data, role_hint=role_hint)
 
     ev = story.get("event")
     dir_ok, dir_reason = validate_direction(story)

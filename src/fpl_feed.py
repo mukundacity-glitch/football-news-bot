@@ -46,6 +46,18 @@ def _valid_fpl_payload(data) -> bool:
     )
 
 
+def _sync_squad_registry(data: dict | None) -> None:
+    """Keep the closed-world squad allowlist in step with the feed.
+
+    Done here rather than at each of the eight ``fetch_fpl_data()`` call sites so
+    the registry can never drift out of sync with the roster it is built from —
+    a stale registry silently narrows or widens what the bot may publish.
+    """
+    from src import squad_registry  # local: squad_registry reads this module
+
+    squad_registry.refresh_registry(data)
+
+
 def fetch_fpl_data() -> dict | None:
     """Fetch a fresh, schema-validated FPL registry and cache it atomically.
 
@@ -58,6 +70,7 @@ def fetch_fpl_data() -> dict | None:
         try:
             data = json.loads(cache.read_text(encoding="utf-8"))
             if _valid_fpl_payload(data):
+                _sync_squad_registry(data)
                 return data
             print("  [FEED ERROR] FPL cache schema invalid, forcing re-fetch.")
         except (json.JSONDecodeError, OSError) as e:
@@ -76,6 +89,7 @@ def fetch_fpl_data() -> dict | None:
         tmp = cache.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")
         tmp.replace(cache)
+        _sync_squad_registry(data)
         return data
     except Exception as e:
         print(f"  [FEED ERROR] Failed syncing with FPL API: {e}")
