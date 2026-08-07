@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "_comment": "MANUAL ALLOWLIST — the only sanctioned way to publish about a player who is confirmed signed/registered but has not yet appeared in the live FPL bootstrap feed (there is normally a 1-2 day lag after a real transfer). This file is NOT a place to add names the bot got wrong; it is a place a human vouches for a player with first-party evidence. Every entry needs name, club, evidence_url and expires_at. An entry with any of those missing is IGNORED. An entry past expires_at is IGNORED, so this file cannot rot into a stale source of truth — it either gets renewed on purpose or the FPL feed takes over. Keep expiries short (2-4 weeks).",
+  "_entry_schema": {
+    "name": "Full name as the club announced it",
+    "aliases": ["Optional alternate spellings / short name"],
+    "club": "CLUB_ALIASES key, e.g. man_utd",
+    "position": "GKP | DEF | MID | FWD",
+    "evidence_url": "First-party announcement URL (club site / Premier League)",
+    "added_by": "Who vouched for this entry",
+    "added_at": "YYYY-MM-DD",
+    "expires_at": "YYYY-MM-DD"
+  },
+  "players": []
+}

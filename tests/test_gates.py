@@ -59,10 +59,17 @@ def test_recent_story_passes_recency():
 
 def test_non_player_no_origin_rejected_as_transfer():
     # A coach announced by a club, filed as a player transfer, with no origin
-    # club and not in FPL -> must NOT publish as a player transfer.
+    # club and not in the squad registry -> must NOT publish as a player
+    # transfer. The subject now fails the identity gate outright rather than the
+    # weaker "no origin club" heuristic that used to catch it, so the rejection
+    # holds even when the announcement DOES name an origin club.
     s = main.build_story("Pascal De Maesschalck confirmed transfer to Arsenal", None)
     ok, why = main.validate_story(s, None, sources=["Arsenal"])
-    assert ok is False and why == "unconfirmed_player_identity", why
+    assert ok is False and why == "not_in_squad_registry", why
+
+    s = main.build_story("Pascal De Maesschalck confirmed transfer to Arsenal from Club Brugge", None)
+    ok, why = main.validate_story(s, None, sources=["Arsenal"])
+    assert ok is False and why == "not_in_squad_registry", why
 
 
 def test_coach_with_role_cue_routes_to_staff():

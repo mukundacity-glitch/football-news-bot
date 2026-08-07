@@ -19,6 +19,7 @@ from pilmoji import Pilmoji
 
 # Connected to Core Engines & Ground Truth Caches
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key
+from src.squad_registry import is_known_player, resolve_player, refresh_registry
 from src.renderer import (create_transfer_image, create_injury_image, _create_fallback_card,
                           create_verified_branded_card, image_is_blank)
 from src.parser import extract_story_fallback, detect_historical, passes_safety_gate, _clean_source_text
@@ -846,16 +847,19 @@ def validate_story(story, fpl_data=None, sources=None):
     if ev in ("transfer", "loan", "loan_option", "injury", "suspension", "renewal", "stay") and len(_ptokens) < 2: return False, "player_name_single_token"
     if re.search(r"\b(under|u\d{1,2}|u-\d{1,2})$", _plow): return False, "player_name_truncated_fragment"
 
-    # ACCURACY GATE: post about FPL-verified players, OR — when the source is a
-    # reliable reporter/website (tiers 1-3) — players not yet in the FPL dataset.
+    # IDENTITY GATE: the subject must resolve against the squad registry. There
+    # is NO reliable-source exemption. The previous rule ("a tier-1-3 source may
+    # post a player the FPL feed has never heard of") disabled this gate for
+    # every story the bot ingests — every account it scrapes is tier 1-3 by
+    # construction, which is why it scrapes them — and that is the hole every
+    # invented subject walked through, "Manchester United Website" included.
+    #
+    # A genuinely new signing the FPL feed has not listed yet is handled by
+    # data/squad_overrides.json: a human vouches for the player with first-party
+    # evidence and an expiry date. Slower by design, and it cannot hallucinate.
     PERSON_EVENTS = ("transfer", "loan", "loan_option", "renewal", "stay", "injury", "suspension", "manager")
-    if fpl_data and ev in PERSON_EVENTS and find_player_in_fpl(player, fpl_data) is None:
-        if not is_reliable_source(sources):
-            return False, "not_verified_pl_player"
-        # Reliable source but unverified player still needs a PL-club anchor so we
-        # only post genuinely Premier-League-related news.
-        if not (story.get("to_key") or story.get("from_key")):
-            return False, "reliable_source_but_no_pl_club"
+    if ev in PERSON_EVENTS and ev != "manager" and not is_known_player(player, fpl_data):
+        return False, "not_in_squad_registry"
 
     PLACEHOLDERS = ("player name", "example", "xxx", "[", "]", "tbd", "to follow",
                     "lorem", "duration & details", "updated heading", "from club", "to club")
@@ -974,14 +978,14 @@ def verify_card_data(item: dict, fpl_data=None):
     """
     report = []
     ev = item.get("event")
-    reliable = is_reliable_source(item.get("sources"))
     PERSON_EVENTS = ("transfer", "loan", "loan_option", "renewal", "stay",
                      "injury", "suspension", "manager")
 
     # 1. Player identity — resolve against the FPL feed and pin ONE display name
     #    used by both the card and the tweet (so they can never disagree).
-    #    A reliable source (official/elite/trusted media) may post even when the
-    #    player isn't in the FPL database yet (e.g. a brand-new signing).
+    #    A player the FPL feed has not listed yet (e.g. a signing announced
+    #    hours ago) is accepted ONLY via a vouched-for entry in
+    #    data/squad_overrides.json — never on the strength of the source alone.
     if ev in PERSON_EVENTS and ev != "manager":
         el = find_player_in_fpl(item.get("player"), fpl_data) if fpl_data else None
         if el:
@@ -1006,14 +1010,19 @@ def verify_card_data(item: dict, fpl_data=None):
                     # Injury/suspension/contract: show the player's club on the card.
                     item["from_key"] = true_from
                     report.append(f"club ✓ {true_from!r} (player's FPL club)")
-        elif reliable:
-            # Trusted source, player not in FPL yet — accept with the parsed name
-            # and let the card fall back to the tweet/website photo.
-            item["display_name"] = item.get("player")
-            report.append(f"player ⚠ '{item.get('player')}' not in FPL — accepted on reliable source "
-                          f"({', '.join('@' + s for s in (item.get('sources') or [])[:2])})")
+        elif record := resolve_player(item.get("player"), fpl_data):
+            # Not in the FPL feed, but a human has vouched for this player in
+            # data/squad_overrides.json with first-party evidence. That is the
+            # ONLY non-FPL route onto a card — "the source is trusted" is not
+            # one, because a trusted account can still publish a phrase that is
+            # not a person.
+            item["display_name"] = record.name
+            if record.club_key and not (item.get("from_key") or item.get("to_key")):
+                item["from_key"] = record.club_key
+            report.append(f"player ✓ '{item.get('player')}' → override '{record.name}' "
+                          f"(evidence {record.evidence_url})")
         else:
-            return False, "player_not_verified_and_source_not_reliable", report
+            return False, "player_not_in_squad_registry", report
     else:
         item["display_name"] = item.get("player")
         report.append(f"player ✓ '{item.get('player')}' (event={ev})")

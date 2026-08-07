@@ -107,12 +107,22 @@ def get_club_color(club_key):
     color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
     return f"rgb({color_tuple[0]}, {color_tuple[1]}, {color_tuple[2]})"
 
-def _render_html_sync(html_content, filename, error_box=None, width=1380, height=776):
+# Every card ships at 4K UHD, 16:9 — the master resolution. Templates keep
+# their own CSS design size; the renderer scales the browser's device pixel
+# ratio to reach this output, so a template laid out at 1380x776 produces a
+# genuinely 3840x2160 image rather than an upscaled 1380x776 one. Text, crests
+# and borders are re-rasterised at the higher density, not stretched.
+CARD_OUTPUT_W, CARD_OUTPUT_H = 3840, 2160
+
+
+def _render_html_sync(html_content, filename, error_box=None, width=1380, height=776,
+                      scale=1.0):
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": width, "height": height}, device_scale_factor=1)
+            page = browser.new_page(viewport={"width": width, "height": height},
+                                    device_scale_factor=scale)
             page.set_content(html_content, wait_until="domcontentloaded")
             page.wait_for_timeout(500)
             page.screenshot(path=filename)
@@ -121,6 +131,24 @@ def _render_html_sync(html_content, filename, error_box=None, width=1380, height
         if error_box is not None:
             import traceback
             error_box.append(traceback.format_exc())
+
+
+def _normalise_card_size(filename) -> None:
+    """Force the rendered card to exactly 3840x2160.
+
+    A template's design aspect can be a hair off 16:9 (1380x776 is 1.7784 vs
+    1.7778), and device_scale_factor rounds to whole pixels. Both leave the
+    screenshot a few pixels short of the target, which downstream consumers —
+    X's media pipeline especially — treat as a non-standard size. The correction
+    is sub-0.1% so it costs nothing visually.
+    """
+    try:
+        with Image.open(filename) as im:
+            if im.size == (CARD_OUTPUT_W, CARD_OUTPUT_H):
+                return
+            im.convert("RGB").resize((CARD_OUTPUT_W, CARD_OUTPUT_H), Image.LANCZOS).save(filename)
+    except Exception:
+        pass  # A card that renders slightly off-size still beats no card.
 
 
 # ── SHARED ASSET / RENDER HELPERS ─────────────────────────────────────────
@@ -444,16 +472,25 @@ def image_is_blank(path, stddev_floor: float = 3.0) -> bool:
 
 
 def _render_card(html_content, filename, width=1380, height=776) -> bool:
-    """Render HTML to PNG via the threaded Playwright helper. Returns True on success."""
+    """Render HTML to PNG at 4K via the threaded Playwright helper.
+
+    ``width``/``height`` are the template's CSS design size, not the output
+    size — the output is always CARD_OUTPUT_W x CARD_OUTPUT_H. The device pixel
+    ratio does the work, so a template does not have to be rewritten in 4K units
+    to ship a 4K card.
+    """
     try:
         import threading
         error_box = []
-        t = threading.Thread(target=_render_html_sync, args=(html_content, filename, error_box, width, height))
+        scale = max(1.0, CARD_OUTPUT_W / float(width or CARD_OUTPUT_W))
+        t = threading.Thread(target=_render_html_sync,
+                             args=(html_content, filename, error_box, width, height, scale))
         t.start()
         t.join()
         if error_box:
             print("  [THREAD TRACEBACK]\n" + error_box[0])
         if Path(filename).exists() and Path(filename).stat().st_size >= 1000:
+            _normalise_card_size(filename)
             _ensure_upload_safe(filename)
             return True
     except Exception:
@@ -993,7 +1030,7 @@ def create_transfer_image(story, sources, filename, collapsed=False):
                             main_crest, rows, source_text, footer_tag)
 
     if not _render_card(html, filename):
-        Image.new('RGB', (1380, 776), color=(11, 18, 32)).save(filename)
+        Image.new('RGB', (CARD_OUTPUT_W, CARD_OUTPUT_H), color=(11, 18, 32)).save(filename)
 
 
 def create_injury_image(story, sources, filename):

@@ -31,6 +31,7 @@ from .models import (
 )
 from .source_registry import SourceRegistry
 from src.entity_guard import classify_entity_detailed, _HARD_REJECT
+from src import squad_registry
 
 
 _LEGACY_EVENT_MAP = {
@@ -776,9 +777,22 @@ class LegacyClaimAdapter:
 
 
 def document_name_is_person_like(name: str) -> bool:
-    """Structural check used only after a verified official source is present."""
+    """True only if this name is a real, registered player.
+
+    This used to be a pure SHAPE test — "between 2 and 6 alphabetic words" — and
+    it was the last check standing between an official club account and a new
+    entity in the database. Shape does not distinguish a person from a phrase:
+    "Manchester United Website", "Season Ticket Holders" and "Club Statement" all
+    pass a shape test, and one of them was published as a completed transfer.
+
+    Shape is now a cheap pre-filter only. The decision belongs to the squad
+    registry (live FPL roster + vouched-for overrides), so a first-party source
+    can confirm news ABOUT a known player but can no longer invent one.
+    """
     normalized = normalize_entity_name(name)
     parts = normalized.split()
     if len(parts) < 2 or len(parts) > 6:
         return False
-    return all(part.isalpha() and len(part) >= 2 for part in parts)
+    if not all(part.isalpha() and len(part) >= 2 for part in parts):
+        return False
+    return squad_registry.is_known_player(name)

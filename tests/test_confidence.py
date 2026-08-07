@@ -58,7 +58,9 @@ def test_foreign_and_efl_signings_post():
     for frm, to in (("Olympiacos", "Brighton"), ("AIK", "Brighton"),
                     ("Aston_Villa", "Sheffield Wednesday"),
                     ("Liverpool", "Bolton Wanderers")):
-        r = evaluate(_story(player="Real Person", event="transfer",
+        # A registry-verified player — the subject is incidental here; what is
+        # under test is that a foreign/EFL club on either end still scores.
+        r = evaluate(_story(player="Michael Svoboda", event="transfer",
                             from_club=frm, to_club=to,
                             headline=f"joins {to} from {frm}"),
                      player_verified=True, official_source=True, n_sources=1)
