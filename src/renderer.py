@@ -759,6 +759,27 @@ def _club_node(kind, name, code, crest_uri):
     '''
 
 
+def _detail_row(label, label_color, value, crest_uri=""):
+    """One LABEL / VALUE line. The label carries the colour; the value is white.
+
+    This is the Elliott card's core device: a narrow coloured label column
+    against bold white values, so the eye scans the facts down one axis and
+    picks up what kind of fact each one is from the colour, without the card
+    ever becoming a colour chart.
+    """
+    if not value:
+        return ""
+    crest = f'<img class="row-crest" src="{crest_uri}" alt="" />' if crest_uri else ""
+    return (
+        '<div class="row">'
+        f'<div class="row-label fit-text" data-max="58" data-min="30" '
+        f'style="color:{label_color};">{_html_escape(label)}</div>'
+        f'<div class="row-value fit-text" data-max="96" data-min="42">{_html_escape(value)}</div>'
+        f'{crest}'
+        '</div>'
+    )
+
+
 def _build_responsive_verified_card_html(
     *, event, status, player_name, logo_uri, photo_uri, source_text,
     origin_name="", origin_code="", origin_crest="",
@@ -767,145 +788,150 @@ def _build_responsive_verified_card_html(
     transfer_fee="", contract_length="", contract_expiry="",
     facts_grid=None, status_detail="", position_text="",
 ):
+    """Render the FPL VORTEX card: pure black, category-coloured heading only.
+
+    Layout follows the original Elliott card — brand mark and category chip top
+    left, the player's name set large beneath them, the facts as LABEL/VALUE
+    rows, and the player cut out on the right. The only thing that changes
+    colour between card types is the category chip and the row labels; the name
+    and every value stay white, so a viewer reads the same card each time and
+    only the accent tells them what kind of news it is.
+    """
     event = str(event or "").upper()
     status = str(status or "").upper()
     theme = _card_theme(event, status)
     accent = theme["accent"]
     accent_rgb = theme["accent_rgb"]
-    first, surname = _display_name_parts(player_name)
     facts_grid = facts_grid or []
     brand_logo = f'<img class="brand-logo" src="{logo_uri}" />' if logo_uri else ""
-    player = f'<img class="player-img" src="{photo_uri}" />' if photo_uri else '<div class="player-silhouette"><div class="sil-head"></div><div class="sil-body"></div></div>'
-    position_text = _safe_card_text(position_text, "PREMIER LEAGUE").upper()
-    # An empty line is not a blank line — it is a zero-height box that fitText
-    # then flags as overflowing and outlines in red on the finished card. A
-    # single-name player (Costinha, Rodri) has no first name to draw, so the
-    # element must not exist rather than exist empty.
-    first_html = (f'<div class="first-name fit-text" data-max="64" data-min="34">'
-                  f'{_html_escape(first)}</div>') if first else ""
-    position_html = (f'<div class="position fit-text" data-max="64" data-min="34">'
-                     f'{_html_escape(position_text)}</div>') if position_text else ""
+    player = (f'<img class="player-img" src="{photo_uri}" />' if photo_uri
+              else '<div class="player-silhouette"><div class="sil-head"></div>'
+                   '<div class="sil-body"></div></div>')
     # Neutral fallback: only a caller that has checked the evidence may pass
     # "OFFICIALLY CONFIRMED" in. The template must never mint it for itself.
     status_detail = _safe_card_text(status_detail, "NOT REPORTED").upper()
+    full_name = _safe_card_text(player_name, "PLAYER").upper()
+
+    # Fixed label palette, shared by every card type. These do NOT vary with
+    # category — only the chip does. Keeping them constant is what lets someone
+    # who has seen one card read the next one without re-learning it.
+    L_FROM, L_TO, L_KEY = "#F2C14E", "#4FA8FF", "#FF5C5C"
+
     if event == "TRANSFER":
-        from_node = _club_node("FROM", origin_name, origin_code, origin_crest)
-        to_node = _club_node("TO", destination_name, destination_code, destination_crest)
-        if from_node and to_node:
-            flow_html = f'{from_node}<div class="flow-arrow">➜</div>{to_node}'
-        elif to_node:
-            flow_html = f'<div class="single-flow">{to_node}</div>'
-        else:
-            flow_html = '<div class="flow-message fit-text" data-max="64" data-min="34">TRANSFER UPDATE</div>'
-        main_panel = f'''
-          <section class="contract-panel">
-            {_metric_tile("CONTRACT FEE", _value_or_not_disclosed(transfer_fee), "CONFIRMED TRANSFER FEE" if transfer_fee else "FEE NOT DISCLOSED")}
-            {_metric_tile("CONTRACT DURATION", _value_or_not_disclosed(contract_length), _safe_card_text(contract_expiry, "DURATION NOT DISCLOSED").upper())}
-          </section>
-        '''
+        rows = (
+            _detail_row("FROM", L_FROM, _safe_card_text(origin_name or origin_code), origin_crest)
+            + _detail_row("TO", L_TO, _safe_card_text(destination_name or destination_code), destination_crest)
+            + _detail_row("FEE", L_KEY, _value_or_not_disclosed(transfer_fee))
+            + _detail_row("CONTRACT", L_KEY, _safe_card_text(contract_length or contract_expiry))
+        )
+    elif event in {"INJURY", "SUSPENSION"}:
+        rows = (
+            _detail_row("CLUB", L_FROM, _safe_card_text(club_name or club_code), club_crest)
+            + _detail_row(event, L_KEY, status_detail)
+            + "".join(_detail_row(lbl, L_TO, val) for lbl, val in facts_grid[:2])
+        )
     else:
-        node = _club_node("CLUB", club_name, club_code, club_crest)
-        flow_html = f'<div class="single-flow">{node}</div>' if node else '<div class="flow-message fit-text" data-max="64" data-min="34">PREMIER LEAGUE UPDATE</div>'
-        main_panel = f'''
-          <section class="contract-panel single">
-            {_metric_tile(event, status_detail, "VERIFIED UPDATE")}
-          </section>
-        '''
+        rows = (
+            _detail_row("CLUB", L_FROM, _safe_card_text(club_name or club_code), club_crest)
+            + _detail_row("UPDATE", L_KEY, status_detail)
+            + "".join(_detail_row(lbl, L_TO, val) for lbl, val in facts_grid[:2])
+        )
+
     return f'''<!doctype html><html><head><meta charset="utf-8" />
     <style>
       * {{ box-sizing:border-box; }}
+      /* Pure #000000, no gradient. The card is lit only by the photo and one
+         accent, which is what makes it read as premium rather than busy. */
       html,body {{ margin:0; width:3840px; height:2160px; overflow:hidden; background:#000000; }}
-      body {{ font-family: Inter, Montserrat, DejaVu Sans, Arial, sans-serif; color:#FFFFFF; }}
-      .stage {{ width:3840px; height:2160px; display:grid; grid-template-rows:300px minmax(0,1fr) 190px; position:relative; background:#000000; overflow:hidden; }}
-      /* Soft accent bloom behind the subject, and a thin rail down the left
-         edge — the only two decorations. The sample's impact comes from a
-         near-black field and one accent colour, not from texture. */
-      .stage::before {{ content:""; position:absolute; left:0; top:0; bottom:0; width:10px; background:linear-gradient(180deg,transparent,{accent},transparent); opacity:.9; }}
-      .stage::after {{ content:""; position:absolute; inset:0; pointer-events:none; background:radial-gradient(ellipse at 20% 60%, rgba({accent_rgb},.16), transparent 46%); }}
-      header, main, footer {{ position:relative; z-index:2; }}
+      body {{ font-family: Inter, Montserrat, "DejaVu Sans", Arial, sans-serif; color:#FFFFFF;
+              -webkit-font-smoothing:antialiased; }}
+      .stage {{ width:3840px; height:2160px; position:relative; background:#000000;
+                display:grid; grid-template-rows:minmax(0,1fr) 190px; overflow:hidden; }}
+      /* A single soft accent wash behind the subject. Nothing else decorates. */
+      .stage::before {{ content:""; position:absolute; right:0; top:0; bottom:0; width:46%;
+                        background:radial-gradient(ellipse at 70% 45%, rgba({accent_rgb},.13), transparent 62%);
+                        pointer-events:none; }}
+      main, footer {{ position:relative; z-index:2; }}
+      main {{ min-height:0; display:grid; grid-template-columns:60fr 40fr; gap:64px;
+              padding:96px 96px 40px 112px; }}
 
-      header {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:40px; align-items:center; padding:44px 64px 0 56px; }}
-      .brand {{ min-width:0; display:flex; align-items:center; gap:40px; }}
-      .brand-logo {{ width:224px; height:224px; object-fit:contain; border-radius:24px; }}
-      .brand-title {{ font-family:Montserrat, DejaVu Sans, Arial, sans-serif; font-size:128px; line-height:.9; font-weight:950; font-style:italic; letter-spacing:-2px; white-space:nowrap; }}
-      .brand-title .vortex {{ color:{accent}; margin-left:28px; }}
-      .brand-sub {{ display:flex; align-items:center; gap:20px; color:#FFFFFF; font-size:46px; font-weight:850; margin-top:14px; white-space:nowrap; }}
-      .verified-tick {{ width:52px; height:52px; border-radius:50%; background:#1D9BF0; color:#FFFFFF; font-size:34px; font-weight:950; display:flex; align-items:center; justify-content:center; flex:0 0 auto; }}
-      .headline {{ height:150px; min-width:900px; padding:0 72px; border:5px solid {accent}; border-radius:26px; display:flex; align-items:center; justify-content:center; gap:36px; color:{accent}; background:rgba({accent_rgb},.08); box-shadow:0 0 46px rgba({accent_rgb},.34), inset 0 0 40px rgba({accent_rgb},.10); font-size:92px; font-weight:950; font-style:italic; letter-spacing:1px; white-space:nowrap; }}
-      .headline-tick {{ width:82px; height:82px; border-radius:50%; border:5px solid {accent}; display:flex; align-items:center; justify-content:center; font-size:48px; font-style:normal; flex:0 0 auto; }}
+      .left {{ min-width:0; display:grid; grid-template-rows:auto minmax(0,1fr); }}
+      .left-body {{ min-width:0; align-self:center; }}
+      .brand {{ display:flex; align-items:center; gap:36px; }}
+      /* Logo enlarged per spec; top-left placement and safe margin preserved. */
+      .brand-logo {{ width:150px; height:150px; object-fit:contain; border-radius:22px; flex:0 0 auto; }}
+      .brand-title {{ font-size:104px; line-height:1; font-weight:950; font-style:italic;
+                      letter-spacing:-1px; white-space:nowrap; }}
+      /* The wordmark is the brand and never tracks the category — only the chip
+         and the row labels carry colour. A logo that changes colour per story
+         reads as a different publisher each time. */
+      .brand-title .vortex {{ color:#00E676; }}
 
-      main {{ min-height:0; display:grid; grid-template-columns:42fr 58fr; gap:56px; padding:24px 64px 0 56px; }}
+      /* The ONLY element whose colour tracks the news category. */
+      .chip {{ display:inline-block; margin-top:52px; padding:22px 56px; border-radius:14px;
+               background:{accent}; color:#000000; font-size:66px; font-weight:950;
+               letter-spacing:3px; white-space:nowrap; }}
 
-      /* HERO — the cutout runs to the floor of the panel and the name sits ON
-         it, which is what gives the sample its poster feel. A photo boxed in
-         its own tile with the name underneath always reads as a database row. */
-      .hero {{ position:relative; min-width:0; overflow:hidden; }}
-      .player-area {{ position:absolute; inset:0 0 0 0; display:flex; align-items:flex-end; justify-content:center; }}
-      .player-img {{ max-width:100%; max-height:100%; object-fit:contain; object-position:center bottom; filter:drop-shadow(0 40px 60px rgba(0,0,0,.85)); }}
-      .player-silhouette {{ width:62%; height:78%; position:relative; align-self:flex-end; }}
-      .sil-head {{ position:absolute; left:34%; top:2%; width:32%; aspect-ratio:1/1; border-radius:50%; background:rgba(255,255,255,.10); border:6px solid rgba({accent_rgb},.42); }}
-      .sil-body {{ position:absolute; left:12%; right:12%; bottom:0; height:68%; border-radius:190px 190px 30px 30px; background:rgba({accent_rgb},.12); border:6px solid rgba({accent_rgb},.34); }}
-      .player-copy {{ position:absolute; left:0; right:0; bottom:0; padding:0 0 8px 0; z-index:3; }}
-      .first-name {{ color:#FFFFFF; font-size:64px; font-weight:900; letter-spacing:4px; opacity:.92; text-shadow:0 6px 22px rgba(0,0,0,.95); }}
-      .surname {{ color:#FFFFFF; font-size:210px; line-height:.86; font-weight:950; letter-spacing:-4px; white-space:nowrap; text-shadow:0 14px 40px rgba(0,0,0,.98), 0 0 90px rgba(0,0,0,.9); }}
-      .position {{ color:{accent}; font-size:64px; font-weight:950; letter-spacing:8px; margin-top:8px; white-space:nowrap; text-shadow:0 6px 22px rgba(0,0,0,.95); }}
+      .player-name {{ margin-top:44px; color:#FFFFFF; font-size:170px; line-height:.94;
+                      font-weight:950; letter-spacing:-4px; white-space:nowrap; }}
 
-      /* Auto rows + space-evenly: the flow, the gold panel and the status bar
-         each take only the height they need and share the slack. A 1fr row for
-         the flow gave it every spare pixel and left a canyon above the panel. */
-      .details {{ min-width:0; display:grid; grid-template-rows:auto auto auto auto; gap:40px; align-content:space-evenly; padding:20px 0 12px; }}
+      .rows {{ margin-top:56px; display:flex; flex-direction:column; gap:34px; }}
+      .row {{ display:flex; align-items:center; gap:40px; min-width:0; }}
+      /* The label column is fixed-width so values align down one axis, and the
+         label itself is fitted — "CONTRACT" is twice the width of "TO" and was
+         running straight through the value beside it. */
+      .row-label {{ flex:0 0 300px; width:300px; font-size:58px; font-weight:950;
+                    letter-spacing:3px; white-space:nowrap; }}
+      .row-value {{ flex:0 1 auto; min-width:0; color:#FFFFFF; font-size:96px; font-weight:950;
+                    letter-spacing:-1px; white-space:nowrap; }}
+      .row-crest {{ flex:0 0 auto; width:96px; height:96px; object-fit:contain; }}
 
-      /* CLUB FLOW — name above crest, arrow between. */
-      .flow {{ display:flex; align-items:center; justify-content:center; gap:60px; min-height:0; }}
-      .single-flow {{ width:100%; display:flex; align-items:center; justify-content:center; }}
-      .club-node {{ flex:1 1 0; min-width:0; display:flex; flex-direction:column; align-items:center; gap:30px; }}
-      .club-name {{ max-width:100%; color:#FFFFFF; font-size:62px; font-weight:950; letter-spacing:1px; line-height:1; text-align:center; white-space:nowrap; }}
-      .club-crest {{ width:300px; height:300px; object-fit:contain; filter:drop-shadow(0 12px 34px rgba(0,0,0,.9)); }}
-      .club-crest-fallback {{ width:300px; height:300px; border-radius:50%; border:6px solid rgba({accent_rgb},.55); display:flex; align-items:center; justify-content:center; font-size:84px; font-weight:950; color:rgba(255,255,255,.55); }}
-      .flow-arrow {{ color:{accent}; font-size:132px; line-height:1; margin-top:70px; flex:0 0 auto; filter:drop-shadow(0 0 30px rgba({accent_rgb},.7)); }}
-      .flow-message {{ color:{accent}; font-size:72px; font-weight:950; white-space:nowrap; }}
+      .right {{ min-width:0; display:flex; align-items:center; justify-content:center; }}
+      .photo-frame {{ position:relative; width:100%; height:100%; border:5px solid rgba({accent_rgb},.55);
+                      border-radius:40px; overflow:hidden; background:rgba(255,255,255,.02);
+                      display:flex; align-items:flex-end; justify-content:center;
+                      box-shadow:0 0 60px rgba({accent_rgb},.20); }}
+      .player-img {{ max-width:100%; max-height:100%; object-fit:cover; object-position:center top; }}
+      .player-silhouette {{ width:66%; height:82%; position:relative; align-self:flex-end; }}
+      .sil-head {{ position:absolute; left:34%; top:2%; width:32%; aspect-ratio:1/1; border-radius:50%;
+                   background:rgba(255,255,255,.08); border:6px solid rgba({accent_rgb},.38); }}
+      .sil-body {{ position:absolute; left:12%; right:12%; bottom:0; height:66%;
+                   border-radius:190px 190px 30px 30px; background:rgba({accent_rgb},.10);
+                   border:6px solid rgba({accent_rgb},.30); }}
 
-      /* FACT PANEL — gold frame, gold values, quiet white caption. */
-      .contract-panel {{ display:grid; grid-template-columns:1fr 1fr; border:5px solid #C99A2E; border-radius:26px; background:linear-gradient(180deg,rgba(201,154,46,.16),rgba(0,0,0,.86)); box-shadow:0 0 40px rgba(201,154,46,.26); overflow:hidden; }}
-      .contract-panel.single {{ grid-template-columns:1fr; }}
-      .metric-tile {{ min-width:0; padding:40px 48px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; }}
-      .metric-tile + .metric-tile {{ border-left:3px solid rgba(201,154,46,.62); }}
-      .tile-label {{ color:#FFFFFF; font-size:52px; font-weight:950; letter-spacing:2px; white-space:nowrap; }}
-      .tile-value {{ color:#F2CE63; font-size:126px; line-height:1; font-weight:950; letter-spacing:-1px; white-space:nowrap; text-shadow:0 0 34px rgba(242,206,99,.34); }}
-      .tile-sub {{ color:#FFFFFF; font-size:36px; font-weight:800; letter-spacing:2px; opacity:.85; white-space:nowrap; }}
-
-      .mini-panel {{ min-height:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:26px; }}
-      .mini-tile {{ min-width:0; padding:22px 34px; border:3px solid rgba(201,154,46,.62); border-radius:18px; background:rgba(0,0,0,.6); }}
-      .mini-label {{ color:#8A94A6; font-size:34px; font-weight:850; letter-spacing:2px; white-space:nowrap; }}
-      .mini-value {{ color:#FFFFFF; font-size:52px; font-weight:950; white-space:nowrap; }}
-
-      .status-panel {{ min-height:0; display:grid; grid-template-columns:96px auto minmax(0,1fr); align-items:center; gap:34px; padding:30px 52px; border:4px solid {accent}; border-radius:24px; background:rgba(0,0,0,.72); box-shadow:0 0 34px rgba({accent_rgb},.3); }}
-      .check {{ width:88px; height:88px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:{accent}; color:#000000; font-size:58px; font-weight:950; }}
-      .status-label {{ font-size:62px; font-weight:950; letter-spacing:1px; white-space:nowrap; border-bottom:5px solid rgba(255,255,255,.55); padding-bottom:4px; }}
-      .status-value {{ color:{accent}; font-size:62px; font-weight:950; text-align:right; white-space:nowrap; }}
-
-      footer {{ min-height:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); border-top:4px solid rgba({accent_rgb},.5); background:#000000; margin-top:20px; }}
-      .foot {{ min-width:0; display:flex; align-items:center; justify-content:center; gap:30px; padding:0 44px; font-size:48px; font-weight:950; letter-spacing:1px; white-space:nowrap; }}
-      .foot + .foot {{ border-left:3px solid rgba({accent_rgb},.34); }}
-      .foot-icon {{ color:{accent}; font-size:60px; flex:0 0 auto; }}
-      .yt {{ width:88px; height:62px; border-radius:14px; background:#FF0000; position:relative; flex:0 0 auto; }}
-      .yt::after {{ content:""; position:absolute; left:35px; top:16px; border-top:15px solid transparent; border-bottom:15px solid transparent; border-left:24px solid #FFFFFF; }}
-      .x-icon {{ font-size:66px; color:#FFFFFF; flex:0 0 auto; }}
+      footer {{ min-height:0; display:grid; grid-template-columns:minmax(0,1fr) auto;
+                align-items:center; gap:48px; padding:0 96px 0 112px;
+                border-top:4px solid rgba({accent_rgb},.42); background:#000000; }}
+      /* Metadata sits in one muted grey so it never competes with the facts. */
+      .source {{ color:#9AA3B2; font-size:50px; font-weight:850; letter-spacing:1px;
+                 white-space:nowrap; min-width:0; }}
+      .category {{ color:{accent}; font-size:56px; font-weight:950; letter-spacing:4px; white-space:nowrap; }}
       .fit-text {{ display:block; overflow:visible; }}
-      /* Overflow is REPORTED (window.__CARD_OVERFLOW__), never drawn. A debug
-         outline on a published card is a defect the viewer sees; the renderer
-         logs it instead. */
+      /* .fit-text sets display:block and would otherwise stretch the category
+         chip to the full column width. The chip must hug its own text. */
+      .chip.fit-text {{ display:inline-block; }}
     </style></head><body><section class="stage">
-      <header><div class="brand">{brand_logo}<div><div class="brand-title">FPL <span class="vortex">VORTEX</span></div><div class="brand-sub">Verified Premier League News<span class="verified-tick">✓</span></div></div></div><div class="headline"><span class="fit-text" data-max="92" data-min="46">{_html_escape(theme['heading'])}</span><span class="headline-tick">✓</span></div></header>
-      <main><section class="hero"><div class="player-area">{player}</div><div class="player-copy">{first_html}<div class="surname fit-text" data-max="210" data-min="96">{_html_escape(surname)}</div>{position_html}</div></section>
-      <section class="details"><section class="flow">{flow_html}</section>{main_panel}<section class="mini-panel">{_mini_tiles(facts_grid)}</section><section class="status-panel"><div class="check">✓</div><div class="status-label">STATUS:</div><div class="status-value fit-text" data-max="62" data-min="32">{_html_escape(status_detail)}</div></section></section></main>
-      <footer><div class="foot"><span class="foot-icon">⊕</span><span class="fit-text" data-max="48" data-min="26">SOURCE: {_html_escape(source_text.upper())}</span></div><div class="foot"><span class="yt"></span><span class="fit-text" data-max="48" data-min="30">@FPLVORTEX</span></div><div class="foot"><span class="x-icon">𝕏</span><span class="fit-text" data-max="48" data-min="30">@FPLVORTEX</span></div></footer>
+      <main>
+        <section class="left">
+          <div class="brand">{brand_logo}<div class="brand-title">FPL <span class="vortex">VORTEX</span></div></div>
+          <div class="left-body">
+            <div class="chip fit-text" data-max="66" data-min="34">{_html_escape(theme['heading'])}</div>
+            <div class="player-name fit-text" data-max="170" data-min="72">{_html_escape(full_name)}</div>
+            <div class="rows">{rows}</div>
+          </div>
+        </section>
+        <section class="right"><div class="photo-frame">{player}</div></section>
+      </main>
+      <footer>
+        <div class="source fit-text" data-max="50" data-min="28">Source: {_html_escape(source_text)} | @FPLVortex</div>
+        <div class="category">{_html_escape(event or "UPDATE")}</div>
+      </footer>
     </section><script>
       // fitText shrinks only genuinely overflowing text. These elements are all
       // white-space:nowrap, so they cannot wrap and their HEIGHT is fixed by font
       // metrics, not by content. Measuring height therefore reports overflow for
-      // any tight line-height (the surname sits at .86) and shrank names that fit
-      // perfectly well — width is the only meaningful test here.
+      // any tight line-height and shrank names that fit perfectly well — width is
+      // the only meaningful test here.
       function overflowsWidth(el) {{ return el.scrollWidth > el.clientWidth + 2; }}
       function fitText(el) {{
         const max = Number(el.dataset.max || 64);
@@ -926,6 +952,8 @@ def _build_responsive_verified_card_html(
             over.push((el.className || 'fit-text') + ': ' + (el.textContent || '').slice(0, 60));
           }}
         }});
+        // Overflow is REPORTED, never drawn. A debug outline on a published card
+        // is a defect the viewer sees; the renderer logs it instead.
         window.__CARD_OVERFLOW__ = over;
         window.__CARD_VALID__ = over.length === 0;
       }}
