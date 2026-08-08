@@ -647,3 +647,32 @@ def test_low_status_media_talks_remain_pending(runtime):
     decision = runtime.verify_observations([media])
     assert decision.decision == DecisionType.PENDING
     assert not decision.may_publish
+
+
+def test_structured_fotmob_completed_transfer_can_publish(runtime):
+    obs = observation(
+        title="Danny Welbeck has joined Chelsea from Brighton. FotMob listed the transfer as completed.",
+        source_id="media.fotmob",
+        url="https://www.fotmob.com/leagues/47/transfers/premier-league?season=2026%2F2027",
+        story=transfer_story(),
+    )
+    obs["document"]["source_handle"] = "fotmob"
+    obs["document"]["metadata"] = {"structured_fotmob_transfer": True}
+    decision = runtime.verify_observations([obs])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.status.value == "COMPLETED"
+    assert "Confirmed transfer" in decision.rendered_text
+
+
+def test_fotmob_text_without_structured_table_flag_stays_pending(runtime):
+    obs = observation(
+        title="Danny Welbeck has joined Chelsea from Brighton. FotMob listed the transfer as completed.",
+        source_id="media.fotmob",
+        url="https://www.fotmob.com/leagues/47/transfers/premier-league?season=2026%2F2027",
+        story=transfer_story(),
+    )
+    obs["document"]["source_handle"] = "fotmob"
+    decision = runtime.verify_observations([obs])
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish

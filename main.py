@@ -2215,6 +2215,11 @@ async def scrape(data, fpl=None, verification_runtime=None):
 
         if "_fpl_pre_built" in source_item:
             story = dict(source_item["_fpl_pre_built"])
+        elif "_legacy_story" in source_item:
+            # Structured discovery sources (e.g. FotMob transfer table) provide
+            # a parser hint only. V2 still re-extracts and verifies every fact;
+            # this just prevents the regex fallback from losing from/to clubs.
+            story = dict(source_item["_legacy_story"])
         else:
             story = build_story(source_item.get("text", ""), fpl)
             if official_enrichment_budget > 0:

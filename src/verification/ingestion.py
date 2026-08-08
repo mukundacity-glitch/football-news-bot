@@ -73,6 +73,133 @@ def _all_feed_definitions(runtime: VerificationRuntime) -> List[FeedDefinition]:
     return feeds
 
 
+def _fotmob_transfer_text(row: Dict[str, Any]) -> str:
+    name = str(row.get("name") or "").strip()
+    from_club = str(row.get("fromClubFullName") or row.get("fromClub") or "").strip()
+    to_club = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
+    transfer_type = (row.get("transferType") or {}).get("text") or ""
+    fee = row.get("fee") or {}
+    fee_text = str(fee.get("feeText") or "").strip()
+    until = str(row.get("toDate") or "").strip()
+    if row.get("onLoan"):
+        lead = f"{name} has joined {to_club} from {from_club} on loan."
+    elif fee_text and "free" in fee_text.lower():
+        lead = f"{name} has joined {to_club} from {from_club} on a free transfer."
+    else:
+        lead = f"{name} has joined {to_club} from {from_club}."
+    bits = [lead, "FotMob listed the transfer as completed."]
+    if fee_text:
+        bits.append(f"Fee: {fee_text}.")
+    if until:
+        bits.append(f"Contract until {until[:10]}.")
+    return " ".join(bits)
+
+
+def _fotmob_legacy_story(row: Dict[str, Any]) -> Dict[str, Any]:
+    fee = row.get("fee") or {}
+    fee_text = str(fee.get("feeText") or "").strip()
+    if not fee_text and fee.get("value"):
+        try:
+            fee_text = f"€{int(fee['value']):,}"
+        except Exception:
+            fee_text = str(fee.get("value"))
+    transfer_kind = "loan" if row.get("onLoan") else "free" if "free" in fee_text.lower() else "permanent"
+    event = "loan" if row.get("onLoan") else "transfer"
+    return {
+        "player": str(row.get("name") or "").strip(),
+        "event": event,
+        "from_club": str(row.get("fromClubFullName") or row.get("fromClub") or "").strip(),
+        "to_club": str(row.get("toClubFullName") or row.get("toClub") or "").strip(),
+        "fee": fee_text or None,
+        "contract": str(row.get("toDate") or "").strip()[:10] or None,
+        "transfer_kind": transfer_kind,
+        "stage": 4,
+        "collapsed": False,
+        "historical": False,
+        "headline": _fotmob_transfer_text(row),
+        "raw_text": _fotmob_transfer_text(row),
+        "sources": ["fotmob"],
+    }
+
+
+def _fetch_fotmob_transfers(
+    runtime: VerificationRuntime,
+    seen: set[str],
+    fetched_at: str,
+) -> tuple[List[Dict[str, Any]], int, List[Dict[str, str]]]:
+    """Fetch FotMob Premier League transfer table as discovery input.
+
+    FotMob is not allowed to invent a post by itself unless the downstream V2
+    gates can ground player + clubs + PL relevance and the engine accepts the
+    structured FotMob transfer source. This only adds candidate coverage for the
+    transfer table the user sees in the app.
+    """
+    feed_id = "fotmob.premier_league.transfers"
+    url = "https://www.fotmob.com/leagues/47/transfers/premier-league?season=2026%2F2027"
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/2.0)"},
+            timeout=float(runtime.config.collection_config["feed_timeout_seconds"]),
+        )
+        response.raise_for_status()
+        match = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+            response.text,
+            re.S,
+        )
+        if not match:
+            raise RuntimeError("FotMob page missing __NEXT_DATA__")
+        payload = json.loads(html.unescape(match.group(1)))
+        transfers = (
+            payload.get("props", {})
+            .get("pageProps", {})
+            .get("transfers", {})
+            .get("data", [])
+        )
+        items: List[Dict[str, Any]] = []
+        for row in transfers[:80]:
+            name = str(row.get("name") or "").strip()
+            to_club = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
+            from_club = str(row.get("fromClubFullName") or row.get("fromClub") or "").strip()
+            if not name or not to_club:
+                continue
+            raw_id = f"fotmob|{row.get('playerId')}|{from_club}|{to_club}|{row.get('transferDate') or row.get('fromDate')}"
+            item_id = "fotmob_" + hashlib.sha256(raw_id.encode()).hexdigest()[:20]
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            text = _fotmob_transfer_text(row)
+            created = row.get("transferDate") or row.get("fromDate")
+            items.append({
+                "id": item_id,
+                "document_id": item_id,
+                "title": text,
+                "summary": "",
+                "text": text,
+                "media_url": None,
+                "created_at": created,
+                "published_at": created,
+                "source_url": url,
+                "publisher_url": "https://www.fotmob.com/",
+                "publisher_name": "FotMob",
+                "source_id": "media.fotmob",
+                "source_hint": "media.fotmob",
+                "source_handle": "fotmob",
+                "username": "fotmob",
+                "transport": "FOTMOB",
+                "configured_direct_feed": False,
+                "declared_sport": "football",
+                "feed_id": feed_id,
+                "fetched_at": fetched_at,
+                "metadata": {"structured_fotmob_transfer": True, "fotmob_row": row},
+                "_legacy_story": _fotmob_legacy_story(row),
+            })
+        return items, 1, []
+    except Exception as exc:
+        return [], 0, [{"feed_id": feed_id, "error": str(exc)[:300]}]
+
+
 def fetch_configured_news(
     runtime: VerificationRuntime,
 ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -141,11 +268,16 @@ def fetch_configured_news(
         except Exception as exc:
             failures.append({"feed_id": feed_def.id, "error": str(exc)[:300]})
 
+    fotmob_items, fotmob_successes, fotmob_failures = _fetch_fotmob_transfers(runtime, seen, fetched_at)
+    items.extend(fotmob_items)
+    successes += fotmob_successes
+    failures.extend(fotmob_failures)
+
     social_items, social_successes, social_failures = _fetch_bluesky(runtime, seen, fetched_at)
     items.extend(social_items)
     successes += social_successes
     failures.extend(social_failures)
-    total = len(feed_definitions) + len(runtime.feeds.social_feeds)
+    total = len(feed_definitions) + len(runtime.feeds.social_feeds) + 1
     health = {
         "feeds_total": total,
         "feeds_succeeded": successes,

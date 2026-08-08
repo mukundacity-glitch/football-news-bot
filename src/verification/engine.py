@@ -211,6 +211,7 @@ class VerificationEngine:
             "configured_here_we_go": "configured elite milestone with independent fact agreement",
             "configured_nonofficial": "configured multi-publisher confirmation",
             "configured_elite_medical": "elite source medical/deal-agreed transfer milestone",
+            "configured_structured_fotmob": "structured FotMob completed transfer row",
             "none": "media/journalist evidence remains pending",
         }[confirmation_kind]
         if authoritative and not confirmation_ready:
@@ -437,6 +438,22 @@ class VerificationEngine:
             ]
             if milestone and len(support) >= int(self.config.policy("minimum_here_we_go_publishers")):
                 return support, "configured_here_we_go"
+
+        # Structured FotMob transfer table: the user relies on this source for
+        # complete same-day transfer coverage. FotMob can become publication
+        # authority only for completed TRANSFER rows that arrived through the
+        # structured table collector, and still must pass player identity,
+        # from/to club grounding, PL relevance, freshness, reliability,
+        # duplicate and conflict gates below.
+        if event == EventType.TRANSFER and self.config.policy("allow_structured_fotmob_completed_transfers"):
+            support = [
+                claim for claim in independent
+                if claim.source_id == "media.fotmob"
+                and claim.status == EventStatus.COMPLETED
+                and claim.document.metadata.get("structured_fotmob_transfer") is True
+            ]
+            if support:
+                return support, "configured_structured_fotmob"
 
         # Optional fast transfer mode: allow elite sources to publish MEDICAL /
         # DEAL AGREED transfer milestones. This never labels the card/caption as
