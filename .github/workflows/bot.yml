@@ -141,6 +141,10 @@ jobs:
           # committed, preventing continued repository growth.
           git add data/posted_news.json 2>/dev/null || true
           git add posted_news.json fpl_player_state.json 2>/dev/null || true
+          # Resolved official club feed URLs. Committed so a fresh runner starts
+          # with the feeds already known instead of re-probing club sites from
+          # scratch every run.
+          git add data/club_feeds.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No state changes to commit."
           else
