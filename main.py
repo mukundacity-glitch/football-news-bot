@@ -107,8 +107,33 @@ def _env_int(name, default):
         print(f"[CONFIG] {name}={raw!r} is not an int — using default {default}.")
         return default
 
+
+def _env_flag(name, default=False):
+    """Read a boolean env var. Unset or empty falls back to ``default``.
+
+    GitHub passes an unconfigured repository Variable through as an empty
+    string, so "" must mean "not configured" rather than "false".
+    """
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+# ── DRY RUN ──────────────────────────────────────────────────────────────
+# The scheduled workflow runs bare `python main.py`, so before this switch
+# existed there was no way to exercise the full pipeline without publishing to
+# X. DRY_RUN runs everything — ingest, verify, rank, render — and stops at the
+# publish call. Default is live, matching the behaviour this replaces; set the
+# repository Variable DRY_RUN=true to hold the bot without disabling it.
+DRY_RUN = _env_flag("DRY_RUN", default=False)
+
 # ── PATHS ────────────────────────────────────────────────────────────────
-POSTED_FILE = Path("posted_news.json")
+# POSTED_FILE is imported from src.constants below (data/posted_news.json).
+# It was previously also assigned here as a bare "posted_news.json"; the import
+# happened afterwards and silently won, so the two only agreed by accident.
+# Reordering the imports would have repointed the dedup ledger at a file that
+# does not exist, and the bot would have forgotten everything it had posted.
 RUN_STATUS_FILE = Path("data/last_run_status.json")
 PENDING_DIR = Path("queue/pending")
 POSTED_DIR = Path("queue/posted")
@@ -1461,6 +1486,20 @@ async def post_item(post_client, item, data):
         print(f"  POST BLOCKED (no image could be produced): {item.get('player')!r}")
         return False
 
+    # A render failure does not raise — it writes a flat 3840x2160 rectangle,
+    # which is several hundred KB of solid colour and sails through every size
+    # check above. image_is_blank() is the only thing that can tell the two
+    # apart, and until now it ran solely inside run_dry_run(), so a failed
+    # render on the live path published an empty card.
+    if image_is_blank(image_path):
+        print(f"  POST BLOCKED (card rendered blank): {item.get('player')!r}")
+        return False
+
+    if DRY_RUN:
+        print(f"  [DRY RUN] would post: {item.get('player')!r} — {item.get('event')} "
+              f"| card {image_path} | {len(caption)} chars. No X call made.")
+        return False
+
     posted_live = False
     try:
         media_id = await post_client.upload_media(image_path, media_type="image/png")
@@ -2672,7 +2711,26 @@ async def main(post: bool = True):
         # ================== POSTING MODE ==================
         # Live posting only when ENABLE_AUTOPOST=true AND the run wasn't forced to
         # draft-only (--draft-only). Otherwise we save drafts and post nothing.
-        if not ENABLE_AUTOPOST:
+        # A rebuilt-from-nothing V2 database has no memory of what has already
+        # been published, so this run must not publish. The workflow already
+        # threads VERIFICATION_V2_ALLOW_DB_REBUILD through as an escape hatch
+        # for a deliberate first run; until now nothing read it.
+        if (_VERIFICATION_RUNTIME is not None
+                and getattr(_VERIFICATION_RUNTIME, "database_was_empty", False)
+                and not _env_flag("VERIFICATION_V2_ALLOW_DB_REBUILD")):
+            post = False
+            status["no_post_reason"] = "v2_database_rebuilt_from_empty"
+            print("[BOT] V2 story database was missing and had to be created empty — "
+                  "duplicate suppression has no history this run, so nothing will be "
+                  "published. It will repopulate and post normally on the next run. "
+                  "Set VERIFICATION_V2_ALLOW_DB_REBUILD=true to override deliberately.")
+
+        if DRY_RUN:
+            # Everything runs — ingest, verify, rank, render — and stops at the
+            # publish call. Announced up front so a dry run is never mistaken
+            # for a live one when reading the log after the fact.
+            mode_str = "DRY RUN — full pipeline, no X calls (set DRY_RUN=false to post live)"
+        elif not ENABLE_AUTOPOST:
             post = False
             mode_str = "DRAFT-ONLY (set ENABLE_AUTOPOST=true to post live)"
         elif not post:
