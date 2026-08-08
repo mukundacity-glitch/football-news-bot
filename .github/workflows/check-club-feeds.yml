@@ -1,0 +1,46 @@
+name: Check official club feeds
+
+# Manual only. Probes each OFFICIAL_CLUB site in config/sources.json for a
+# working news RSS feed and reports which ones answered, so club feeds can be
+# added to config/feeds.json from measurement rather than from guesswork.
+#
+# Run this whenever club feeds start failing in the bot log — clubs redesign
+# their sites and move their feed paths without notice.
+on:
+  workflow_dispatch:
+    inputs:
+      club:
+        description: "Probe only clubs whose id contains this (blank = all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install feedparser
+        run: pip install "feedparser>=6.0.11,<7"
+
+      - name: Probe club sites
+        run: |
+          python tools/check_club_feeds.py \
+            ${{ inputs.club && format('--club {0}', inputs.club) || '' }} \
+            --json club-feeds-report.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: club-feeds-report
+          path: club-feeds-report.json
+          if-no-files-found: warn
