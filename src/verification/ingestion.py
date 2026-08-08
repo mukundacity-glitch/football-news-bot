@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Tuple
 import feedparser
 import requests
 
+from .club_feeds import as_feed_definitions, resolve_club_feeds, summary
 from .documents import FeedDefinition, FeedRegistry
 from .runtime import VerificationRuntime
 
@@ -41,6 +42,24 @@ def _legacy_source_name(runtime: VerificationRuntime, identity: Any) -> str:
 
 def _all_feed_definitions(runtime: VerificationRuntime) -> List[FeedDefinition]:
     feeds = list(runtime.feeds.feeds)
+
+    # Direct club RSS, discovered and cached automatically. This comes first
+    # because it is the only first-party route: each feed carries the club's own
+    # OFFICIAL_CLUB source_hint and so inherits the ~0.99 prior and the
+    # official_first_party_sufficient policy — a club announcing its own signing
+    # publishes without waiting for a second source.
+    #
+    # The Google News discovery below covers the same domains but arrives with
+    # source_hint=None, so it resolves as generic media and can never
+    # self-confirm. It stays as a safety net for clubs whose feed is unresolved.
+    try:
+        resolved = resolve_club_feeds(runtime.sources)
+        if resolved:
+            feeds.extend(as_feed_definitions(resolved))
+        print(f"  [CLUB-FEEDS] {summary(resolved, runtime.sources)}")
+    except Exception as exc:  # noqa: BLE001 — discovery must never break a run
+        print(f"  [CLUB-FEEDS] resolution skipped: {type(exc).__name__}: {exc}")
+
     cfg = runtime.feeds.official_discovery
     if not cfg.get("enabled"):
         return feeds
