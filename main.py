@@ -2085,6 +2085,10 @@ def _v2_group_key(story: dict, item_id: str) -> str:
         else "manager" if event in {"manager", "managerial_change", "staff_appointment", "staff_departure"}
         else event
     )
+    if story.get("_structured_fotmob_transfer") and family == "transfer":
+        structured = _norm_text(story.get("_structured_transfer_group") or "")
+        if structured:
+            return f"fotmob|{structured}|transfer"
     return f"{player or 'unknown-' + item_id}|{family}"
 
 

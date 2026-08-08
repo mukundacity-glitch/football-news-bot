@@ -105,11 +105,16 @@ def _fotmob_legacy_story(row: Dict[str, Any]) -> Dict[str, Any]:
             fee_text = str(fee.get("value"))
     transfer_kind = "loan" if row.get("onLoan") else "free" if "free" in fee_text.lower() else "permanent"
     event = "loan" if row.get("onLoan") else "transfer"
+    player_name = str(row.get("name") or "").strip()
+    from_club = str(row.get("fromClubFullName") or row.get("fromClub") or "").strip()
+    to_club = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
     return {
-        "player": str(row.get("name") or "").strip(),
+        "player": player_name,
         "event": event,
-        "from_club": str(row.get("fromClubFullName") or row.get("fromClub") or "").strip(),
-        "to_club": str(row.get("toClubFullName") or row.get("toClub") or "").strip(),
+        "from_club": from_club,
+        "to_club": to_club,
+        "_structured_fotmob_transfer": True,
+        "_structured_transfer_group": f"{player_name}|{from_club}|{to_club}",
         "fee": fee_text or None,
         "contract": str(row.get("toDate") or "").strip()[:10] or None,
         "transfer_kind": transfer_kind,
