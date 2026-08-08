@@ -198,13 +198,53 @@ def test_injury_card_without_status_does_not_claim_official():
 
 
 def test_caller_supplied_official_status_is_still_honoured():
-    """The guard blocks an invented default, not a verified fact."""
+    """The guard blocks an invented default, not a verified fact.
+
+    Checked on an INJURY card: a transfer conveys its status through the
+    category chip and spends its rows on FROM/TO/FEE, so status_detail is not
+    drawn there. Injury and suspension cards are the ones that render it.
+    """
     from src.renderer import _build_responsive_verified_card_html
 
     html = _build_responsive_verified_card_html(
-        event="TRANSFER", status="OFFICIAL", player_name="Carlos Baleba",
-        logo_uri="", photo_uri="", source_text="@BHAFC",
-        origin_name="Chelsea", destination_name="Brighton",
+        event="INJURY", status="OFFICIAL", player_name="Carlos Baleba",
+        logo_uri="", photo_uri="", source_text="@BHAFC", club_name="Brighton",
         status_detail="OFFICIALLY CONFIRMED",
     )
     assert "OFFICIALLY CONFIRMED" in html
+
+
+def test_transfer_card_carries_the_move_and_the_name():
+    """The Elliott layout's contract: name, both clubs, and the fee."""
+    from src.renderer import _build_responsive_verified_card_html
+
+    html = _build_responsive_verified_card_html(
+        event="TRANSFER", status="OFFICIAL", player_name="Harvey Elliott",
+        logo_uri="", photo_uri="", source_text="@BBC_Sport",
+        origin_name="Liverpool", destination_name="Aston Villa",
+        transfer_fee="LOAN DEAL",
+    )
+    assert "HARVEY ELLIOTT" in html
+    assert "Liverpool" in html and "Aston Villa" in html
+    assert "LOAN DEAL" in html
+    # Pure black, no gradient background — the design lock.
+    assert "background:#000000" in html
+
+
+def test_only_the_category_chip_changes_colour():
+    """Name and values stay white across every card type; the chip carries the
+    category. That is what lets a viewer read the second card as fast as the
+    first."""
+    from src.renderer import _build_responsive_verified_card_html
+
+    seen_accents = set()
+    for event in ("TRANSFER", "INJURY", "SUSPENSION", "PRESS_CONFERENCE"):
+        html = _build_responsive_verified_card_html(
+            event=event, status="", player_name="Carlos Baleba", logo_uri="",
+            photo_uri="", source_text="@OfficialFPL", club_name="Brighton",
+            status_detail="OUT",
+        )
+        assert ".player-name { margin-top:44px; color:#FFFFFF" in html.replace("  ", " ") or \
+               "color:#FFFFFF; font-size:170px" in html, event
+        seen_accents.add(html.split(".chip {")[1].split("background:")[1].split(";")[0])
+    assert len(seen_accents) == 4, seen_accents

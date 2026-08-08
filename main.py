@@ -27,7 +27,7 @@ from src.entity_guard import (is_postable_player, classify_entity,
                               is_staff_subject, staff_role_of, staff_action_of)
 from src import confidence as _conf
 from src import direction as _direction
-from src.verifier import cross_verify
+from src.verifier import cross_verify, reset_x_search_health, x_search_health
 from src.rejection_log import log_rejection
 from src.verification import (
     DecisionType as V2DecisionType,
@@ -2687,6 +2687,9 @@ async def main(post: bool = True):
             )
         status["mode"] = mode_str
         print(f"\n[BOT] Run — {started_at} (classifier=regex, mode={mode_str})")
+        # One run per process, but reset explicitly so the counters can never
+        # carry over and understate an outage.
+        reset_x_search_health()
         # ==================================================
 
         init_club_data()
@@ -2746,14 +2749,38 @@ async def main(post: bool = True):
         queue = await scrape(data, fpl=fpl, verification_runtime=_VERIFICATION_RUNTIME)
         if not queue:
             rh = data.get("last_read_health", {})
+            xh = x_search_health()
+            status["x_search_health"] = xh
+            # An empty run has two very different causes and they must never
+            # look alike: genuinely quiet news, or the sources being unreadable.
+            # RSS/Bluesky health alone cannot tell them apart — the X searches
+            # that supply journalist corroboration are counted separately, and a
+            # total X outage leaves feed health untouched. Report BOTH, and only
+            # claim a quiet news day when both are actually healthy.
             if rh.get("fail_ratio", 0) >= 0.15:
                 status["no_post_reason"] = status["no_post_reason"] or "feed_read_failures"
-                print("[BOT] No postable stories — but many sources failed to read. "
-                      "Likely a network/cookie issue, not a quiet news day. "
-                      "Check Nitter availability and RSS feeds, then re-run.")
+                print(f"[BOT] No postable stories — {rh.get('feeds_failed')}/{rh.get('feeds_total')} "
+                      f"feeds failed to read. Likely a network/cookie issue, not a quiet news day. "
+                      f"Check Nitter availability and RSS feeds, then re-run.")
+            elif xh["attempted"] and xh["fail_ratio"] >= 0.5:
+                # Cross-verification is down: stories will stall at PENDING for
+                # want of corroboration no matter how much news breaks.
+                status["no_post_reason"] = status["no_post_reason"] or "x_search_failures"
+                print(f"[BOT] No postable stories — X SOURCE OUTAGE: "
+                      f"{xh['failed']}/{xh['attempted']} journalist searches failed. "
+                      f"Stories cannot be corroborated, so nothing will clear the gates. "
+                      f"This is NOT a quiet news day.")
+                for err in xh["errors"][:3]:
+                    print(f"       └─ {err}")
+                print("       Fix: re-export X_AUTH_TOKEN/X_CT0_TOKEN cookies, "
+                      "or bump twikit if the error is a 404 (stale GraphQL query IDs).")
             else:
                 status["no_post_reason"] = status["no_post_reason"] or "no_v2_publishable_stories"
-                print("[BOT] Quiet run — no new stories cleared all gates (sources read OK).")
+                _read_note = (f"{xh['attempted'] - xh['failed']}/{xh['attempted']} X searches OK"
+                              if xh["attempted"] else "no X searches attempted")
+                print(f"[BOT] Quiet run — no new stories cleared all gates "
+                      f"({rh.get('feeds_succeeded', '?')}/{rh.get('feeds_total', '?')} feeds OK, "
+                      f"{_read_note}).")
             save_data(data)
             return
 
@@ -2957,6 +2984,9 @@ async def main(post: bool = True):
             status["feeds_total"] = rh.get("feeds_total") or rh.get("accounts_total")
             status["feeds_failed"] = rh.get("feeds_failed") or rh.get("accounts_failed")
             status["feed_failures"] = list(rh.get("failures") or [])[:10]
+            # Recorded on every run, not just empty ones, so a partial X outage
+            # is visible in the status file even when a few stories still post.
+            status["x_search_health"] = x_search_health()
             status["cooldown_until"] = data.get("cooldown_until")
             status["daily_count"] = data.get("daily", {}).get("count")
             status["daily_limit"] = data.get("daily", {}).get("limit")

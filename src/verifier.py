@@ -160,6 +160,37 @@ def _official_profiles_for_story(
     return profiles
 
 
+# ── Cross-verification read health ──────────────────────────────────────
+# The X searches below are the bot's only route to journalist corroboration.
+# When every one of them fails, stories stall at PENDING with no visible cause:
+# the run summary reports RSS/Bluesky feed health, which covers a completely
+# different set of sources and stays green throughout. That gap once hid a total
+# X outage for 20 hours behind the message "sources read OK".
+#
+# Counting attempts here lets the summary tell the truth. Per-process and reset
+# at the start of each run, because the bot is one run per process.
+_X_SEARCH_STATS: Dict[str, Any] = {"attempted": 0, "failed": 0, "errors": []}
+
+
+def reset_x_search_health() -> None:
+    _X_SEARCH_STATS.update({"attempted": 0, "failed": 0, "errors": []})
+
+
+def x_search_health() -> Dict[str, Any]:
+    """Attempted/failed X searches this run, plus the distinct errors seen.
+
+    ``fail_ratio`` is None when nothing was attempted — that is "no data", not
+    "all healthy", and the caller must not read it as success.
+    """
+    attempted = _X_SEARCH_STATS["attempted"]
+    return {
+        "attempted": attempted,
+        "failed": _X_SEARCH_STATS["failed"],
+        "fail_ratio": (_X_SEARCH_STATS["failed"] / attempted) if attempted else None,
+        "errors": list(_X_SEARCH_STATS["errors"]),
+    }
+
+
 async def _x_journalist_evidence(
     read_client: Any,
     story: Dict[str, Any],
@@ -176,9 +207,14 @@ async def _x_journalist_evidence(
         if not profile.handles:
             continue
         handle = profile.handles[0]
+        _X_SEARCH_STATS["attempted"] += 1
         try:
             results = await read_client.search_tweet(f"from:{handle} {surname}", "Latest")
         except Exception as exc:
+            _X_SEARCH_STATS["failed"] += 1
+            detail = f"{type(exc).__name__}: {str(exc)[:120]}"
+            if detail not in _X_SEARCH_STATS["errors"]:
+                _X_SEARCH_STATS["errors"].append(detail)
             log.append(f"X @{handle}: search failed ({exc})")
             continue
         for tweet in list(results or [])[:10]:
