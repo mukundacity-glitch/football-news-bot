@@ -11,12 +11,22 @@ from __future__ import annotations
 import re
 from typing import Dict, List
 
-from .models import EventType, VerificationDecision
+from .models import EventStatus, EventType, VerificationDecision
 from .source_registry import SourceRegistry
 
 
 class RenderingError(RuntimeError):
     pass
+
+
+class UnverifiedTransferError(RenderingError):
+    """Raised when a TRANSFER decision is not official-confirmed.
+
+    Per policy, a transfer caption is only ever generated for status
+    OFFICIAL or COMPLETED with a verified first-party source. Every other
+    status (rumour, here-we-go, deal-agreed, medical, pending, unknown) must
+    be skipped entirely rather than rendered with hedged wording.
+    """
 
 
 class VerifiedPostRenderer:
@@ -37,32 +47,9 @@ class VerifiedPostRenderer:
         event = decision.event_type
 
         if event == EventType.TRANSFER:
-            player = str(required(facts, "subject_name"))
-            destination = str(required(facts, "club_to_name"))
-            origin = facts.get("club_from_name")
-            kind = str(facts.get("transfer_kind") or "").lower()
-            route = f" from {origin}" if origin else ""
-            status = decision.status.value
-            if status == "MEDICAL":
-                line1 = f"🏥 Medical: {player} given permission for {destination} medical{route}."
-                fallback_detail = "Medical/deal milestone — awaiting club announcement."
-            elif status in {"AGREEMENT", "HERE_WE_GO"}:
-                line1 = f"🚨 Deal agreed: {player} to {destination}{route}."
-                fallback_detail = "Deal agreed — awaiting club completion announcement."
-            else:
-                # Keep this sentence shape for audit/tests and human clarity.
-                line1 = f"✅ Confirmed transfer: {player} has joined {destination}{route}."
-                fallback_detail = "Official club confirmation."
-            details: List[str] = []
-            if kind:
-                details.append(_title_move_kind(kind))
-            if facts.get("fee"):
-                details.append(f"Fee: {facts['fee']}")
-            if facts.get("contract_length"):
-                details.append(f"Contract: {facts['contract_length']}")
-            line2 = " • ".join(details) if details else fallback_detail
+            return self._render_official_transfer(decision)
 
-        elif event == EventType.INJURY:
+        if event == EventType.INJURY:
             player = str(required(facts, "subject_name"))
             club = str(required(facts, "club_name"))
             line1 = f"🚑 OFFICIAL INJURY UPDATE: {player} — {club}"
@@ -113,6 +100,94 @@ class VerifiedPostRenderer:
         result = self._fit_four_lines([line1, line2, hashtag_line])
         decision.rendered_text = result
         return result
+
+    def _render_official_transfer(self, decision: VerificationDecision) -> str:
+        """Exact official-confirmed-only transfer caption template.
+
+        Per the non-negotiable transfer policy this bot enforces:
+          - status must be OFFICIAL or COMPLETED ("official_confirmed")
+          - both FROM and TO clubs are always shown
+          - a direct official source URL and source name are always included
+          - fee is "Fee: <official fee>" if stated, else "Fee: undisclosed" --
+            never invented, estimated, or attributed to a "reported" figure
+          - contract length is shown only if the official announcement stated it
+          - if player name, from club, to club, or official source is missing,
+            the caller must not reach this method at all (the strict gate in
+            official_transfer_gate.validate_official_transfer already refuses
+            to authorize card/caption generation in that case)
+        """
+        facts = decision.verified_facts
+        if decision.status not in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
+            raise UnverifiedTransferError(
+                f"refusing to render a non-official-confirmed transfer status: "
+                f"{decision.status.value}"
+            )
+
+        player = str(required(facts, "subject_name"))
+        destination = str(required(facts, "club_to_name"))
+        origin = str(required(facts, "club_from_name"))
+        source_id = decision.source_ids[0] if decision.source_ids else ""
+        profile = self.sources.get(source_id)
+        source_name = profile.display_name if profile else source_id
+        source_url = decision.source_url
+        if not source_name or not source_url:
+            raise UnverifiedTransferError("missing official source name/url for caption")
+
+        lines: List[str] = [
+            f"✅ Confirmed transfer: {player} has joined {destination} from {origin}."
+        ]
+
+        meta_bits = [
+            str(b) for b in (
+                facts.get("position"),
+                facts.get("nationality"),
+                (f"Age {facts['age']}" if facts.get("age") else None),
+            ) if b
+        ]
+        if meta_bits:
+            lines.append(" | ".join(meta_bits))
+
+        fee = facts.get("fee")
+        lines.append(f"Fee: {fee}" if fee else "Fee: undisclosed")
+
+        if facts.get("contract_length"):
+            lines.append(f"Contract: {facts['contract_length']}")
+
+        lines.append(f"Official confirmation: {source_name}")
+        lines.append(f"Source: {source_url}")
+        lines.append(self._hashtags(decision))
+
+        result = self._fit_transfer_caption(lines)
+        decision.rendered_text = result
+        return result
+
+    def _fit_transfer_caption(self, lines: List[str]) -> str:
+        """Fit the official transfer caption within the X limit.
+
+        Unlike the four-line concise templates used for injuries/suspensions,
+        the transfer caption must always keep: the confirmation sentence, the
+        fee line, the official confirmation source line, and the source URL --
+        these are required by policy and are never dropped. Only the optional
+        meta line (position/nationality/age), the optional contract line, and
+        the hashtag line may be trimmed or dropped to fit the limit.
+        """
+        clean = [" ".join(str(line or "").split()) for line in lines if str(line or "").strip()]
+        required_prefixes = ("✅ Confirmed transfer:", "Fee:", "Official confirmation:", "Source:")
+        while True:
+            text = "\n".join(clean).strip()
+            if twitter_weight(text) <= self.limit:
+                return text
+            # Drop hashtags first, then contract line, then meta line.
+            droppable = [
+                i for i, line in enumerate(clean)
+                if not line.startswith(required_prefixes)
+            ]
+            if droppable:
+                clean.pop(droppable[-1])
+                continue
+            raise RenderingError(
+                "verified required transfer facts do not fit within X limit"
+            )
 
     def _source_line(self, decision: VerificationDecision) -> str:
         source_id = decision.source_ids[0] if decision.source_ids else ""

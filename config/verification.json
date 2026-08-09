@@ -8,13 +8,11 @@
       "SUSPENSION"
     ],
     "publishable_statuses": [
-      "HERE_WE_GO",
-      "MEDICAL",
-      "AGREEMENT",
       "OFFICIAL",
       "COMPLETED"
     ],
-    "allow_here_we_go": true,
+    "_transfer_policy_note": "TRANSFER is official-source-only and completed-only. HERE_WE_GO/MEDICAL/AGREEMENT are intentionally NOT publishable statuses. The flags below are also hard-disabled in code (engine.py._configured_nonofficial_confirmation always refuses non-official TRANSFER claims regardless of these values) so this policy cannot be silently reopened by editing this file alone.",
+    "allow_here_we_go": false,
     "allow_non_official_confirmation": false,
     "official_first_party_sufficient": true,
     "require_corroboration_with_official": false,
@@ -25,13 +23,13 @@
     "unknown_entities_are_invalid": true,
     "generated_text_must_be_template_only": true,
     "require_source_url": true,
-    "allow_elite_medical_transfer_confirmation": true,
+    "allow_elite_medical_transfer_confirmation": false,
     "elite_medical_transfer_statuses": [
       "AGREEMENT",
       "MEDICAL"
     ],
     "minimum_elite_medical_publishers": 2,
-    "allow_structured_fotmob_completed_transfers": true
+    "allow_structured_fotmob_completed_transfers": false
   },
   "thresholds": {
     "entity_certainty_min": 0.98,
@@ -88,6 +86,8 @@
       "required_facts": [
         "subject_id",
         "subject_name",
+        "club_from_id",
+        "club_from_name",
         "club_to_id",
         "club_to_name"
       ],

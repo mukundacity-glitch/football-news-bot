@@ -16,11 +16,44 @@ The shipped policy is deliberately strict:
   club/player relationship (league validation is a hard gate — non-PL news,
   e.g. Real Madrid or Saudi clubs, is rejected).
 - Journalist/media reports remain pending until official confirmation.
-- `HERE_WE_GO` auto-publication is implemented but disabled in configuration.
 - Missing, stale, ambiguous, cross-sport, conflicting, or ungrounded facts fail
   closed and cannot reach X.
 - Post text is deterministic and uses verified facts only. Missing fee, contract,
   diagnosis, return date, etc. are omitted rather than guessed.
+
+### TRANSFER: official-confirmed-completed only (non-negotiable)
+
+The bot posts **only** transfers that a first-party official source (buying
+club, selling club, official league site, or a verified official club social
+account explicitly stating the move is complete) confirms as signed/joined/
+completed. This is enforced at two independent layers:
+
+1. `src/verification/engine.py` — `_configured_nonofficial_confirmation()`
+   unconditionally refuses to treat any non-official source as authoritative
+   for a TRANSFER, regardless of `config/verification.json` flags. `HERE_WE_GO`,
+   `MEDICAL`, `AGREEMENT`/"deal agreed", and structured third-party tables
+   (e.g. FotMob) can never become publication authority for a transfer.
+2. `src/verification/official_transfer_gate.py` — a second, independent
+   `validate_official_transfer()` gate re-checks the fully serialized decision
+   (status, official source URL/domain/allowlist, player/from/to presence,
+   from≠to, fee language) immediately before any image or caption is
+   generated. A failure here is logged as `SKIPPED_UNVERIFIED_TRANSFER` with
+   the exact reason (see `queue/debug/rejections.jsonl`) and never produces a
+   graphic, caption, or post.
+
+Transfer cards render at 1080×1350 (`src/verification/card.py`) and always
+show TRANSFER CONFIRMED, the player's full name/position/nationality/age,
+both FROM and TO clubs with badges and a directional arrow, "Fee: <official
+fee>" or "Fee: undisclosed" (never a reported/estimated figure), the official
+source name, the source publication date, and a verification timestamp.
+Captions (`src/verification/renderer.py`) always include both clubs plus a
+direct official source URL — see `tests/test_official_transfer_only.py` for
+the full required-scenario test suite.
+
+Player photos (`src/verification/player_image.py`) follow FPL → Wikipedia →
+generated placeholder, in that order. The FPL bootstrap-static API and
+Wikipedia are used for player metadata/imagery only and are never treated as
+transfer-confirmation evidence.
 
 ## Emergency stop
 
