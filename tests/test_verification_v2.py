@@ -135,6 +135,14 @@ def test_official_title_can_recover_new_player_after_nonperson_fragment(runtime)
 
 
 def test_official_transfer_publishes_and_renders_only_verified_facts(runtime):
+    """Official-confirmed-only transfer caption template.
+
+    Per the non-negotiable transfer policy, the caption must always include
+    both FROM and TO clubs, an explicit official source name AND URL, and a
+    fee line (an explicit official fee, or "Fee: undisclosed" when none was
+    stated) -- unlike the shorter, URL-free templates used for injuries and
+    suspensions.
+    """
     obs = observation(
         title="Chelsea sign Danny Welbeck from Brighton",
         source_id="club.chelsea",
@@ -145,14 +153,13 @@ def test_official_transfer_publishes_and_renders_only_verified_facts(runtime):
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
     assert decision.may_publish
     assert "Danny Welbeck has joined Chelsea from Brighton" in decision.rendered_text
-    assert len(decision.rendered_text.splitlines()) <= 4
-    assert "http" not in decision.rendered_text
-    assert "Source:" not in decision.rendered_text
+    assert "Official confirmation: Chelsea" in decision.rendered_text
+    assert "Source: https://www.chelseafc.com/en/news/article/chelsea-sign-danny-welbeck" in decision.rendered_text
     assert "#TransferNews" in decision.rendered_text
     assert "#PremierLeague" in decision.rendered_text
     assert "TBC" not in decision.rendered_text
     assert "Contract" not in decision.rendered_text
-    assert "Fee" not in decision.rendered_text
+    assert "Fee: undisclosed" in decision.rendered_text
 
 
 def test_verified_card_contains_only_authorized_decision(runtime, tmp_path):
@@ -181,11 +188,13 @@ def test_media_rumour_stays_pending_even_from_major_outlet(runtime):
     assert decision.gate("official_confirmation").state.value == "WAIT"
 
 
-def test_elite_medical_transfer_publishes_as_medical_not_completed(runtime):
-    """Two milestone-configured outlets may publish a medical — as a medical.
+def test_medical_transfer_never_publishes_even_from_two_elite_outlets(runtime):
+    """NON-NEGOTIABLE: a medical/deal-agreed transfer must NEVER publish.
 
-    The fast path exists so a booked medical can go out before the club
-    announcement, but it must never be worded as a completed transfer.
+    Previously a "fast path" let two milestone-configured outlets publish a
+    booked medical as a MEDICAL-worded post. The bot's mandate now is
+    official-confirmed-completed-transfers only, so this must stay blocked
+    regardless of how many non-official outlets agree.
     """
     sky = observation(
         title="Chelsea agree fee with Brighton; Danny Welbeck given permission to undergo medical",
@@ -200,12 +209,8 @@ def test_elite_medical_transfer_publishes_as_medical_not_completed(runtime):
         story=transfer_story(),
     )
     decision = runtime.verify_observations([sky, bbc])
-    assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert decision.may_publish
-    assert decision.status.value == "MEDICAL"
-    assert "Medical:" in decision.rendered_text
-    assert "Confirmed transfer" not in decision.rendered_text
-    assert "awaiting club announcement" in decision.rendered_text
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish
 
 
 def test_single_elite_source_cannot_publish_a_medical(runtime):
@@ -294,7 +299,13 @@ def test_here_we_go_needs_a_second_publisher(runtime):
     assert not decision.may_publish
 
 
-def test_here_we_go_publishes_when_a_second_publisher_agrees(runtime):
+def test_here_we_go_never_publishes_even_with_a_second_publisher(runtime):
+    """NON-NEGOTIABLE: "here we go" is a journalist milestone, never official.
+
+    A second independent publisher used to be enough to publish a HERE_WE_GO
+    post. Under the official-confirmed-only mandate this must stay blocked no
+    matter how many non-official outlets corroborate it.
+    """
     corroboration = observation(
         title="Danny Welbeck to join Chelsea from Brighton after fee agreed",
         source_id="media.the_athletic",
@@ -302,11 +313,8 @@ def test_here_we_go_publishes_when_a_second_publisher_agrees(runtime):
         story=transfer_story(),
     )
     decision = runtime.verify_observations([_romano_here_we_go(), corroboration])
-    assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert decision.may_publish
-    assert decision.status.value == "HERE_WE_GO"
-    assert "Deal agreed:" in decision.rendered_text
-    assert "Confirmed transfer" not in decision.rendered_text
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish
 
 
 def test_ben_duckett_cricket_failure_is_rejected_generically(runtime):
@@ -617,7 +625,8 @@ def test_low_status_media_claim_does_not_block_later_official(runtime):
     assert second.decision == DecisionType.PUBLISH, second.reasons
 
 
-def test_elite_deal_agreed_transfer_publishes_but_is_not_worded_as_completed(runtime):
+def test_deal_agreed_transfer_never_publishes(runtime):
+    """NON-NEGOTIABLE: "deal agreed" is not an official confirmation."""
     bbc = observation(
         title="Deal agreed for Danny Welbeck to join Chelsea from Brighton",
         source_id="media.bbc_sport",
@@ -631,10 +640,8 @@ def test_elite_deal_agreed_transfer_publishes_but_is_not_worded_as_completed(run
         story=transfer_story(),
     )
     decision = runtime.verify_observations([bbc, athletic])
-    assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert decision.status.value == "AGREEMENT"
-    assert "Deal agreed:" in decision.rendered_text
-    assert "Confirmed transfer" not in decision.rendered_text
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish
 
 
 def test_low_status_media_talks_remain_pending(runtime):
@@ -649,7 +656,13 @@ def test_low_status_media_talks_remain_pending(runtime):
     assert not decision.may_publish
 
 
-def test_structured_fotmob_completed_transfer_can_publish(runtime):
+def test_structured_fotmob_completed_transfer_never_publishes(runtime):
+    """NON-NEGOTIABLE: FotMob is a third-party table, never an official source.
+
+    A structured FotMob "completed" row used to be treated as publication
+    authority. It must now always stay pending, exactly like free-text FotMob
+    coverage, until a genuine first-party official source confirms the move.
+    """
     obs = observation(
         title="Danny Welbeck has joined Chelsea from Brighton. FotMob listed the transfer as completed.",
         source_id="media.fotmob",
@@ -659,10 +672,8 @@ def test_structured_fotmob_completed_transfer_can_publish(runtime):
     obs["document"]["source_handle"] = "fotmob"
     obs["document"]["metadata"] = {"structured_fotmob_transfer": True}
     decision = runtime.verify_observations([obs])
-    assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert decision.may_publish
-    assert decision.status.value == "COMPLETED"
-    assert "Confirmed transfer" in decision.rendered_text
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish
 
 
 def test_fotmob_text_without_structured_table_flag_stays_pending(runtime):

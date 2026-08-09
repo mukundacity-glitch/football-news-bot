@@ -410,7 +410,20 @@ class VerificationEngine:
         HERE_WE_GO requires at least one source explicitly configured for that
         milestone plus independent high-status support. Generic non-official
         confirmation requires the separately configured publisher minimum.
+
+        NON-NEGOTIABLE HARD GATE: a TRANSFER can NEVER be published from this
+        path, no matter what config/verification.json says. Only a first-party
+        official source (club/league website, official league data feed, or a
+        verified official club account explicitly stating the move is
+        complete) may make a transfer authoritative — see
+        ``_authoritative_claims``. Journalists, "here we go" posts, deal-agreed
+        reports, medical bulletins, and structured third-party tables (e.g.
+        FotMob) are explicitly excluded from ever becoming publication
+        authority for a transfer. This check is intentionally hardcoded, not
+        config-driven, so a config edit alone can never reopen this hole.
         """
+        if event == EventType.TRANSFER:
+            return [], "none"
         threshold = self.config.threshold("source_reliability_min")
         eligible = []
         for claim in claims:
