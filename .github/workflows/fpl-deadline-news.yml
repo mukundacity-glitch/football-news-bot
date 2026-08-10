@@ -1,14 +1,8 @@
-name: FPL Deadline Top-5 News
+name: Press Conference Window
 
-# Extra gameweek-only team-news check.
-#
-# The script itself decides whether this is the correct pre-deadline window:
-#   FPL deadline = first PL kickoff - 90 minutes (official FPL timestamp)
-#   Bot target   = FPL deadline - 30 minutes (kickoff - 2 hours)
-#
-# We poll every 15 minutes but do the expensive install/test/post work only
-# inside that narrow target window. If no Top-5 official FPL availability news
-# exists, the run exits without posting.
+# Windowed official press-conference monitor.
+# GitHub scheduling is best-effort; Python owns the 3-hour deadline gate,
+# verification, deduplication, and posting.
 on:
   schedule:
     - cron: "*/15 * * * *"
@@ -28,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  fpl-deadline-news:
+  press-conference-news:
     if: ${{ vars.BOT_PAUSED != 'true' }}
     runs-on: ubuntu-latest
 
@@ -53,7 +47,7 @@ jobs:
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             echo "reason=manual_force" >> "$GITHUB_OUTPUT"
           else
-            python tools/fpl_deadline_news.py --check-window --window-minutes 20 --margin-minutes 30 >> "$GITHUB_OUTPUT"
+            python tools/fpl_deadline_news.py --check-window >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install dependencies
@@ -66,20 +60,17 @@ jobs:
         if: steps.window.outputs.should_run == 'true'
         run: python -m pytest -q
 
-      - name: Run FPL deadline Top-5 news
+      - name: Run press conference bot
         id: run
         if: steps.window.outputs.should_run == 'true'
         env:
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
           X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
-          ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST }}
-          DAILY_POST_LIMIT: 16
-          COOLDOWN_FLAGGED_MIN: 180
-          COOLDOWN_RATELIMIT_MIN: 30
-          FPL_DEADLINE_TOP_N: 5
-          FPL_DEADLINE_CARD_LIMIT: 3
-          FPL_DEADLINE_MARGIN_MINUTES: 30
-          FPL_DEADLINE_WINDOW_MINUTES: 20
+          ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST || 'true' }}
+          VERIFICATION_V2_LIVE: ${{ vars.VERIFICATION_V2_LIVE || 'true' }}
+          DRY_RUN: ${{ vars.DRY_RUN || 'false' }}
+          VERIFICATION_V2_ALLOW_DB_REBUILD: ${{ vars.VERIFICATION_V2_ALLOW_DB_REBUILD }}
+          PRESS_CONFERENCE_WINDOW_HOURS: 3
         run: |
           extra=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
@@ -87,16 +78,33 @@ jobs:
           fi
           python tools/fpl_deadline_news.py $extra
 
-      - name: Persist FPL deadline state
+      - name: Save generated cards for inspection
+        if: always() && steps.window.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cards-${{ github.run_id }}
+          retention-days: 5
+          if-no-files-found: ignore
+          path: |
+            queue/press_conference/*.png
+            queue/pending/*.png
+            queue/dryrun/*.png
+
+      - name: Verification V2 shadow report
+        if: steps.window.outputs.should_run == 'true'
+        run: python tools/v2_report.py || true
+
+      - name: Persist state (dedup, deadline ledger)
         if: steps.window.outputs.should_run == 'true'
         run: |
           git config user.name "fpl-vortex-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add data/posted_news.json data/fpl_deadline_status.json 2>/dev/null || true
+          git add data/press_conference_status.json 2>/dev/null || true
+          git add data/posted_news.json 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "No FPL deadline state changes to commit."
+            echo "No state changes to commit."
           else
-            git commit -m "update fpl deadline state [skip ci]"
+            git commit -m "update press conference state [skip ci]"
             pushed=""
             for i in 1 2 3 4 5; do
               if git push; then pushed=1; break; fi
@@ -105,6 +113,5 @@ jobs:
               sleep 3
             done
             if [ -z "$pushed" ]; then
-              echo "WARNING: could not push FPL deadline state after retries; will re-attempt next run."
+              echo "WARNING: could not push press conference state after retries; will re-attempt next run."
             fi
-          fi
