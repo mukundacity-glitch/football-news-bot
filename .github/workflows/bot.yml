@@ -8,6 +8,8 @@ on:
   schedule:
     - cron: "*/20 * * * *"
   workflow_dispatch: {}
+  push:
+    branches: [main]
 permissions:
   contents: write
 
@@ -69,9 +71,6 @@ jobs:
           X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
           X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
-          # Production is automatic by default. Repository variables can still
-          # explicitly pause/disable publication, while verification gates are
-          # always mandatory and fail closed.
           ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST || 'true' }}
           VERIFICATION_V2_LIVE: ${{ vars.VERIFICATION_V2_LIVE || 'true' }}
           DRY_RUN: ${{ vars.DRY_RUN || 'false' }}
@@ -135,4 +134,3 @@ jobs:
             if [ -z "$pushed" ]; then
               echo "WARNING: could not push bot state after retries; will re-attempt next run."
             fi
-          fi
