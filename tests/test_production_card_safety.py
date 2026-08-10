@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-from pathlib import Path
 
 from src.transfer_safety import validate_before_publish
 from src.verification.models import EventStatus
@@ -35,14 +34,12 @@ def test_official_signing_language_is_completion_evidence():
     assert verdict == "ALLOW", reason
 
 
-def test_journalist_completion_can_never_be_promoted_by_transfer_safety():
-    verdict, _ = validate_before_publish(
+def test_journalist_completion_can_never_be_publication_authority():
+    verdict, reason = validate_before_publish(
         story(), [claim("Danny Welbeck has joined Chelsea from Brighton", "media.bbc_sport", "MEDIA")]
     )
-    # The standalone transfer_safety module may recognize the source as approved
-    # evidence, but V2 authorization remains first-party-only. The boundary is
-    # rejection-only and is tested separately at the engine level.
-    assert verdict == "ALLOW"
+    assert verdict == "REJECT"
+    assert reason == "source_not_first_party_official"
 
 
 def test_speculation_is_rejected_even_from_official_source():
