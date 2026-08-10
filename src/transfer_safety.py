@@ -67,6 +67,30 @@ def _has_completion(text: str) -> bool:
     return any(pattern.search(text) for pattern in _DONE_RE)
 
 
+def _movement_destination(text: str) -> set[str]:
+    """Resolve only clubs attached to explicit completed-move grammar.
+
+    This deliberately ignores unrelated club mentions such as "Arsenal and
+    Chelsea were interested". A contradiction between this set and the
+    extracted destination is a hard reject; the gate never chooses a club.
+    """
+    aliases = sorted(_POLICY["canonical_clubs"], key=len, reverse=True)
+    escaped = "|".join(re.escape(a) for a in aliases if _POLICY["canonical_clubs"][a] != "AMBIGUOUS")
+    if not escaped:
+        return set()
+    pattern = re.compile(
+        rf"\b(?:join(?:s|ed)?|sign(?:s|ed)?\s+for|move(?:s|d)?\s+to|"
+        rf"switch(?:es|ed)?\s+to|transfer(?:red)?\s+to)\s+({escaped})\b",
+        re.I,
+    )
+    out = set()
+    for match in pattern.finditer(text):
+        canonical = _canonical_club(match.group(1))
+        if canonical not in {"UNKNOWN", "AMBIGUOUS"}:
+            out.add(canonical)
+    return out
+
+
 def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | None = None) -> tuple[str, str]:
     """Final ALLOW/REJECT gate. This function is intentionally one-way.
 
@@ -78,7 +102,6 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
     claims = list(claims or [])
     if event not in {"TRANSFER", "LOAN", "LOAN_OPTION"}:
         return "ALLOW", "not a transfer gate"
-
     if not claims:
         return "REJECT", "no evidence claims"
 
@@ -99,9 +122,15 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
     speculation = _has_speculation(text)
     if speculation:
         return "REJECT", f"speculation_language:{speculation}"
-
     if not _has_completion(text):
         return "REJECT", "no_explicit_completion_evidence"
+
+    explicit_destinations = _movement_destination(text)
+    if explicit_destinations and canonical not in explicit_destinations:
+        return "REJECT", (
+            f"conflicting_destination_evidence:extracted={canonical};"
+            f"source={sorted(explicit_destinations)}"
+        )
 
     authoritative = []
     for claim in claims:
