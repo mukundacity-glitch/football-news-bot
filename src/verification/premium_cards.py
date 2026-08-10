@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+import base64
+import hashlib
+from io import BytesIO
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -67,17 +70,45 @@ def _source(decision: VerificationDecision, sources: SourceRegistry) -> str:
 
 
 def _load_player_image(subject: str):
-    """Use the existing verified player-image pipeline; never search by event text."""
+    """Resolve only an identity-verified player image.
+
+    Order is deliberately narrow: canonical FPL player asset first, then the
+    renderer's independently verified Wikipedia footballer page. Story media,
+    article og:image, ESPN/BBC/FotMob search results and club crests are never
+    accepted as player identity. If identity cannot be verified, return None.
+    """
     try:
-        from src.renderer import _img_assets
-        _player, _name, _logo, photo_uri = _img_assets({"player": subject})
-        if photo_uri.startswith("data:image"):
-            import base64
-            raw = base64.b64decode(photo_uri.split(",", 1)[1])
-            from io import BytesIO
-            return Image.open(BytesIO(raw)).convert("RGB")
-    except Exception:
-        pass
+        from src.fpl_feed import fetch_fpl_data, find_player_in_fpl
+        from src.renderer import _data_uri, _download_asset, _wikipedia_player_image
+
+        fpl = fetch_fpl_data()
+        player = find_player_in_fpl(subject, fpl)
+        if player:
+            pid = player.get("code")
+            if pid:
+                path = Path(f"players/{pid}.png")
+                if not path.exists():
+                    _download_asset(
+                        f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png",
+                        path,
+                    )
+                uri = _data_uri(path)
+                if uri.startswith("data:image"):
+                    raw = base64.b64decode(uri.split(",", 1)[1])
+                    return Image.open(BytesIO(raw)).convert("RGB")
+
+        image_url = _wikipedia_player_image(subject)
+        if image_url:
+            path = Path("players/wiki_" + hashlib.md5(subject.encode()).hexdigest()[:12] + ".jpg")
+            if not path.exists():
+                _download_asset(image_url, path)
+            uri = _data_uri(path)
+            if uri.startswith("data:image"):
+                raw = base64.b64decode(uri.split(",", 1)[1])
+                return Image.open(BytesIO(raw)).convert("RGB")
+    except Exception as exc:
+        print(f"  [PHOTO] verified image lookup failed for {subject!r}: {exc}")
+    print(f"  [PHOTO] no identity-verified image available for {subject!r}; neutral silhouette used")
     return None
 
 
@@ -86,9 +117,7 @@ def _load_crest(club_key: str):
         from src.renderer import _crest_uri
         uri = _crest_uri(club_key)
         if uri.startswith("data:image"):
-            import base64
             raw = base64.b64decode(uri.split(",", 1)[1])
-            from io import BytesIO
             return Image.open(BytesIO(raw)).convert("RGBA")
     except Exception:
         pass
@@ -102,7 +131,6 @@ def _paste_cover(base: Image.Image, source: Image.Image, box):
 
 
 def _draw_icon(draw, event: EventType, cx: int, cy: int, accent):
-    # Simple deterministic vector symbols; no emoji/font dependency.
     if event == EventType.INJURY:
         draw.rounded_rectangle((cx-28, cy-85, cx+28, cy+85), radius=14, fill=accent)
         draw.rounded_rectangle((cx-85, cy-28, cx+85, cy+28), radius=14, fill=accent)
@@ -141,12 +169,10 @@ def render_verified_card(decision: VerificationDecision, sources: SourceRegistry
     draw = ImageDraw.Draw(image)
     W, H = SIZE
 
-    # Premium dark field with a single category wash.
     draw.rectangle((0, 0, W, H), fill=(3, 5, 8))
     draw.ellipse((W-1700, -400, W+400, H+600), fill=(8, 15, 22))
     draw.rectangle((0, 0, 22, H), fill=accent)
 
-    # Brand.
     logo = Path("Logo.png")
     if logo.exists():
         try:
@@ -158,12 +184,10 @@ def render_verified_card(decision: VerificationDecision, sources: SourceRegistry
     draw.text((275, 105), "FPL", font=_font(82, True), fill=(245,248,252))
     draw.text((430, 105), "VORTEX", font=_font(82, True), fill=(0,255,90))
 
-    # Category header and symbol.
     draw.rounded_rectangle((112, 285, 1110, 415), radius=24, fill=accent)
     draw.text((155, 313), heading, font=_font(58, True), fill=(0,0,0))
     _draw_icon(draw, event, 1180, 350, accent)
 
-    # Hero player image on the right.
     photo = _load_player_image(subject)
     frame = (2470, 170, 3700, 1880)
     draw.rounded_rectangle(frame, radius=48, fill=(9, 13, 18), outline=accent, width=6)
@@ -174,11 +198,9 @@ def render_verified_card(decision: VerificationDecision, sources: SourceRegistry
         draw.rounded_rectangle((2750, 950, 3410, 1710), radius=180, outline=(90,98,110), width=10)
     draw.rounded_rectangle(frame, radius=48, outline=accent, width=6)
 
-    # Subject.
     name_font = _font(142, True)
     draw.text((112, 540), _fit(draw, subject.upper(), name_font, 2150), font=name_font, fill=(248,250,252))
 
-    # Category-specific verified facts.
     if event == EventType.TRANSFER:
         origin = _value(facts.get("club_from_name"), "NOT REPORTED")
         destination = _value(facts.get("club_to_name"), "NOT REPORTED")
@@ -200,7 +222,6 @@ def render_verified_card(decision: VerificationDecision, sources: SourceRegistry
         _tile(draw, 112, 1060, 950, 300, "WHAT WAS SAID", _value(facts.get("quote_summary"), "NOT REPORTED"), accent)
         _tile(draw, 1130, 1060, 950, 300, "TOPIC", _value(facts.get("quote_topic"), "NOT REPORTED"), accent)
 
-    # Source strip: factual provenance only, never a generic 'Source' placeholder.
     source = _source(decision, sources)
     draw.rectangle((0, 1960, W, H), fill=(8, 11, 16))
     draw.rectangle((0, 1960, W, 1972), fill=accent)
