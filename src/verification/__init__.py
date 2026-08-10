@@ -45,7 +45,7 @@ def _install_transfer_safety_boundary() -> None:
         # trusted-source policy ONLY when every other critical gate already
         # passes and the final safety module independently found explicit
         # completed-transfer evidence. It never promotes HERE_WE_GO, MEDICAL,
-        # AGREEMENT, BID, TALKS, or any speculative milestone.
+        # AGREEMENT, BID, TALKS, or speculative milestones.
         non_source_failures = [
             g for g in decision.gates
             if g.critical
@@ -79,9 +79,6 @@ def _install_transfer_safety_boundary() -> None:
             decision.rendered_text = None
             return decision
 
-        # Re-score the decision with the explicit trusted-source confirmation
-        # dimension at 0.95. This is intentionally lower than first-party 1.0,
-        # but still requires every other critical validator to pass.
         try:
             dims = dict(decision.confidence_dimensions)
             dims["official_confirmation"] = 0.95
@@ -118,8 +115,6 @@ def _install_transfer_safety_boundary() -> None:
 
             decision.decision = DecisionType.PUBLISH
             decision.reasons = [r for r in decision.reasons if "source_provenance:" not in r]
-            # Persist the promoted decision so post_item()'s integrity check
-            # cannot publish a decision that exists only in memory.
             self.repository.upsert_story(decision, claims)
             self.repository.record_decision(decision)
             decision.rendered_text = self.renderer.render(decision)
@@ -143,5 +138,5 @@ __all__ = [
     "EventType",
     "VerificationDecision",
     "RuntimeUnavailable",
-    "VerificationDecision",
+    "VerificationRuntime",
 ]
