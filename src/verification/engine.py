@@ -425,8 +425,6 @@ class VerificationEngine:
         hardcoded, not config-driven, so a config edit alone can never reopen
         this hole.
         """
-        if event in {EventType.TRANSFER, EventType.PRESS_CONFERENCE}:
-            return [], "none"
         threshold = self.config.threshold("source_reliability_min")
         eligible = []
         for claim in claims:

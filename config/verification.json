@@ -2,8 +2,16 @@
   "schema_version": 2,
   "policy": {
     "fail_closed": true,
-    "publishable_article_categories": ["TRANSFER", "INJURY", "SUSPENSION", "PRESS_CONFERENCE"],
-    "publishable_statuses": ["OFFICIAL", "COMPLETED"],
+    "publishable_article_categories": [
+      "TRANSFER",
+      "INJURY",
+      "SUSPENSION",
+      "PRESS_CONFERENCE"
+    ],
+    "publishable_statuses": [
+      "OFFICIAL",
+      "COMPLETED"
+    ],
     "_transfer_policy_note": "Fast trusted-source publishing: official first-party sources and explicitly trusted Tier-1 media may publish a clear, factual, fresh story without waiting for a second publisher. FotMob remains Tier-7 catch-up/discovery and never outranks Tier-1 sources. Rumours, speculation and unverified claims remain blocked.",
     "allow_here_we_go": false,
     "allow_non_official_confirmation": true,
@@ -17,7 +25,10 @@
     "generated_text_must_be_template_only": true,
     "require_source_url": true,
     "allow_elite_medical_transfer_confirmation": false,
-    "elite_medical_transfer_statuses": ["AGREEMENT", "MEDICAL"],
+    "elite_medical_transfer_statuses": [
+      "AGREEMENT",
+      "MEDICAL"
+    ],
     "minimum_elite_medical_publishers": 2,
     "allow_structured_fotmob_completed_transfers": false,
     "fast_publish": {
@@ -47,8 +58,15 @@
         "club.west-ham-united",
         "club.wolverhampton-wanderers"
       ],
-      "tier_2": ["media.bbc", "media.sky-sports", "media.espn", "media.the-athletic"],
-      "tier_7_catchup": ["media.fotmob"],
+      "tier_2": [
+        "media.bbc",
+        "media.sky-sports",
+        "media.espn",
+        "media.the-athletic"
+      ],
+      "tier_7_catchup": [
+        "media.fotmob"
+      ],
       "tier_7_never_outranks": true
     }
   },
