@@ -1,9 +1,4 @@
-"""Strict, standalone pre-publish gate for TRANSFER decisions.
-
-This module is deliberately independent of (and layered ON TOP OF) the
-engine's own gates in ``engine.py``. Two things must both agree before a
-transfer graphic/caption is ever generated: the engine and this narrow gate.
-"""
+"""Strict, standalone pre-publish gate for TRANSFER decisions."""
 
 from __future__ import annotations
 
@@ -57,7 +52,6 @@ def validate_official_transfer(
 ) -> OfficialTransferValidation:
     """Strictly validate a completed, first-party official transfer."""
     now = now or datetime.now(timezone.utc)
-
     if decision.event_type != EventType.TRANSFER:
         return OfficialTransferValidation(False, "not_a_transfer_event")
     if decision.decision != DecisionType.PUBLISH or not decision.may_publish:
@@ -75,13 +69,11 @@ def validate_official_transfer(
     if profile is None or not profile.display_name:
         return OfficialTransferValidation(False, "missing_official_source_name")
 
-    # Defense in depth: a media/journalist/reporter source can never become a
-    # transfer authorizer merely because a configuration fixture accidentally
-    # marks it is_official=True. Discovery sources may inform the pipeline, but
-    # only first-party club/league/competition sources can authorize a transfer.
     source_norm = str(source_id or "").strip().lower()
     if source_norm.startswith(_NONOFFICIAL_SOURCE_PREFIXES):
-        return OfficialTransferValidation(False, "nonfirstparty_source_cannot_authorize_transfer")
+        # Preserve the public gate contract: media/journalist sources are
+        # rejected as non-official, while the namespace check is defense in depth.
+        return OfficialTransferValidation(False, "source_not_on_official_allowlist")
     if not profile.is_official:
         return OfficialTransferValidation(False, "source_not_on_official_allowlist")
 
