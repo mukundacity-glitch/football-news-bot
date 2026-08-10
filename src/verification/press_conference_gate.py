@@ -1,16 +1,4 @@
-"""Strict, standalone pre-publish gate for PRESS_CONFERENCE decisions.
-
-Mirrors ``official_transfer_gate.py`` exactly: this is defense-in-depth,
-layered ON TOP OF the engine's own hardcoded refusal to treat any
-non-official source as authoritative for PRESS_CONFERENCE (see
-``engine.py._configured_nonofficial_confirmation``). Even a bug or future
-change there cannot alone cause an unconfirmed quote to reach a caption or a
-card, because this module re-checks every fact from scratch using only the
-already-serialized ``VerificationDecision``.
-
-If validation fails, callers MUST NOT generate an image or caption and MUST
-log ``SKIPPED_UNVERIFIED_PRESS_CONFERENCE`` with the exact reason.
-"""
+"""Strict, standalone pre-publish gate for PRESS_CONFERENCE decisions."""
 
 from __future__ import annotations
 
@@ -23,9 +11,8 @@ from urllib.parse import urlparse
 from .models import DecisionType, EventStatus, EventType, VerificationDecision
 from .source_registry import SourceRegistry, normalize_domain
 
-# Same official-confirmed bar as transfers: only these two engine statuses
-# may ever be treated as "official_confirmed" for a press conference quote.
 _OFFICIAL_CONFIRMED_STATUSES = frozenset({EventStatus.OFFICIAL, EventStatus.COMPLETED})
+_NONOFFICIAL_SOURCE_PREFIXES = ("media.", "journalist.", "reporter.", "aggregator.")
 
 
 @dataclass(frozen=True)
@@ -34,7 +21,7 @@ class OfficialPressConferenceValidation:
     reason: str
     verified_at: Optional[str] = None
 
-    def __bool__(self) -> bool:  # pragma: no cover - convenience
+    def __bool__(self) -> bool:
         return self.ok
 
 
@@ -58,36 +45,15 @@ def validate_official_press_conference(
     *,
     now: Optional[datetime] = None,
 ) -> OfficialPressConferenceValidation:
-    """Return the strict official-only validation result for a PRESS_CONFERENCE decision.
-
-    ALL of the following must hold, or publication is blocked:
-      - event_type is PRESS_CONFERENCE
-      - decision.decision == PUBLISH and every critical gate already PASSed
-      - status is exactly OFFICIAL or COMPLETED ("official_confirmed")
-      - an official source URL exists and is a well-formed http(s) URL
-      - an official source name/profile exists, is on the official allowlist,
-        and (when the profile declares controlled domains) the source URL's
-        domain matches the allowlist -- exactly the same check as transfers,
-        so a journalist merely quoting the same press conference can never
-        qualify even if they were physically in the room
-      - speaker (subject) full name, club, and a short verified quote summary
-        are all present
-    """
     now = now or datetime.now(timezone.utc)
-
     if decision.event_type != EventType.PRESS_CONFERENCE:
         return OfficialPressConferenceValidation(False, "not_a_press_conference_event")
-
     if decision.decision != DecisionType.PUBLISH or not decision.may_publish:
         return OfficialPressConferenceValidation(False, "engine_did_not_authorize_publish")
-
     if decision.status not in _OFFICIAL_CONFIRMED_STATUSES:
-        return OfficialPressConferenceValidation(
-            False, f"status_not_official_confirmed:{decision.status.value}"
-        )
+        return OfficialPressConferenceValidation(False, f"status_not_official_confirmed:{decision.status.value}")
 
     facts: Mapping[str, Any] = decision.verified_facts
-
     url = decision.source_url
     if not _is_valid_url(url):
         return OfficialPressConferenceValidation(False, "missing_or_invalid_official_source_url")
@@ -96,6 +62,10 @@ def validate_official_press_conference(
     profile = sources.get(source_id) if source_id else None
     if profile is None or not profile.display_name:
         return OfficialPressConferenceValidation(False, "missing_official_source_name")
+
+    source_norm = str(source_id or "").strip().lower()
+    if source_norm.startswith(_NONOFFICIAL_SOURCE_PREFIXES):
+        return OfficialPressConferenceValidation(False, "nonfirstparty_source_cannot_authorize_press_conference")
     if not profile.is_official:
         return OfficialPressConferenceValidation(False, "source_not_on_official_allowlist")
 
@@ -105,14 +75,11 @@ def validate_official_press_conference(
         for d in profile.domains
     )
     if profile.domains and not domain_allowed:
-        return OfficialPressConferenceValidation(
-            False, "official_source_domain_not_on_allowlist"
-        )
+        return OfficialPressConferenceValidation(False, "official_source_domain_not_on_allowlist")
 
     speaker = facts.get("subject_name")
     club = facts.get("club_name")
     quote_summary = facts.get("quote_summary")
-
     if not speaker or not str(speaker).strip():
         return OfficialPressConferenceValidation(False, "missing_speaker_full_name")
     if not club or not str(club).strip():
@@ -129,11 +96,6 @@ def log_skipped_unverified_press_conference(
     *,
     raw_item: Optional[Mapping[str, Any]] = None,
 ) -> None:
-    """Durable, structured record of a press-conference post that was blocked.
-
-    Reuses the existing rejection-log review queue, exactly like the transfer
-    gate. Never raises.
-    """
     from src.rejection_log import log_rejection
 
     facts: Mapping[str, Any] = decision.verified_facts if decision else (raw_item or {})
@@ -147,9 +109,4 @@ def log_skipped_unverified_press_conference(
         "stage": 4,
     }
     sources = list(decision.source_ids) if decision else []
-    log_rejection(
-        "SKIPPED_UNVERIFIED_PRESS_CONFERENCE",
-        story,
-        reason,
-        sources=sources,
-    )
+    log_rejection("SKIPPED_UNVERIFIED_PRESS_CONFERENCE", story, reason, sources=sources)

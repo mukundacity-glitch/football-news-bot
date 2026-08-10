@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "approved_nonofficial_sources": [
+    "journalist.fabrizio_romano",
+    "journalist.david_ornstein",
+    "media.bbc_sport",
+    "media.sky_sports",
+    "media.the_athletic",
+    "media.espn"
+  ],
+  "official_source_kinds": [
+    "OFFICIAL_CLUB",
+    "OFFICIAL_LEAGUE",
+    "GOVERNING_BODY"
+  ],
+  "required_statuses": [
+    "OFFICIAL",
+    "COMPLETED"
+  ],
+  "completion_patterns": [
+    "\\bhas signed\\b",
+    "\\bhave signed\\b",
+    "\\bsigned for\\b",
+    "\\bsign(?:s|ed)?\\b",
+    "\\bhas joined\\b",
+    "\\bhave joined\\b",
+    "\\bjoins\\b",
+    "\\bcompletes? (?:the )?(?:signing|move|transfer|loan)\\b",
+    "\\bofficially (?:signs?|signed|joins?|joined|announced|confirms?|confirmed)\\b",
+    "\\bclub (?:has )?(?:confirmed|announced)\\b",
+    "\\btransfer (?:is )?(?:official|complete|completed)\\b",
+    "\\bmove (?:is )?(?:official|complete|completed)\\b",
+    "\\bdeal (?:is )?(?:official|complete|completed)\\b",
+    "\\bannounces? (?:the )?(?:signing|arrival|transfer|loan)\\b",
+    "\\bunveil(?:s|ed)?\\b"
+  ],
+  "speculation_patterns": [
+    "\\bexpected to\\b",
+    "\\bset to\\b",
+    "\\bclose to\\b",
+    "\\blikely to\\b",
+    "\\bcould (?:join|sign|move|leave)\\b",
+    "\\bmight (?:join|sign|move|leave)\\b",
+    "\\binterested in\\b",
+    "\\btarget(?:ing|ed)?\\b",
+    "\\bbids?\\b",
+    "\\btalks?\\b",
+    "\\bnegotiations?\\b",
+    "\\bpersonal terms?\\b",
+    "\\bverbal agreement\\b",
+    "\\bagreement reached\\b",
+    "\\bmedical (?:booked|scheduled|pending|to take place|set for)\\b",
+    "\\bhere we go\\b"
+  ],
+  "canonical_clubs": {
+    "inter": "Inter Milan",
+    "inter milan": "Inter Milan",
+    "inter miami": "Inter Miami",
+    "psg": "Paris Saint-Germain",
+    "paris saint-germain": "Paris Saint-Germain",
+    "paris saint germain": "Paris Saint-Germain",
+    "barça": "Barcelona",
+    "barca": "Barcelona",
+    "barcelona": "Barcelona",
+    "milan": "AMBIGUOUS",
+    "united": "AMBIGUOUS",
+    "manchester united": "Manchester United",
+    "arsenal": "Arsenal",
+    "chelsea": "Chelsea"
+  }
+}

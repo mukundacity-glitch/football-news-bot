@@ -279,145 +279,52 @@ def _wikipedia_player_image(player_name: str) -> str:
 
 
 def _img_assets(story):
-    """Shared: resolve the verified player, display name, brand logo and player photo."""
+    """Resolve a player image only from identity-verified sources.
+
+    Policy: FPL's canonical player asset is preferred. Wikipedia is the
+    only fallback and is accepted only after the page is independently
+    verified as the requested footballer. Article/media URLs, ESPN/BBC/
+    FotMob search results and club crests are never treated as player
+    photos because a visually plausible but wrong face is worse than no
+    photo on a verified-news card.
+    """
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(story.get("player"), fpl)
-    # Prefer the single canonical display name set by verify_card_data so the card
-    # and the tweet always show the exact same name.
     player_name = (story.get("display_name")
                    or (player_el["web_name"] if player_el else story.get("player"))
                    or "PLAYER")
 
     logo_uri = _data_uri(Path("Logo.png"))
-
     photo_uri = ""
+
+    # 1) Canonical FPL player identity/asset.
     pid = player_el.get("code") if player_el else None
     if pid:
         pp = Path(f"players/{pid}.png")
         if not pp.exists():
-            _download_asset(f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png", pp)
+            _download_asset(
+                f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{pid}.png",
+                pp,
+            )
         photo_uri = _data_uri(pp)
-    if not photo_uri and story.get("media_url"):
-        murl = story["media_url"]
-        ext = ".jpg" if any(x in murl.lower() for x in (".jpg", ".jpeg")) else ".png"
-        mp = Path("players/tw_" + hashlib.md5(murl.encode()).hexdigest()[:12] + ext)
-        if not mp.exists():
-            _download_asset(murl, mp)
-        photo_uri = _data_uri(mp)
 
-    # Wikipedia fallback: if neither FPL API nor media_url produced a photo,
-    # resolve the player's article and take its lead image.
-    # This covers players not in the FPL dataset (foreign signings, academy
-    # players, brand-new arrivals) — exactly the ones with no FPL headshot.
+    # 2) Verified Wikipedia identity fallback only.
+    # Never use a raw article/media URL merely because it was attached
+    # to the story: the source image may be a teammate, manager or logo.
     if not photo_uri:
         pname = story.get("player", "")
         if pname:
-            thumb = _wikipedia_player_image(pname)
-            if thumb:
+            image_url = _wikipedia_player_image(pname)
+            if image_url:
                 wp = Path("players/wiki_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".jpg")
                 if not wp.exists():
-                    _download_asset(thumb, wp)
+                    _download_asset(image_url, wp)
                 if wp.exists() and wp.stat().st_size > 500:
                     photo_uri = _data_uri(wp)
-                    print(f"  [PHOTO] Wikipedia image found for {pname!r}")
+                    print(f"  [PHOTO] Verified Wikipedia image found for {pname!r}")
 
-    # ESPN fallback: search the ESPN athletes API and fetch their headshot.
     if not photo_uri:
-        pname = story.get("player", "")
-        if pname:
-            try:
-                espn_url = ("https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1"
-                            "/athletes?search=" + urllib.parse.quote(pname) + "&limit=5")
-                req = urllib.request.Request(
-                    espn_url,
-                    headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)"}
-                )
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    edata = json.loads(resp.read().decode("utf-8"))
-                athletes = edata.get("athletes") or []
-                for ath in athletes[:3]:
-                    ath_id = str(ath.get("id") or "")
-                    if not ath_id:
-                        continue
-                    img_url = (f"https://a.espncdn.com/combiner/i?img=/i/headshots/soccer"
-                               f"/players/full/{ath_id}.png&w=350&h=254")
-                    ep = Path("players/espn_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".png")
-                    if not ep.exists():
-                        _download_asset(img_url, ep)
-                    if ep.exists() and ep.stat().st_size > 500:
-                        photo_uri = _data_uri(ep)
-                        print(f"  [PHOTO] ESPN image found for {pname!r} (id={ath_id})")
-                        break
-            except Exception as _ee:
-                print(f"  [PHOTO] ESPN lookup failed for {pname!r}: {_ee}")
-
-    # BBC Sport fallback: scrape the og:image from the player's BBC Sport page.
-    if not photo_uri:
-        pname = story.get("player", "")
-        if pname:
-            try:
-                slug = re.sub(r"[^a-z0-9]+", "-", pname.lower()).strip("-")
-                bbc_url = f"https://www.bbc.co.uk/sport/football/players/{slug}"
-                req = urllib.request.Request(
-                    bbc_url,
-                    headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)"}
-                )
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    html = resp.read().decode("utf-8", errors="replace")
-                m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
-                if not m:
-                    m = re.search(r'content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html)
-                if m:
-                    img_url = m.group(1)
-                    ext = ".jpg" if any(x in img_url.lower() for x in (".jpg", ".jpeg")) else ".png"
-                    bp = Path("players/bbc_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ext)
-                    if not bp.exists():
-                        _download_asset(img_url, bp)
-                    if bp.exists() and bp.stat().st_size > 500:
-                        photo_uri = _data_uri(bp)
-                        print(f"  [PHOTO] BBC Sport image found for {pname!r}")
-            except Exception as _be:
-                pass
-
-    # FotMob fallback: search FotMob for the player and fetch their photo.
-    # FotMob has the most comprehensive photo database for active football players.
-    if not photo_uri:
-        pname = story.get("player", "")
-        if pname:
-            try:
-                fotmob_url = ("https://www.fotmob.com/api/search?term="
-                              + urllib.parse.quote(pname) + "&lang=en")
-                req = urllib.request.Request(
-                    fotmob_url,
-                    headers={"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/1.0)",
-                             "Accept": "application/json"}
-                )
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    fdata = json.loads(resp.read().decode("utf-8"))
-                players = fdata.get("squad") or fdata.get("players") or []
-                for entry in players[:3]:
-                    fid = str(entry.get("id") or "")
-                    if not fid:
-                        continue
-                    img_url = (entry.get("imageUrl") or
-                               f"https://images.fotmob.com/image_resources/playerimages/{fid}.png")
-                    fp = Path("players/fm_" + hashlib.md5(pname.encode()).hexdigest()[:12] + ".png")
-                    if not fp.exists():
-                        _download_asset(img_url, fp)
-                    if fp.exists() and fp.stat().st_size > 500:
-                        photo_uri = _data_uri(fp)
-                        print(f"  [PHOTO] FotMob image found for {pname!r} (id={fid})")
-                        break
-            except Exception as _fe:
-                print(f"  [PHOTO] FotMob lookup failed for {pname!r}: {_fe}")
-
-    # Club crest fallback: if still no photo, use the destination or origin crest
-    # as a last resort so the card is never completely imageless.
-    if not photo_uri:
-        crest = _crest_uri(story.get("to_key") or story.get("from_key"))
-        if crest:
-            photo_uri = crest
-            print(f"  [PHOTO] Crest fallback for {story.get('player')!r}")
+        print(f"  [PHOTO] No identity-verified image available for {player_name!r}; using neutral silhouette.")
 
     return player_el, player_name, logo_uri, photo_uri
 
