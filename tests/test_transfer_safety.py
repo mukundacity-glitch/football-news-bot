@@ -63,15 +63,16 @@ def test_unapproved_source_rejected():
         story(), [claim("John Stones has joined Inter Milan", source_id="random_account", kind="MEDIA")]
     )
     assert verdict == "REJECT"
-    assert reason == "source_not_approved"
+    assert reason == "source_not_first_party_official"
 
 
-def test_approved_journalist_can_supply_explicit_completion():
-    verdict, _ = validate_before_publish(
+def test_journalist_cannot_supply_publication_authority():
+    verdict, reason = validate_before_publish(
         story(),
         [claim("John Stones has joined Inter Milan", source_id="journalist.fabrizio_romano", kind="JOURNALIST")],
     )
-    assert verdict == "ALLOW"
+    assert verdict == "REJECT"
+    assert reason == "source_not_first_party_official"
 
 
 def test_inter_resolves_without_becoming_arsenal():
@@ -114,8 +115,6 @@ def test_destination_contamination_is_rejected_not_rewritten():
         story(to="Arsenal", from_="Manchester City"),
         [claim("John Stones has joined Inter; Arsenal and Chelsea were interested")],
     )
-    # Safety must never repair a bad extraction by guessing. It rejects the
-    # contradictory destination instead, leaving the parser free to be fixed.
     assert verdict == "REJECT"
     assert reason.startswith("conflicting_destination_evidence:")
 
