@@ -30,7 +30,7 @@ from .models import (
     RawDocument,
 )
 from .source_registry import SourceRegistry
-from src.entity_guard import classify_entity_detailed, _HARD_REJECT
+from src.entity_guard import classify_entity_detailed, is_staff_subject, _HARD_REJECT
 from src import squad_registry
 
 
@@ -53,6 +53,7 @@ _LEGACY_EVENT_MAP = {
     "stay": EventType.CONTRACT,
     "contract_extension": EventType.CONTRACT,
     "official_statement": EventType.OFFICIAL_STATEMENT,
+    "press_conference": EventType.PRESS_CONFERENCE,
 }
 
 
@@ -123,6 +124,10 @@ class SemanticClassifier:
         }
         self.speculation_patterns = _compile_many(raw["speculation_patterns"])
         self.negation_patterns = _compile_many(raw["negation_patterns"])
+        self.corroboration_patterns = {
+            EventType(name): _compile_many(patterns)
+            for name, patterns in raw.get("corroboration_patterns", {}).items()
+        }
         self.fact_patterns = {
             group: {
                 value: _compile_many(patterns)
@@ -180,6 +185,16 @@ class SemanticClassifier:
             else:
                 warnings.append("event_not_grounded")
 
+        if event != EventType.UNKNOWN and not self._corroborated(event, text):
+            # The event's own trigger phrase can be genuinely ambiguous out of
+            # context (e.g. "ruled out" fires on both a disallowed VAR goal and
+            # a genuine injury). Fail closed to UNKNOWN rather than publish a
+            # guess -- this is generic and config-driven, not keyed to any
+            # specific player, club, or match.
+            warnings.append(f"uncorroborated_event_type:{event.value}")
+            event = EventType.UNKNOWN
+            certainty = 0.0
+
         status, status_evidence = self._status(event, text)
 
         category = event
@@ -199,6 +214,18 @@ class SemanticClassifier:
             status_evidence=status_evidence,
             warnings=tuple(warnings),
         )
+
+    def _corroborated(self, event: EventType, text: str) -> bool:
+        """An event with configured corroboration patterns needs one to fire.
+
+        Events with no configured corroboration list (e.g. TRANSFER) are
+        unaffected -- this only tightens categories whose trigger phrases are
+        known to be ambiguous out of context.
+        """
+        patterns = self.corroboration_patterns.get(event)
+        if not patterns:
+            return True
+        return _first_match(patterns, text) is not None
 
     def _status(self, event: EventType, text: str) -> tuple[EventStatus, Optional[str]]:
         by_status = self.status_patterns.get(event, {})
@@ -300,6 +327,7 @@ class LegacyClaimAdapter:
             EventType.MANAGER,
             EventType.CONTRACT,
             EventType.OFFICIAL_STATEMENT,
+            EventType.PRESS_CONFERENCE,
         } and not (from_club or to_club):
             source_club = source_club if source_club and self.entities.get(source_club) else None
             if source_club:
@@ -334,7 +362,8 @@ class LegacyClaimAdapter:
                 warnings.append("multiple_person_candidates_in_official_title")
 
         if subject_name and subject is None and self._may_establish_from_official(
-            profile, event, classification.status, from_club, to_club, subject_name
+            profile, event, classification.status, from_club, to_club, subject_name,
+            expected_type=subject_type, text=document.text,
         ):
             subject = self.entities.officially_established_person(subject_name, subject_type)
             if subject:
@@ -365,6 +394,11 @@ class LegacyClaimAdapter:
             self._add_single_club(club, document, profile, add_fact, warnings, subject)
         elif event == EventType.OFFICIAL_STATEMENT:
             club = to_club or from_club
+            self._add_single_club(club, document, profile, add_fact, warnings, subject)
+        elif event == EventType.PRESS_CONFERENCE:
+            club = to_club or from_club
+            if not club and subject and subject.club_id:
+                club = self.entities.get(subject.club_id)
             self._add_single_club(club, document, profile, add_fact, warnings, subject)
 
         if event == EventType.INJURY:
@@ -420,6 +454,21 @@ class LegacyClaimAdapter:
                     "statement_topic", document.title.strip(),
                     EvidenceSupport.TEXT_SPAN, document.title.strip(),
                 )
+        elif event == EventType.PRESS_CONFERENCE:
+            quote_summary = _safe_string(legacy_story.get("quote_summary"))
+            if quote_summary and _norm_text(quote_summary) in _norm_text(document.text):
+                add_fact(
+                    "quote_summary", quote_summary,
+                    EvidenceSupport.TEXT_SPAN, quote_summary,
+                )
+            elif classification.status_evidence:
+                add_fact(
+                    "quote_summary", classification.status_evidence,
+                    EvidenceSupport.TEXT_SPAN, classification.status_evidence,
+                )
+            self._add_optional_grounded(
+                "quote_topic", legacy_story.get("quote_topic"), document, add_fact
+            )
 
         event_time = legacy_story.get("event_time") or document.metadata.get("event_time")
         if event_time:
@@ -506,14 +555,16 @@ class LegacyClaimAdapter:
         )
         candidates: List[str] = []
         for candidate in pattern.findall(text or ""):
-            if not document_name_is_person_like(candidate):
+            if not document_name_is_person_like(
+                candidate, expected_type=expected_type, text=text
+            ):
                 continue
             entity_type, _ = classify_entity_detailed(candidate, text, None)
             if entity_type in _HARD_REJECT:
                 continue
             if self.entities.resolve_club(candidate):
                 continue
-            if event == EventType.MANAGER and entity_type not in {
+            if event in {EventType.MANAGER, EventType.PRESS_CONFERENCE} and entity_type not in {
                 "PLAYER", "MANAGER", "COACH", "ASSISTANT_COACH"
             }:
                 continue
@@ -569,6 +620,15 @@ class LegacyClaimAdapter:
             return EntityType.COACH if role and "manager" not in role and "head coach" not in role else EntityType.MANAGER
         if event == EventType.OFFICIAL_STATEMENT:
             return EntityType.CLUB
+        if event == EventType.PRESS_CONFERENCE:
+            # A press conference speaker is usually the manager, but the
+            # config also allows a player. The caller must say which via
+            # legacy_story["speaker_type"] -- guessing between the two is
+            # exactly the kind of unverified inference this bot must not do.
+            speaker_type = str(story.get("speaker_type") or "").lower()
+            if speaker_type == "player":
+                return EntityType.PLAYER
+            return EntityType.MANAGER
         return EntityType.PLAYER
 
     def _resolve_subject(
@@ -623,10 +683,21 @@ class LegacyClaimAdapter:
         from_club: Optional[EntityRecord],
         to_club: Optional[EntityRecord],
         name: str,
+        *,
+        expected_type: Optional[EntityType] = None,
+        text: str = "",
     ) -> bool:
-        if not profile or not profile.is_official or not document_name_is_person_like(name):
+        if not profile or not profile.is_official or not document_name_is_person_like(
+            name, expected_type=expected_type, text=text
+        ):
             return False
-        entity_type, _ = classify_entity_detailed(name, name, None)
+        # Use the actual surrounding document text, not just the bare name --
+        # classify_entity_detailed needs nearby role-cue words ("head coach",
+        # "manager") to tell a genuine staff member apart from an unresolved
+        # UNKNOWN, which is hard-rejected. Passing the name as its own "text"
+        # made every non-player official subject (managers/coaches, including
+        # every PRESS_CONFERENCE speaker) fail this check unconditionally.
+        entity_type, _ = classify_entity_detailed(name, text or name, None)
         if entity_type in _HARD_REJECT:
             return False
         if event.value not in profile.allowed_events:
@@ -776,8 +847,13 @@ class LegacyClaimAdapter:
         return round(1.0 - probability_not, 6), signals
 
 
-def document_name_is_person_like(name: str) -> bool:
-    """True only if this name is a real, registered player.
+def document_name_is_person_like(
+    name: str,
+    *,
+    expected_type: Optional[EntityType] = None,
+    text: str = "",
+) -> bool:
+    """True only if this name is a real, registered player OR a bound staff role.
 
     This used to be a pure SHAPE test — "between 2 and 6 alphabetic words" — and
     it was the last check standing between an official club account and a new
@@ -785,9 +861,15 @@ def document_name_is_person_like(name: str) -> bool:
     "Manchester United Website", "Season Ticket Holders" and "Club Statement" all
     pass a shape test, and one of them was published as a completed transfer.
 
-    Shape is now a cheap pre-filter only. The decision belongs to the squad
-    registry (live FPL roster + vouched-for overrides), so a first-party source
-    can confirm news ABOUT a known player but can no longer invent one.
+    Shape is now a cheap pre-filter only. For a PLAYER subject the decision
+    belongs to the squad registry (live FPL roster + vouched-for overrides),
+    so a first-party source can confirm news ABOUT a known player but can
+    never invent one. For a MANAGER/COACH subject (e.g. a press-conference
+    speaker) there is no equivalent live roster feed, so the check instead
+    requires the name to be grounded to a manager/coach role phrase in the
+    same document (``is_staff_subject``) -- a name floating in the article
+    with no bound role is still rejected, it just uses a different, still
+    evidence-based test than the player path.
     """
     normalized = normalize_entity_name(name)
     parts = normalized.split()
@@ -795,4 +877,6 @@ def document_name_is_person_like(name: str) -> bool:
         return False
     if not all(part.isalpha() and len(part) >= 2 for part in parts):
         return False
+    if expected_type in {EntityType.MANAGER, EntityType.COACH}:
+        return is_staff_subject(name, text)
     return squad_registry.is_known_player(name)

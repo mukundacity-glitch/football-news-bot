@@ -5,7 +5,8 @@
     "publishable_article_categories": [
       "TRANSFER",
       "INJURY",
-      "SUSPENSION"
+      "SUSPENSION",
+      "PRESS_CONFERENCE"
     ],
     "publishable_statuses": [
       "OFFICIAL",
@@ -176,6 +177,34 @@
         "suspension_status",
         "return_date"
       ]
+    },
+    "PRESS_CONFERENCE": {
+      "_note": "Official-only, same bar as TRANSFER: only a first-party club/league source publishing or hosting the press conference (own site/video/transcript, or a verified official club account explicitly quoting it) may become authoritative. A journalist quoting the same presser is NOT sufficient -- see engine.py._configured_nonofficial_confirmation, which refuses non-official sources for this category exactly like TRANSFER.",
+      "required_facts": [
+        "subject_id",
+        "subject_name",
+        "club_id",
+        "club_name",
+        "quote_summary"
+      ],
+      "allowed_subject_types": [
+        "MANAGER",
+        "PLAYER"
+      ],
+      "conflict_fields": [
+        "subject_id",
+        "club_id",
+        "quote_summary"
+      ],
+      "material_fields": [
+        "quote_summary",
+        "quote_topic"
+      ],
+      "official_relation_fields": [
+        "club_id",
+        "competition_id"
+      ],
+      "progressive_fields": []
     }
   },
   "status_order": [
@@ -255,6 +284,23 @@
       "\\bcollaps(?:e|ed|es)\\b",
       "\\bdeal off\\b"
     ],
+    "corroboration_patterns": {
+      "INJURY": [
+        "\\binjur(?:y|ed|ies)\\b",
+        "\\bhamstring\\b", "\\bknee\\b", "\\bankle\\b", "\\bacl\\b", "\\bmcl\\b",
+        "\\bcalf\\b", "\\bgroin\\b", "\\bhip\\b", "\\bthigh\\b", "\\bshoulder\\b",
+        "\\bconcussion\\b", "\\bscan\\b", "\\bsurgery\\b", "\\bmedical staff\\b",
+        "\\bphysio\\b", "\\brecover(?:y|ing)\\b", "\\brehab(?:ilitation)?\\b",
+        "\\bsidelined\\b", "\\bfitness (?:test|update|concern)\\b",
+        "\\breturn(?:s|ed)? to training\\b", "\\bstrain\\b", "\\btorn\\b",
+        "\\bsprain(?:ed)?\\b", "\\bfracture[ds]?\\b"
+      ],
+      "SUSPENSION": [
+        "\\bban(?:ned)?\\b", "\\bsuspen(?:d|ded|sion)\\b", "\\bred card\\b",
+        "\\bsent off\\b", "\\bdisciplinary\\b", "\\bmisconduct\\b",
+        "\\bmatches? (?:ban|suspension)\\b", "\\bcharged? by\\b", "\\bappeal\\b"
+      ]
+    },
     "event_patterns": {
       "TRANSFER": [
         "\\bcomplet(?:e|es|ed) (?:the )?signing\\b",
@@ -303,6 +349,14 @@
         "\\bofficial statement\\b",
         "\\bclub statement\\b",
         "\\bstatement from\\b"
+      ],
+      "PRESS_CONFERENCE": [
+        "\\bpress conference\\b",
+        "\\bpre-match press conference\\b",
+        "\\bpost-match press conference\\b",
+        "\\bspeaking (?:to|at) (?:the )?media\\b",
+        "\\bspeaking to reporters\\b",
+        "\\bmedia briefing\\b"
       ]
     },
     "status_patterns": {
@@ -431,6 +485,18 @@
           "\\bofficial statement\\b",
           "\\bclub statement\\b",
           "\\bstatement from\\b"
+        ]
+      },
+      "PRESS_CONFERENCE": {
+        "COMPLETED": [
+          "\\bsaid at (?:his|her|their) press conference\\b",
+          "\\btold (?:reporters|the press|media)\\b",
+          "\\bspeaking (?:to|at) (?:the )?media\\b",
+          "\\bspeaking to reporters\\b"
+        ],
+        "OFFICIAL": [
+          "\\bpress conference\\b",
+          "\\bmedia briefing\\b"
         ]
       }
     },

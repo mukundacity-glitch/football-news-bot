@@ -1094,12 +1094,13 @@ def verify_card_data(item: dict, fpl_data=None):
 # ── LABELS ───────────────────────────────────────────────────────────────
 APPROVED_LABELS = {
     "TRANSFER", "RUMOUR", "AGREED", "INJURY", "SUSPENSION", "CONTRACT EXTENSION",
-    "LOAN", "MANAGER NEWS", "OFFICIAL", "HISTORICAL",
+    "LOAN", "MANAGER NEWS", "PRESS CONFERENCE", "OFFICIAL", "HISTORICAL",
 }
 EVENT_PREFIX = {
     "transfer": "TRANSFER", "loan": "LOAN", "loan_option": "LOAN",
     "renewal": "CONTRACT EXTENSION", "stay": "CONTRACT EXTENSION",
     "injury": "INJURY", "suspension": "SUSPENSION", "manager": "MANAGER NEWS",
+    "press_conference": "PRESS CONFERENCE",
     "collapse": "TRANSFER",
 }
 
@@ -2100,6 +2101,7 @@ def _v2_refine_candidate_hint(story: dict, source_item: dict, runtime) -> None:
         return
     mapping = {
         "TRANSFER": "transfer", "INJURY": "injury", "SUSPENSION": "suspension",
+        "PRESS_CONFERENCE": "press_conference",
         "MANAGER": "manager", "CONTRACT": "renewal",
         "OFFICIAL_STATEMENT": "official_statement",
     }
@@ -2152,6 +2154,7 @@ def _v2_project_verified_facts(item: dict, decision: V2VerificationDecision) -> 
         "TRANSFER": "loan" if facts.get("transfer_kind") == "loan" else "transfer",
         "INJURY": "injury",
         "SUSPENSION": "suspension",
+        "PRESS_CONFERENCE": "press_conference",
         "MANAGER": "manager",
         "CONTRACT": "renewal",
         "OFFICIAL_STATEMENT": "official_statement",
@@ -2170,6 +2173,8 @@ def _v2_project_verified_facts(item: dict, decision: V2VerificationDecision) -> 
     item["diagnosis"] = facts.get("injury_status") or facts.get("suspension_status")
     item["expected_return"] = facts.get("return_date")
     item["staff_action"] = facts.get("manager_action")
+    item["quote_summary"] = facts.get("quote_summary")
+    item["quote_topic"] = facts.get("quote_topic")
     item["stage"] = 4
     item["collapsed"] = False
     item["historical"] = False
@@ -2496,9 +2501,11 @@ DRAFTS_FOLDER = "fpl_drafts"
 # Injuries and transfers lead; manager/contract news is lowest.
 EVENT_PRIORITY = {
     "injury": 0, "transfer": 1, "loan": 1, "loan_option": 1,
-    "suspension": 2, "manager": 3, "renewal": 4, "stay": 4,
+    "suspension": 2, "press_conference": 2, "manager": 3, "renewal": 4, "stay": 4,
 }
-LIVE_POST_EVENT_NAMES = {"transfer", "loan", "loan_option", "injury", "suspension"}
+LIVE_POST_EVENT_NAMES = {
+    "transfer", "loan", "loan_option", "injury", "suspension", "press_conference",
+}
 
 def _cap_label(value) -> str:
     try:
@@ -2535,6 +2542,7 @@ def _dry_run_event(story: dict) -> str:
     return {
         "transfer": "TRANSFER", "loan": "TRANSFER", "loan_option": "TRANSFER",
         "injury": "INJURY", "suspension": "SUSPENSION",
+        "press_conference": "PRESS_CONFERENCE",
     }.get(str(story.get("event") or "").lower(), "TRANSFER")
 
 
