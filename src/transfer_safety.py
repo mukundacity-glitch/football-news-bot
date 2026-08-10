@@ -55,6 +55,24 @@ def resolve_destination(value: str) -> tuple[str, str]:
     return "RESOLVED", canonical
 
 
+def _resolved_fact_club(story: Mapping, prefix: str) -> tuple[str, str]:
+    """Resolve a club from V2 canonical facts, never from nearest text mention."""
+    club_id = story.get(f"club_{prefix}_id")
+    club_name = story.get(f"club_{prefix}_name")
+    if club_id and club_name:
+        state, canonical = resolve_destination(str(club_name))
+        if state == "RESOLVED":
+            return state, canonical
+        # The V2 entity registry has already established the canonical entity;
+        # keep its exact name here rather than guessing an alias. A text-level
+        # contradiction check below can still reject it.
+        return "RESOLVED", str(club_name).strip()
+    value = story.get("to_club" if prefix == "to" else "from_club") or story.get(
+        "to_key" if prefix == "to" else "from_key"
+    )
+    return resolve_destination(str(value)) if value else ("UNKNOWN", "")
+
+
 def _has_speculation(text: str) -> str | None:
     for pattern in _SPEC_RE:
         match = pattern.search(text)
@@ -92,12 +110,7 @@ def _movement_destination(text: str) -> set[str]:
 
 
 def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | None = None) -> tuple[str, str]:
-    """Final ALLOW/REJECT gate. This function is intentionally one-way.
-
-    It returns exactly ``("ALLOW", reason)`` or ``("REJECT", reason)``.
-    Uncertain, conflicting, ambiguous, missing, or speculative evidence always
-    rejects. No keyword or score can create an ALLOW by itself.
-    """
+    """Final ALLOW/REJECT gate. This function is intentionally one-way."""
     event = (event or story.get("event") or "").upper()
     claims = list(claims or [])
     if event not in {"TRANSFER", "LOAN", "LOAN_OPTION"}:
@@ -105,18 +118,16 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
     if not claims:
         return "REJECT", "no evidence claims"
 
-    destination = story.get("to_club") or story.get("to_key") or ""
-    state, canonical = resolve_destination(str(destination))
+    state, canonical = _resolved_fact_club(story, "to")
     if state != "RESOLVED":
         return "REJECT", f"destination_{state.lower()}"
-
-    from_value = story.get("from_club") or story.get("from_key") or ""
-    if from_value:
-        from_state, from_canonical = resolve_destination(str(from_value))
-        if from_state != "RESOLVED":
-            return "REJECT", f"origin_{from_state.lower()}"
-        if from_canonical == canonical:
-            return "REJECT", "origin_equals_destination"
+    from_state, from_canonical = _resolved_fact_club(story, "from")
+    if from_state == "AMBIGUOUS":
+        return "REJECT", "origin_ambiguous"
+    if from_state == "UNKNOWN" and story.get("club_from_id"):
+        return "REJECT", "origin_unknown"
+    if from_state == "RESOLVED" and from_canonical.lower() == canonical.lower():
+        return "REJECT", "origin_equals_destination"
 
     text = " ".join(_blob(c) for c in claims).strip()
     speculation = _has_speculation(text)
@@ -126,7 +137,9 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
         return "REJECT", "no_explicit_completion_evidence"
 
     explicit_destinations = _movement_destination(text)
-    if explicit_destinations and canonical not in explicit_destinations:
+    if explicit_destinations and not any(
+        d.lower() == canonical.lower() for d in explicit_destinations
+    ):
         return "REJECT", (
             f"conflicting_destination_evidence:extracted={canonical};"
             f"source={sorted(explicit_destinations)}"
@@ -139,9 +152,6 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
         if source_kind in _OFFICIAL_KINDS:
             authoritative.append(claim)
         elif source_id in _APPROVED_NONOFFICIAL:
-            # Approved journalists/media are permitted evidence only when the
-            # source explicitly states completion. They are never elevated by
-            # "here we go", medical, agreement, or a keyword alone.
             authoritative.append(claim)
 
     if not authoritative:
