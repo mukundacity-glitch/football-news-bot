@@ -1,8 +1,8 @@
 """Fail-closed transfer publication policy.
 
-This module is deliberately conservative. It is a final safety layer, not a
-classifier: it can only reject a candidate. It never upgrades a rumour,
-agreement, medical, bid, or "here we go" item into a completed transfer.
+This is a final safety layer, not a classifier. It can reject a candidate but
+never promotes a rumour, agreement, medical, bid, talks, or journalist report
+to an officially confirmed transfer.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ _POLICY = json.loads(_POLICY_PATH.read_text(encoding="utf-8"))
 
 _SPEC_RE = [re.compile(p, re.I) for p in _POLICY["speculation_patterns"]]
 _DONE_RE = [re.compile(p, re.I) for p in _POLICY["completion_patterns"]]
-_APPROVED_NONOFFICIAL = set(_POLICY["approved_nonofficial_sources"])
 _OFFICIAL_KINDS = set(_POLICY["official_source_kinds"])
 
 
@@ -56,16 +55,13 @@ def resolve_destination(value: str) -> tuple[str, str]:
 
 
 def _resolved_fact_club(story: Mapping, prefix: str) -> tuple[str, str]:
-    """Resolve a club from V2 canonical facts, never from nearest text mention."""
+    """Resolve a club from canonical facts, never from nearest text mention."""
     club_id = story.get(f"club_{prefix}_id")
     club_name = story.get(f"club_{prefix}_name")
     if club_id and club_name:
         state, canonical = resolve_destination(str(club_name))
         if state == "RESOLVED":
             return state, canonical
-        # The V2 entity registry has already established the canonical entity;
-        # keep its exact name here rather than guessing an alias. A text-level
-        # contradiction check below can still reject it.
         return "RESOLVED", str(club_name).strip()
     value = story.get("to_club" if prefix == "to" else "from_club") or story.get(
         "to_key" if prefix == "to" else "from_key"
@@ -86,12 +82,6 @@ def _has_completion(text: str) -> bool:
 
 
 def _movement_destination(text: str) -> set[str]:
-    """Resolve only clubs attached to explicit completed-move grammar.
-
-    This deliberately ignores unrelated club mentions such as "Arsenal and
-    Chelsea were interested". A contradiction between this set and the
-    extracted destination is a hard reject; the gate never chooses a club.
-    """
     aliases = sorted(_POLICY["canonical_clubs"], key=len, reverse=True)
     escaped = "|".join(re.escape(a) for a in aliases if _POLICY["canonical_clubs"][a] != "AMBIGUOUS")
     if not escaped:
@@ -110,7 +100,13 @@ def _movement_destination(text: str) -> set[str]:
 
 
 def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | None = None) -> tuple[str, str]:
-    """Final ALLOW/REJECT gate. This function is intentionally one-way."""
+    """Final ALLOW/REJECT gate for completed transfers.
+
+    **Non-negotiable:** only a verified first-party official club/league/
+    governing-body source can authorize a completed transfer. Trusted media or
+    journalists can corroborate and help discovery, but they can never be the
+    publication authority.
+    """
     event = (event or story.get("event") or "").upper()
     claims = list(claims or [])
     if event not in {"TRANSFER", "LOAN", "LOAN_OPTION"}:
@@ -137,25 +133,17 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
         return "REJECT", "no_explicit_completion_evidence"
 
     explicit_destinations = _movement_destination(text)
-    if explicit_destinations and not any(
-        d.lower() == canonical.lower() for d in explicit_destinations
-    ):
+    if explicit_destinations and not any(d.lower() == canonical.lower() for d in explicit_destinations):
         return "REJECT", (
             f"conflicting_destination_evidence:extracted={canonical};"
             f"source={sorted(explicit_destinations)}"
         )
 
-    authoritative = []
-    for claim in claims:
-        source_id = _source_id(claim)
-        source_kind = _source_kind(claim)
-        if source_kind in _OFFICIAL_KINDS:
-            authoritative.append(claim)
-        elif source_id in _APPROVED_NONOFFICIAL:
-            authoritative.append(claim)
-
+    # Never promote approved media/journalist sources. They are corroborating
+    # evidence only; publication authority must be first-party.
+    authoritative = [c for c in claims if _source_kind(c) in _OFFICIAL_KINDS]
     if not authoritative:
-        return "REJECT", "source_not_approved"
+        return "REJECT", "source_not_first_party_official"
 
     statuses = {
         str(getattr(c, "status", "")).split(".")[-1].upper()
