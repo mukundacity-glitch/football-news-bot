@@ -2,11 +2,11 @@ name: FPL Vortex Bot
 
 # Near real-time confirmed-news monitor.
 # GitHub scheduling is best-effort; Python owns freshness, deduplication and
-# posting limits. The publication engine remains fail-closed and will never
+# posting behavior. The publication engine remains fail-closed and will never
 # publish an unverified event.
 on:
   schedule:
-    - cron: "*/20 * * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch: {}
   push:
     branches: [main]
@@ -76,11 +76,11 @@ jobs:
           DRY_RUN: ${{ vars.DRY_RUN || 'false' }}
           VERIFICATION_V2_ALLOW_DB_REBUILD: ${{ vars.VERIFICATION_V2_ALLOW_DB_REBUILD }}
           SAVE_DRAFTS_TO_DISK: false
-          MAX_POSTS_PER_RUN: 2
-          MAX_POSTS_PER_HOUR: 4
-          DAILY_POST_LIMIT: 16
-          POST_JITTER_MIN_S: 90
-          POST_JITTER_MAX_S: 240
+          MAX_POSTS_PER_RUN: 0
+          MAX_POSTS_PER_HOUR: 0
+          DAILY_POST_LIMIT: 0
+          POST_JITTER_MIN_S: 0
+          POST_JITTER_MAX_S: 0
           COOLDOWN_FLAGGED_MIN: 180
           COOLDOWN_RATELIMIT_MIN: 30
 
