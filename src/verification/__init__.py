@@ -33,7 +33,6 @@ def _install_transfer_safety_boundary() -> None:
             GateState.PASS if verdict == "ALLOW" else GateState.FAIL,
             reason,
         ))
-
         if decision.decision != DecisionType.PUBLISH:
             return decision
         if verdict != "ALLOW":
@@ -52,15 +51,10 @@ def _install_premium_card_renderer() -> None:
     try:
         from . import card as _card
         from .premium_cards import render_verified_card
-        from .official_transfer_gate import (
-            UnverifiedTransferError if False else validate_official_transfer,
-        )
+        from .official_transfer_gate import validate_official_transfer, log_skipped_unverified_transfer
+        from .press_conference_gate import validate_official_press_conference, log_skipped_unverified_press_conference
     except Exception:
-        # Import-time failures must never weaken the normal fail-closed path.
         return
-
-    from .official_transfer_gate import validate_official_transfer, log_skipped_unverified_transfer
-    from .press_conference_gate import validate_official_press_conference, log_skipped_unverified_press_conference
 
     def guarded_render(decision, sources, output_path, *, fpl_data=None):
         if not decision.may_publish:
@@ -89,7 +83,6 @@ __all__ = [
     "Claim",
     "DecisionType",
     "EventStatus",
-    "EventType",
     "VerificationDecision",
     "RuntimeUnavailable",
     "VerificationRuntime",
