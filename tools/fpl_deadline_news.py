@@ -21,11 +21,6 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from twikit import Client
-
-from src.verification import EventType, VerificationRuntime
-from src.verification.card import create_verified_card
-from src.verification.ingestion import fetch_configured_news
 
 FPL_BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 FPL_HEADERS = {
@@ -161,6 +156,8 @@ def classify_x_error(exc: Exception) -> str:
 
 
 async def post_to_x(text: str, image_path: Path) -> str:
+    from twikit import Client
+
     if not X_AUTH_TOKEN or not X_CT0_TOKEN:
         raise RuntimeError("missing X_POST_AUTH_TOKEN / X_POST_CT0_TOKEN")
     client = Client("en-US")
@@ -201,7 +198,7 @@ def build_observation(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def augment_press_conference_queries(runtime: VerificationRuntime) -> None:
+def augment_press_conference_queries(runtime) -> None:
     """Add press-conference search terms without needing a config file edit."""
     official = runtime.feeds.official_discovery
     if not official.get("enabled"):
@@ -225,6 +222,10 @@ def augment_press_conference_queries(runtime: VerificationRuntime) -> None:
 
 
 async def run(*, dry_run: bool = False, force_window: bool = False) -> int:
+    from src.verification import EventType, VerificationRuntime
+    from src.verification.card import create_verified_card
+    from src.verification.ingestion import fetch_configured_news
+
     status: dict[str, Any] = {"run_type": "press_conference_window", "dry_run": dry_run, "force_window": force_window}
     fpl_data = fetch_fpl_bootstrap()
     now = utcnow()
