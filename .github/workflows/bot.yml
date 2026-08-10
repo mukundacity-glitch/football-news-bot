@@ -1,17 +1,9 @@
 name: FPL Vortex Bot
 
 # Near real-time confirmed-news monitor.
-#
-# Discovery cadence. X only sees actual posts, not source checks; posting is
-# tightly capped and paced below to reduce flag risk.
-#
-# This asks for every 20 minutes rather than every 15. GitHub runs scheduled
-# workflows on a best-effort basis and drops them under load: measured over the
-# last 12 scheduled runs, a */15 schedule actually delivered gaps of 38-126
-# minutes (~30 runs/day against the ~96 requested). Asking for fewer runs does
-# not slow the bot down — it stops queuing invocations that are discarded, and
-# makes the log honest about the real cadence. All freshness and interval checks
-# live in Python precisely because the schedule cannot be relied upon.
+# GitHub scheduling is best-effort; Python owns freshness, deduplication and
+# posting limits. The publication engine remains fail-closed and will never
+# publish an unverified event.
 on:
   schedule:
     - cron: "*/20 * * * *"
@@ -77,20 +69,14 @@ jobs:
           X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
           X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
-          # Safe defaults: both variables must be explicitly configured before
-          # V2 can publish. BOT_PAUSED remains the emergency kill switch.
-          ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST }}
-          VERIFICATION_V2_LIVE: ${{ vars.VERIFICATION_V2_LIVE }}
-          # Hold the bot without disabling it: set the repository Variable
-          # DRY_RUN=true and every run still ingests, verifies, ranks and
-          # renders — it just stops before the X call. Unset means live.
-          DRY_RUN: ${{ vars.DRY_RUN }}
+          # Production is automatic by default. Repository variables can still
+          # explicitly pause/disable publication, while verification gates are
+          # always mandatory and fail closed.
+          ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST || 'true' }}
+          VERIFICATION_V2_LIVE: ${{ vars.VERIFICATION_V2_LIVE || 'true' }}
+          DRY_RUN: ${{ vars.DRY_RUN || 'false' }}
           VERIFICATION_V2_ALLOW_DB_REBUILD: ${{ vars.VERIFICATION_V2_ALLOW_DB_REBUILD }}
           SAVE_DRAFTS_TO_DISK: false
-          # Near real-time safety caps: check every 15 minutes, but post slowly.
-          # X sees only successful posts, not source checks. Keep bursts small,
-          # use human-like jitter, and stop instantly on X automation/rate-limit
-          # signals (codes 226/326/429...).
           MAX_POSTS_PER_RUN: 2
           MAX_POSTS_PER_HOUR: 4
           DAILY_POST_LIMIT: 16
@@ -112,10 +98,6 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit $code
 
-      # The card only otherwise exists inside the tweet, so a rendering
-      # regression can only be reviewed after it is already public. Keep the
-      # generated cards for a few days so any run can be inspected without
-      # posting anything.
       - name: Save generated cards for inspection
         if: always() && steps.window.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
@@ -136,22 +118,13 @@ jobs:
         run: |
           git config user.name "fpl-vortex-bot"
           git config user.email "bot@users.noreply.github.com"
-          # Persist only the compact compatibility JSON ledger. V2 SQLite is
-          # restored/saved by actions/cache; generated cards and logs are not
-          # committed, preventing continued repository growth.
           git add data/posted_news.json 2>/dev/null || true
           git add posted_news.json fpl_player_state.json 2>/dev/null || true
-          # Resolved official club feed URLs. Committed so a fresh runner starts
-          # with the feeds already known instead of re-probing club sites from
-          # scratch every run.
           git add data/club_feeds.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No state changes to commit."
           else
             git commit -m "update bot state [skip ci]"
-            # Rebase-then-push with retries so a concurrent push to main (e.g. a
-            # merge landing mid-run) can't fail the job. Keep OUR bot-state files
-            # on conflict — they are the freshest dedup/queue snapshot.
             pushed=""
             for i in 1 2 3 4 5; do
               if git push; then pushed=1; break; fi
