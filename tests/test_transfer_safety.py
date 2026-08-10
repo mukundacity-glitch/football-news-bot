@@ -20,58 +20,47 @@ def story(to="Inter Milan", from_="Manchester City"):
 
 
 def test_official_completed_transfer_allowed():
-    verdict, _ = validate_before_publish(
-        story(),
-        [claim("John Stones has joined Inter Milan")],
-    )
+    verdict, _ = validate_before_publish(story(), [claim("John Stones has joined Inter Milan")])
     assert verdict == "ALLOW"
 
 
-def test_pending_expected_transfer_rejected():
+def test_expected_transfer_rejected():
     verdict, reason = validate_before_publish(
-        story(),
-        [claim("John Stones is expected to join Inter Milan", status=EventStatus.HERE_WE_GO)],
+        story(), [claim("John Stones is expected to join Inter Milan", status=EventStatus.HERE_WE_GO)]
     )
     assert verdict == "REJECT"
     assert "speculation_language" in reason
 
 
 def test_set_to_join_rejected_even_if_source_is_official():
-    verdict, _ = validate_before_publish(
-        story(),
-        [claim("John Stones is set to join Inter Milan")],
-    )
+    verdict, _ = validate_before_publish(story(), [claim("John Stones is set to join Inter Milan")])
     assert verdict == "REJECT"
 
 
 def test_agreement_reached_rejected():
     verdict, _ = validate_before_publish(
-        story(),
-        [claim("John Stones agreement reached with Inter Milan", status=EventStatus.AGREEMENT)],
+        story(), [claim("John Stones agreement reached with Inter Milan", status=EventStatus.AGREEMENT)]
     )
     assert verdict == "REJECT"
 
 
 def test_medical_booked_rejected():
     verdict, _ = validate_before_publish(
-        story(),
-        [claim("John Stones medical booked with Inter Milan", status=EventStatus.MEDICAL)],
+        story(), [claim("John Stones medical booked with Inter Milan", status=EventStatus.MEDICAL)]
     )
     assert verdict == "REJECT"
 
 
 def test_here_we_go_rejected_on_its_own():
     verdict, _ = validate_before_publish(
-        story(),
-        [claim("John Stones here we go Inter Milan", status=EventStatus.HERE_WE_GO)],
+        story(), [claim("John Stones here we go Inter Milan", status=EventStatus.HERE_WE_GO)]
     )
     assert verdict == "REJECT"
 
 
 def test_unapproved_source_rejected():
     verdict, reason = validate_before_publish(
-        story(),
-        [claim("John Stones has joined Inter Milan", source_id="random_account", kind="MEDIA")],
+        story(), [claim("John Stones has joined Inter Milan", source_id="random_account", kind="MEDIA")]
     )
     assert verdict == "REJECT"
     assert reason == "source_not_approved"
@@ -114,28 +103,26 @@ def test_milan_and_united_are_ambiguous():
 
 def test_unknown_destination_rejected():
     verdict, reason = validate_before_publish(
-        story(to="Some Unknown Club"),
-        [claim("John Stones has joined Some Unknown Club")],
+        story(to="Some Unknown Club"), [claim("John Stones has joined Some Unknown Club")]
     )
     assert verdict == "REJECT"
     assert reason == "destination_unknown"
 
 
-def test_destination_cannot_be_inferred_from_rival_contamination():
+def test_destination_contamination_is_rejected_not_rewritten():
     verdict, reason = validate_before_publish(
         story(to="Arsenal", from_="Manchester City"),
         [claim("John Stones has joined Inter; Arsenal and Chelsea were interested")],
     )
-    # The final gate validates the already-resolved destination. It must never
-    # rewrite Arsenal to Inter merely because Inter appears in source text.
-    assert verdict == "ALLOW"
-    assert reason == "completed_transfer:Arsenal"
+    # Safety must never repair a bad extraction by guessing. It rejects the
+    # contradictory destination instead, leaving the parser free to be fixed.
+    assert verdict == "REJECT"
+    assert reason.startswith("conflicting_destination_evidence:")
 
 
 def test_same_origin_and_destination_rejected():
     verdict, reason = validate_before_publish(
-        story(to="Arsenal", from_="Arsenal"),
-        [claim("John Stones has joined Arsenal")],
+        story(to="Arsenal", from_="Arsenal"), [claim("John Stones has joined Arsenal")]
     )
     assert verdict == "REJECT"
     assert reason == "origin_equals_destination"
