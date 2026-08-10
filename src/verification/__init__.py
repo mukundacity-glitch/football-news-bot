@@ -34,19 +34,13 @@ def _install_transfer_safety_boundary() -> None:
             reason,
         ))
 
-        # This boundary is rejection-only. It is forbidden to promote a
-        # PENDING/REJECTED journalist or media claim to PUBLISH.
         if decision.decision != DecisionType.PUBLISH:
             return decision
-
-        # A transfer already authorized by V2 must independently pass the final
-        # completion/source/destination gate. Otherwise fail closed.
         if verdict != "ALLOW":
             decision.decision = DecisionType.REJECT
             decision.reasons.append(f"transfer_publication_safety:{reason}")
             decision.rendered_text = None
             return decision
-
         return decision
 
     guarded_verify._transfer_safety_wrapped = True
@@ -54,15 +48,38 @@ def _install_transfer_safety_boundary() -> None:
 
 
 def _install_premium_card_renderer() -> None:
-    """Replace the legacy V2 card surface with the single 4K design system."""
+    """Install the 4K renderer behind the same strict publication gates."""
     try:
         from . import card as _card
         from .premium_cards import render_verified_card
-        _card.create_verified_card = render_verified_card
+        from .official_transfer_gate import (
+            UnverifiedTransferError if False else validate_official_transfer,
+        )
     except Exception:
-        # Renderer availability must not weaken publication safety. If the
-        # premium renderer cannot load, normal callers will fail closed.
-        pass
+        # Import-time failures must never weaken the normal fail-closed path.
+        return
+
+    from .official_transfer_gate import validate_official_transfer, log_skipped_unverified_transfer
+    from .press_conference_gate import validate_official_press_conference, log_skipped_unverified_press_conference
+
+    def guarded_render(decision, sources, output_path, *, fpl_data=None):
+        if not decision.may_publish:
+            raise ValueError("cannot render card for unverified decision")
+        if decision.event_type == EventType.TRANSFER:
+            check = validate_official_transfer(decision, sources)
+            if not check.ok:
+                log_skipped_unverified_transfer(decision, check.reason)
+                from .card import UnverifiedTransferError
+                raise UnverifiedTransferError(f"SKIPPED_UNVERIFIED_TRANSFER: {check.reason}")
+        elif decision.event_type == EventType.PRESS_CONFERENCE:
+            check = validate_official_press_conference(decision, sources)
+            if not check.ok:
+                log_skipped_unverified_press_conference(decision, check.reason)
+                from .card import UnverifiedPressConferenceError
+                raise UnverifiedPressConferenceError(f"SKIPPED_UNVERIFIED_PRESS_CONFERENCE: {check.reason}")
+        return render_verified_card(decision, sources, output_path, fpl_data=fpl_data)
+
+    _card.create_verified_card = guarded_render
 
 
 _install_transfer_safety_boundary()
