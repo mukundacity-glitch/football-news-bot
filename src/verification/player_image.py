@@ -1,4 +1,16 @@
-"""Player image resolution for verified transfer cards.
+"""Player image resolution helpers (FPL -> Wikipedia -> placeholder chain).
+
+NOTE: the live production card pipeline (``src/verification/card.py`` ->
+``src/renderer.py::create_verified_branded_card``) uses its own image
+resolution chain (FPL -> Wikipedia -> ESPN -> BBC Sport -> FotMob -> club
+crest, see ``src/renderer.py::_img_assets``), which predates this module and
+is what actually runs in production. This module implements the same
+FPL->Wikipedia->placeholder policy independently and is exercised directly by
+its own unit tests (``tests/test_official_transfer_only.py`` scenarios 7-9);
+it is kept as a smaller, easily-testable reference implementation of the
+mandated fallback order and high-confidence (never surname-only) player
+matching, rather than being wired into the production render path a second
+time.
 
 Strict separation of concerns, per policy:
   - The FPL bootstrap-static API supplies player metadata (name tokens,

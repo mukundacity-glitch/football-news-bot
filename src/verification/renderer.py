@@ -1,9 +1,10 @@
 """Deterministic concise X post templates using verified facts only.
 
 Production rule: every live tweet must be clear, human-readable, and at most
-four visible lines. The image card carries the large visual detail; the text
-caption stays short to avoid looking like automated spam and to fit non-premium
-X accounts.
+four visible lines. The image card carries the large visual detail AND the
+official-source citation (footer); the text caption never includes a URL or a
+"Source:" line -- this keeps captions short enough for non-premium X accounts
+without needing the character budget a link/citation would cost.
 """
 
 from __future__ import annotations
@@ -29,6 +30,16 @@ class UnverifiedTransferError(RenderingError):
     """
 
 
+class UnverifiedPressConferenceError(RenderingError):
+    """Raised when a PRESS_CONFERENCE decision is not official-confirmed.
+
+    Same bar as TRANSFER: only a first-party official source (the club's own
+    site/video/transcript, or a verified official club account explicitly
+    quoting the presser) may make this publishable -- a media outlet that was
+    merely in the room is not sufficient.
+    """
+
+
 class VerifiedPostRenderer:
     def __init__(
         self,
@@ -48,6 +59,9 @@ class VerifiedPostRenderer:
 
         if event == EventType.TRANSFER:
             return self._render_official_transfer(decision)
+
+        if event == EventType.PRESS_CONFERENCE:
+            return self._render_official_press_conference(decision)
 
         if event == EventType.INJURY:
             player = str(required(facts, "subject_name"))
@@ -94,8 +108,9 @@ class VerifiedPostRenderer:
         else:
             raise RenderingError(f"unsupported verified event: {event.value}")
 
-        # Source handles/links belong on the attached image footer only.
-        # Keep the X caption human, concise, and non-premium-safe: news + SEO hashtags.
+        # Source citation lives on the card image footer only -- the caption
+        # text never carries a URL or a "Source:" line. Keep it human, concise,
+        # and non-premium-safe: news + SEO hashtags.
         hashtag_line = self._hashtags(decision)
         result = self._fit_four_lines([line1, line2, hashtag_line])
         decision.rendered_text = result
@@ -107,7 +122,6 @@ class VerifiedPostRenderer:
         Per the non-negotiable transfer policy this bot enforces:
           - status must be OFFICIAL or COMPLETED ("official_confirmed")
           - both FROM and TO clubs are always shown
-          - a direct official source URL and source name are always included
           - fee is "Fee: <official fee>" if stated, else "Fee: undisclosed" --
             never invented, estimated, or attributed to a "reported" figure
           - contract length is shown only if the official announcement stated it
@@ -115,6 +129,10 @@ class VerifiedPostRenderer:
             the caller must not reach this method at all (the strict gate in
             official_transfer_gate.validate_official_transfer already refuses
             to authorize card/caption generation in that case)
+          - no URL and no "Source:"/"Official confirmation:" line in the
+            caption text -- the official source citation is shown on the card
+            image footer instead, and the caption stays within four lines to
+            fit non-premium X accounts.
         """
         facts = decision.verified_facts
         if decision.status not in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
@@ -126,12 +144,12 @@ class VerifiedPostRenderer:
         player = str(required(facts, "subject_name"))
         destination = str(required(facts, "club_to_name"))
         origin = str(required(facts, "club_from_name"))
+        # The official source must still exist and be resolvable -- the
+        # caption simply does not print it (it prints on the card instead).
         source_id = decision.source_ids[0] if decision.source_ids else ""
         profile = self.sources.get(source_id)
-        source_name = profile.display_name if profile else source_id
-        source_url = decision.source_url
-        if not source_name or not source_url:
-            raise UnverifiedTransferError("missing official source name/url for caption")
+        if not (profile and profile.display_name) or not decision.source_url:
+            raise UnverifiedTransferError("missing official source name/url")
 
         lines: List[str] = [
             f"✅ Confirmed transfer: {player} has joined {destination} from {origin}."
@@ -147,47 +165,50 @@ class VerifiedPostRenderer:
         if meta_bits:
             lines.append(" | ".join(meta_bits))
 
-        fee = facts.get("fee")
-        lines.append(f"Fee: {fee}" if fee else "Fee: undisclosed")
-
+        fee_line = f"Fee: {facts['fee']}" if facts.get("fee") else "Fee: undisclosed"
         if facts.get("contract_length"):
-            lines.append(f"Contract: {facts['contract_length']}")
+            fee_line = f"{fee_line} • Contract: {facts['contract_length']}"
+        lines.append(fee_line)
 
-        lines.append(f"Official confirmation: {source_name}")
-        lines.append(f"Source: {source_url}")
         lines.append(self._hashtags(decision))
 
-        result = self._fit_transfer_caption(lines)
+        result = self._fit_four_lines(lines, protect_first_n=2)
         decision.rendered_text = result
         return result
 
-    def _fit_transfer_caption(self, lines: List[str]) -> str:
-        """Fit the official transfer caption within the X limit.
+    def _render_official_press_conference(self, decision: VerificationDecision) -> str:
+        """Official-confirmed-only press conference caption template.
 
-        Unlike the four-line concise templates used for injuries/suspensions,
-        the transfer caption must always keep: the confirmation sentence, the
-        fee line, the official confirmation source line, and the source URL --
-        these are required by policy and are never dropped. Only the optional
-        meta line (position/nationality/age), the optional contract line, and
-        the hashtag line may be trimmed or dropped to fit the limit.
+        Same non-negotiable bar as TRANSFER: only a first-party official
+        source may make this publishable (see
+        engine.py._configured_nonofficial_confirmation, which refuses every
+        non-official source for PRESS_CONFERENCE exactly like TRANSFER). A
+        reliable media outlet quoting the same presser is not sufficient.
         """
-        clean = [" ".join(str(line or "").split()) for line in lines if str(line or "").strip()]
-        required_prefixes = ("✅ Confirmed transfer:", "Fee:", "Official confirmation:", "Source:")
-        while True:
-            text = "\n".join(clean).strip()
-            if twitter_weight(text) <= self.limit:
-                return text
-            # Drop hashtags first, then contract line, then meta line.
-            droppable = [
-                i for i, line in enumerate(clean)
-                if not line.startswith(required_prefixes)
-            ]
-            if droppable:
-                clean.pop(droppable[-1])
-                continue
-            raise RenderingError(
-                "verified required transfer facts do not fit within X limit"
+        facts = decision.verified_facts
+        if decision.status not in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
+            raise UnverifiedPressConferenceError(
+                f"refusing to render a non-official-confirmed press conference "
+                f"status: {decision.status.value}"
             )
+
+        speaker = str(required(facts, "subject_name"))
+        club = str(required(facts, "club_name"))
+        quote_summary = str(required(facts, "quote_summary")).rstrip(".")
+        source_id = decision.source_ids[0] if decision.source_ids else ""
+        profile = self.sources.get(source_id)
+        if not (profile and profile.display_name) or not decision.source_url:
+            raise UnverifiedPressConferenceError("missing official source name/url")
+
+        lines: List[str] = [f"🎙️ {speaker} ({club}) — press conference"]
+        lines.append(quote_summary)
+        if facts.get("quote_topic"):
+            lines.append(str(facts["quote_topic"]))
+        lines.append(self._hashtags(decision))
+
+        result = self._fit_four_lines(lines, protect_first_n=2)
+        decision.rendered_text = result
+        return result
 
     def _source_line(self, decision: VerificationDecision) -> str:
         source_id = decision.source_ids[0] if decision.source_ids else ""
@@ -210,6 +231,7 @@ class VerifiedPostRenderer:
             EventType.TRANSFER: "#TransferNews",
             EventType.INJURY: "#InjuryNews",
             EventType.SUSPENSION: "#SuspensionNews",
+            EventType.PRESS_CONFERENCE: "#PressConference",
             EventType.MANAGER: "#PremierLeague",
             EventType.CONTRACT: "#PremierLeague",
             EventType.OFFICIAL_STATEMENT: "#PremierLeague",
@@ -217,13 +239,21 @@ class VerifiedPostRenderer:
         tags = [club_tag, event_tag, "#PremierLeague", "#FPL"]
         return " ".join(t for t in tags if t)
 
-    def _fit_four_lines(self, lines: List[str]) -> str:
+    def _fit_four_lines(self, lines: List[str], *, protect_first_n: int = 1) -> str:
+        """Fit a caption within four visible lines and the X character limit.
+
+        ``protect_first_n`` marks the leading lines that must never be
+        dropped (the confirmation sentence, and for TRANSFER/PRESS_CONFERENCE
+        the fee/quote line) -- only the optional meta line and the hashtag
+        line may be trimmed or dropped to fit.
+        """
         clean = [" ".join(str(line or "").split()) for line in lines if str(line or "").strip()]
         if len(clean) > 4:
-            clean = clean[:4]
-        # Keep no more than four visible lines. Remove/shorten lowest-priority
-        # content first: club hashtag, then detail line. Verified facts are never
-        # transformed into a different claim; they are only omitted or ellipsized.
+            # Drop from the middle (optional meta line) first, keeping the
+            # protected head and the hashtag tail.
+            while len(clean) > 4:
+                drop_at = protect_first_n if protect_first_n < len(clean) - 1 else len(clean) - 2
+                clean.pop(max(protect_first_n, min(drop_at, len(clean) - 2)))
         while True:
             text = "\n".join(clean).strip()
             if twitter_weight(text) <= self.limit and len(clean) <= 4:
@@ -236,16 +266,21 @@ class VerifiedPostRenderer:
                 if len(tags) > 2:
                     clean[-1] = " ".join(tags[:-1])
                     continue
-            if len(clean) >= 2 and len(clean[1]) > 96:
-                clean[1] = clean[1][:93].rstrip(" .;,") + "…"
+            if len(clean) > protect_first_n + 1 and len(clean[-1]) == 0:
+                clean.pop()
+                continue
+            if len(clean) >= 2 and len(clean[min(protect_first_n, len(clean) - 1)]) > 96:
+                idx = min(protect_first_n, len(clean) - 1)
+                clean[idx] = clean[idx][:93].rstrip(" .;,") + "…"
                 continue
             if clean and len(clean[0]) > 120:
                 clean[0] = clean[0][:117].rstrip(" .;,") + "…"
                 continue
-            if len(clean) > 3:
-                clean.pop(1)
+            if len(clean) > protect_first_n + 1:
+                clean.pop(protect_first_n)
                 continue
             raise RenderingError("verified required facts do not fit within X limit")
+
 
 
 def _title_move_kind(kind: str) -> str:

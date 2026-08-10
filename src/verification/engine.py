@@ -411,18 +411,21 @@ class VerificationEngine:
         milestone plus independent high-status support. Generic non-official
         confirmation requires the separately configured publisher minimum.
 
-        NON-NEGOTIABLE HARD GATE: a TRANSFER can NEVER be published from this
-        path, no matter what config/verification.json says. Only a first-party
-        official source (club/league website, official league data feed, or a
-        verified official club account explicitly stating the move is
-        complete) may make a transfer authoritative — see
+        NON-NEGOTIABLE HARD GATE: a TRANSFER or PRESS_CONFERENCE can NEVER be
+        published from this path, no matter what config/verification.json
+        says. Only a first-party official source (club/league website,
+        official league data feed, or a verified official club account
+        explicitly stating the move is complete / hosting the press
+        conference) may make either of these authoritative — see
         ``_authoritative_claims``. Journalists, "here we go" posts, deal-agreed
-        reports, medical bulletins, and structured third-party tables (e.g.
-        FotMob) are explicitly excluded from ever becoming publication
-        authority for a transfer. This check is intentionally hardcoded, not
-        config-driven, so a config edit alone can never reopen this hole.
+        reports, medical bulletins, structured third-party tables (e.g.
+        FotMob), and media outlets merely quoting a press conference they
+        attended are explicitly excluded from ever becoming publication
+        authority for these two categories. This check is intentionally
+        hardcoded, not config-driven, so a config edit alone can never reopen
+        this hole.
         """
-        if event == EventType.TRANSFER:
+        if event in {EventType.TRANSFER, EventType.PRESS_CONFERENCE}:
             return [], "none"
         threshold = self.config.threshold("source_reliability_min")
         eligible = []

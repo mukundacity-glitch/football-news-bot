@@ -82,14 +82,16 @@ def test_1_official_announcement_publishes_with_from_to_and_source(runtime, tmp_
     caption = decision.rendered_text
     assert "Brighton" in caption  # FROM
     assert "Chelsea" in caption  # TO
-    assert "Official confirmation: Chelsea" in caption
-    assert "Source: https://www.chelseafc.com" in caption
+    # Source citation is on the card image, never the caption text.
+    assert "http" not in caption
+    assert "Source:" not in caption
+    assert len(caption.splitlines()) <= 4
 
     card_path = tmp_path / "card.png"
     create_verified_card(decision, runtime.sources, card_path, fpl_data=FPL_DATA)
     assert card_path.exists()
     with Image.open(card_path) as im:
-        assert im.size[0] >= 1080 and im.size[1] >= 1350
+        assert im.size == (3840, 2160)
 
 
 # ── 2. Reputable news article, no official confirmation ──────────────────
@@ -300,7 +302,9 @@ def test_9_placeholder_is_never_an_ai_generated_photo_and_card_still_publishes(r
         create_verified_card(decision, runtime.sources, card_path, fpl_data=FPL_DATA)
     assert card_path.exists()
     with Image.open(card_path) as im:
-        assert im.size == (1080, 1350)
+        # Every category, including TRANSFER, renders at the single 4K 16:9
+        # canvas used across the whole product (see src/verification/card.py).
+        assert im.size == (3840, 2160)
 
 
 # ── 10. Missing FROM or TO ────────────────────────────────────────────────

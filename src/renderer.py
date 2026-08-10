@@ -787,6 +787,7 @@ def _build_responsive_verified_card_html(
     club_name="", club_code="", club_crest="",
     transfer_fee="", contract_length="", contract_expiry="",
     facts_grid=None, status_detail="", position_text="",
+    quote_summary="", quote_topic="",
 ):
     """Render the FPL VORTEX card: pure black, category-coloured heading only.
 
@@ -829,6 +830,15 @@ def _build_responsive_verified_card_html(
             _detail_row("CLUB", L_FROM, _safe_card_text(club_name or club_code), club_crest)
             + _detail_row(event, L_KEY, status_detail)
             + "".join(_detail_row(lbl, L_TO, val) for lbl, val in facts_grid[:2])
+        )
+    elif event == "PRESS_CONFERENCE":
+        # Never a longer quote than a short verified summary -- the caller
+        # (extractor/renderer) is responsible for keeping this to a few
+        # words; the card never truncates raw article text onto itself.
+        rows = (
+            _detail_row("CLUB", L_FROM, _safe_card_text(club_name or club_code), club_crest)
+            + _detail_row("SAID", L_KEY, _safe_card_text(quote_summary, "NOT REPORTED"))
+            + (_detail_row("TOPIC", L_TO, quote_topic) if quote_topic else "")
         )
     else:
         rows = (
@@ -891,7 +901,14 @@ def _build_responsive_verified_card_html(
                       border-radius:40px; overflow:hidden; background:rgba(255,255,255,.02);
                       display:flex; align-items:flex-end; justify-content:center;
                       box-shadow:0 0 60px rgba({accent_rgb},.20); }}
-      .player-img {{ max-width:100%; max-height:100%; object-fit:cover; object-position:center top; }}
+      /* width/height:100% (not just max-*) is required: a browser sizes an
+         <img> to its own intrinsic pixel size by default, so a small source
+         photo (the FPL headshot endpoint is only 250x250) rendered as a tiny
+         thumbnail in a mostly-empty frame instead of filling it -- object-fit
+         only takes effect once the box itself is actually large. This made
+         the player image occupy a few percent of the panel instead of the
+         intended ~75-90%. */
+      .player-img {{ width:100%; height:100%; object-fit:cover; object-position:center top; }}
       .player-silhouette {{ width:66%; height:82%; position:relative; align-self:flex-end; }}
       .sil-head {{ position:absolute; left:34%; top:2%; width:32%; aspect-ratio:1/1; border-radius:50%;
                    background:rgba(255,255,255,.08); border:6px solid rgba({accent_rgb},.38); }}
@@ -924,7 +941,7 @@ def _build_responsive_verified_card_html(
       </main>
       <footer>
         <div class="source fit-text" data-max="50" data-min="28">Source: {_html_escape(source_text)} | @FPLVortex</div>
-        <div class="category">{_html_escape(event or "UPDATE")}</div>
+        <div class="category">{_html_escape((event or "UPDATE").replace("_", " "))}</div>
       </footer>
     </section><script>
       // fitText shrinks only genuinely overflowing text. These elements are all
@@ -1011,6 +1028,17 @@ def create_verified_branded_card(event, subject, facts, source_handles, filename
             destination_crest=_crest_uri(destination_key), transfer_fee=facts.get("fee") or "",
             contract_length=facts.get("contract_length") or "", contract_expiry=facts.get("contract_expiry") or facts.get("expiry_date") or "",
             facts_grid=facts_grid, status_detail=status_detail, position_text=position,
+        )
+    elif event == "PRESS_CONFERENCE":
+        # A quote card never quotes the raw article -- quote_summary/topic
+        # are already a short, verified summary produced upstream by the
+        # extractor, never truncated article text.
+        html = _build_responsive_verified_card_html(
+            event=event, status=status, player_name=player_name, logo_uri=logo_uri,
+            photo_uri=photo_uri, source_text=source_text, club_name=club_name,
+            club_code=_club_code_from_key(club_key, club_name), club_crest=_crest_uri(club_key),
+            position_text=position, quote_summary=facts.get("quote_summary") or "",
+            quote_topic=facts.get("quote_topic") or "",
         )
     else:
         # An injury/suspension card with no reported status must NOT fall back to

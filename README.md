@@ -7,9 +7,10 @@ that pass **Verification Engine V2**.
 
 The shipped policy is deliberately strict:
 
-- **Only Premier League–related TRANSFERS, INJURIES, and SUSPENSIONS are
-  eligible.** Manager changes, contract extensions, club statements, and all
-  other categories are rejected even when officially confirmed.
+- **Only Premier League–related TRANSFERS, INJURIES, SUSPENSIONS, and
+  PRESS_CONFERENCE quotes are eligible.** Manager appointments/departures,
+  contract extensions, club statements, and all other categories are
+  rejected even when officially confirmed.
 - Only `OFFICIAL` or `COMPLETED` events can publish.
 - First-party club, Premier League, FPL, FA, or other configured governing-body
   evidence is required, and the story must involve an active Premier League
@@ -41,19 +42,58 @@ completed. This is enforced at two independent layers:
    the exact reason (see `queue/debug/rejections.jsonl`) and never produces a
    graphic, caption, or post.
 
-Transfer cards render at 1080×1350 (`src/verification/card.py`) and always
-show TRANSFER CONFIRMED, the player's full name/position/nationality/age,
-both FROM and TO clubs with badges and a directional arrow, "Fee: <official
-fee>" or "Fee: undisclosed" (never a reported/estimated figure), the official
-source name, the source publication date, and a verification timestamp.
-Captions (`src/verification/renderer.py`) always include both clubs plus a
-direct official source URL — see `tests/test_official_transfer_only.py` for
-the full required-scenario test suite.
+Every publishable category (TRANSFER, INJURY, SUSPENSION, PRESS_CONFERENCE)
+renders through the same production 3840×2160 (16:9) card design
+(`src/verification/card.py` → `src/renderer.py::create_verified_branded_card`)
+so a viewer reads one consistent visual identity no matter which category
+they see. Transfer cards show TRANSFER CONFIRMED, the player, both FROM and
+TO clubs with badges and a directional arrow, "Fee: <official fee>" or "Fee:
+undisclosed" (never a reported/estimated figure), and the official source in
+the footer — see `tests/test_official_transfer_only.py` for the full
+required-scenario test suite.
 
-Player photos (`src/verification/player_image.py`) follow FPL → Wikipedia →
-generated placeholder, in that order. The FPL bootstrap-static API and
-Wikipedia are used for player metadata/imagery only and are never treated as
-transfer-confirmation evidence.
+Player photos in the production path (`src/renderer.py::_img_assets`) follow
+FPL → Wikipedia → ESPN → BBC Sport → FotMob → club crest, in that order; a
+smaller independent reference implementation of the FPL → Wikipedia →
+placeholder policy also exists at `src/verification/player_image.py` (see
+its module docstring). The FPL bootstrap-static API and Wikipedia are used
+for player metadata/imagery only and are never treated as transfer- or
+press-conference-confirmation evidence.
+
+### PRESS_CONFERENCE: official-confirmed-only, same bar as TRANSFER
+
+A press-conference quote is publishable only when a first-party official
+source (the club's own site/video/transcript, or a verified official club
+account) states it — a reliable media outlet that was physically in the room
+quoting the same press conference is explicitly **not** sufficient. This is
+enforced the same way as TRANSFER:
+
+1. `src/verification/engine.py` — `_configured_nonofficial_confirmation()`
+   unconditionally refuses PRESS_CONFERENCE from any non-official source.
+2. `src/verification/press_conference_gate.py` — a second, independent
+   `validate_official_press_conference()` gate re-checks status, the official
+   source URL/domain/allowlist, and the speaker/club/quote facts immediately
+   before any card/caption is generated, logging
+   `SKIPPED_UNVERIFIED_PRESS_CONFERENCE` on failure.
+
+### Caption format (all categories)
+
+Every caption is capped at four visible lines with **no URL and no
+"Source:"/"Official confirmation:" line** — the account has no X Premium
+long-post allowance, and the official source citation is shown on the card
+image footer instead.
+
+### Injury/suspension classification: ambiguous trigger phrases require corroboration
+
+Some event trigger phrases are ambiguous out of context — "ruled out" fires
+identically on a disallowed VAR goal ("Meunier then had a goal ruled out...")
+and on a genuine injury. `config/verification.json`'s
+`classification.corroboration_patterns` lists real medical/disciplinary
+evidence terms (hamstring, scan, surgery, red card, ban, ...) that must also
+appear in the document before INJURY/SUSPENSION classification is accepted;
+otherwise classification fails closed to UNKNOWN instead of guessing. This
+check is generic (config-driven, not keyed to any player/club/match) — see
+`tests/test_press_conference_and_caption_rebuild.py`.
 
 ## Emergency stop
 

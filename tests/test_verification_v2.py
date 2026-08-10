@@ -137,11 +137,11 @@ def test_official_title_can_recover_new_player_after_nonperson_fragment(runtime)
 def test_official_transfer_publishes_and_renders_only_verified_facts(runtime):
     """Official-confirmed-only transfer caption template.
 
-    Per the non-negotiable transfer policy, the caption must always include
-    both FROM and TO clubs, an explicit official source name AND URL, and a
+    Per policy, the caption must always include both FROM and TO clubs and a
     fee line (an explicit official fee, or "Fee: undisclosed" when none was
-    stated) -- unlike the shorter, URL-free templates used for injuries and
-    suspensions.
+    stated), capped at four lines with no URL/"Source:" line -- the official
+    source citation is shown on the card image footer instead, since the
+    account has no X Premium long-post allowance.
     """
     obs = observation(
         title="Chelsea sign Danny Welbeck from Brighton",
@@ -153,8 +153,9 @@ def test_official_transfer_publishes_and_renders_only_verified_facts(runtime):
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
     assert decision.may_publish
     assert "Danny Welbeck has joined Chelsea from Brighton" in decision.rendered_text
-    assert "Official confirmation: Chelsea" in decision.rendered_text
-    assert "Source: https://www.chelseafc.com/en/news/article/chelsea-sign-danny-welbeck" in decision.rendered_text
+    assert "http" not in decision.rendered_text
+    assert "Source:" not in decision.rendered_text
+    assert len(decision.rendered_text.splitlines()) <= 4
     assert "#TransferNews" in decision.rendered_text
     assert "#PremierLeague" in decision.rendered_text
     assert "TBC" not in decision.rendered_text
