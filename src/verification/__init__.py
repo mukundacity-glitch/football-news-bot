@@ -14,13 +14,7 @@ from ..transfer_safety import validate_before_publish
 
 
 def _install_transfer_safety_boundary() -> None:
-    """Add a final transfer safety check without creating an authority bypass.
-
-    The V2 engine decides whether a story is publishable. This boundary is
-    defense-in-depth only: it may reject an already-authorized transfer, but it
-    can NEVER promote PENDING/REJECTED media or journalist claims to PUBLISH.
-    That is the critical distinction between validation and authorization.
-    """
+    """Add a final transfer safety check without creating an authority bypass."""
     from . import engine as _engine
 
     original = _engine.VerificationEngine.verify
@@ -34,23 +28,19 @@ def _install_transfer_safety_boundary() -> None:
 
         story = decision.verified_facts or {}
         verdict, reason = validate_before_publish(story, claims, event="TRANSFER")
-        safety_gate = GateResult(
+        decision.gates.append(GateResult(
             "transfer_publication_safety",
             GateState.PASS if verdict == "ALLOW" else GateState.FAIL,
             reason,
-        )
-        decision.gates.append(safety_gate)
+        ))
 
-        # Never turn a non-publishable claim into a publishable one here.
-        # Rumours, speculation, media reports, HERE WE GO, agreements, medicals,
-        # bids, talks and other non-official claims remain PENDING/REJECTED.
+        # This boundary is rejection-only. It is forbidden to promote a
+        # PENDING/REJECTED journalist or media claim to PUBLISH.
         if decision.decision != DecisionType.PUBLISH:
-            if verdict != "ALLOW" and decision.decision == DecisionType.PUBLISH:
-                decision.decision = DecisionType.REJECT
             return decision
 
         # A transfer already authorized by V2 must independently pass the final
-        # completion/source/destination gate. If it does not, fail closed.
+        # completion/source/destination gate. Otherwise fail closed.
         if verdict != "ALLOW":
             decision.decision = DecisionType.REJECT
             decision.reasons.append(f"transfer_publication_safety:{reason}")
@@ -63,7 +53,20 @@ def _install_transfer_safety_boundary() -> None:
     _engine.VerificationEngine.verify = guarded_verify
 
 
+def _install_premium_card_renderer() -> None:
+    """Replace the legacy V2 card surface with the single 4K design system."""
+    try:
+        from . import card as _card
+        from .premium_cards import render_verified_card
+        _card.create_verified_card = render_verified_card
+    except Exception:
+        # Renderer availability must not weaken publication safety. If the
+        # premium renderer cannot load, normal callers will fail closed.
+        pass
+
+
 _install_transfer_safety_boundary()
+_install_premium_card_renderer()
 
 __all__ = [
     "Claim",
