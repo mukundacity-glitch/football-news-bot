@@ -2,22 +2,14 @@
   "schema_version": 2,
   "policy": {
     "fail_closed": true,
-    "publishable_article_categories": [
-      "TRANSFER",
-      "INJURY",
-      "SUSPENSION",
-      "PRESS_CONFERENCE"
-    ],
-    "publishable_statuses": [
-      "OFFICIAL",
-      "COMPLETED"
-    ],
-    "_transfer_policy_note": "TRANSFER is official-source-only and completed-only. HERE_WE_GO/MEDICAL/AGREEMENT are intentionally NOT publishable statuses. The flags below are also hard-disabled in code (engine.py._configured_nonofficial_confirmation always refuses non-official TRANSFER claims regardless of these values) so this policy cannot be silently reopened by editing this file alone.",
+    "publishable_article_categories": ["TRANSFER", "INJURY", "SUSPENSION", "PRESS_CONFERENCE"],
+    "publishable_statuses": ["OFFICIAL", "COMPLETED"],
+    "_transfer_policy_note": "Fast trusted-source publishing: official first-party sources and explicitly trusted Tier-1 media may publish a clear, factual, fresh story without waiting for a second publisher. FotMob remains Tier-7 catch-up/discovery and never outranks Tier-1 sources. Rumours, speculation and unverified claims remain blocked.",
     "allow_here_we_go": false,
-    "allow_non_official_confirmation": false,
+    "allow_non_official_confirmation": true,
     "official_first_party_sufficient": true,
     "require_corroboration_with_official": false,
-    "minimum_independent_publishers": 2,
+    "minimum_independent_publishers": 1,
     "minimum_here_we_go_publishers": 2,
     "conflict_minimum_status": "AGREEMENT",
     "unknown_dates_are_stale": true,
@@ -25,12 +17,40 @@
     "generated_text_must_be_template_only": true,
     "require_source_url": true,
     "allow_elite_medical_transfer_confirmation": false,
-    "elite_medical_transfer_statuses": [
-      "AGREEMENT",
-      "MEDICAL"
-    ],
+    "elite_medical_transfer_statuses": ["AGREEMENT", "MEDICAL"],
     "minimum_elite_medical_publishers": 2,
-    "allow_structured_fotmob_completed_transfers": false
+    "allow_structured_fotmob_completed_transfers": false,
+    "fast_publish": {
+      "enabled": true,
+      "require_second_source": false,
+      "tier_1": [
+        "official.premier_league",
+        "official.fpl",
+        "club.arsenal",
+        "club.aston-villa",
+        "club.bournemouth",
+        "club.brentford",
+        "club.brighton",
+        "club.burnley",
+        "club.chelsea",
+        "club.crystal-palace",
+        "club.everton",
+        "club.fulham",
+        "club.leeds",
+        "club.liverpool",
+        "club.manchester-city",
+        "club.manchester-united",
+        "club.newcastle-united",
+        "club.nottingham-forest",
+        "club.sunderland",
+        "club.tottenham-hotspur",
+        "club.west-ham-united",
+        "club.wolverhampton-wanderers"
+      ],
+      "tier_2": ["media.bbc", "media.sky-sports", "media.espn", "media.the-athletic"],
+      "tier_7_catchup": ["media.fotmob"],
+      "tier_7_never_outranks": true
+    }
   },
   "thresholds": {
     "entity_certainty_min": 0.98,
@@ -47,527 +67,5 @@
     "overall_confidence_min": 0.9,
     "progression_same_milestone_window_hours": 6,
     "max_event_age_hours": 72
-  },
-  "confidence": {
-    "aggregation": "weighted_geometric_mean",
-    "weights": {
-      "source_reliability": 1.0,
-      "entity_certainty": 1.4,
-      "event_certainty": 1.2,
-      "fact_agreement": 1.5,
-      "temporal_consistency": 1.2,
-      "cross_source_agreement": 1.0,
-      "official_confirmation": 2.0,
-      "league_validation": 1.5,
-      "sport_validation": 1.5,
-      "story_freshness": 1.0,
-      "database_consistency": 1.5
-    }
-  },
-  "source_reliability": {
-    "factor_weights": {
-      "historical_accuracy": 0.35,
-      "official_status": 0.25,
-      "false_positive_rate": 0.2,
-      "correction_rate": 0.1,
-      "verification_history": 0.1
-    },
-    "outcome_weights": {
-      "officially_confirmed": 1.0,
-      "contradicted": -1.5,
-      "corrected": -0.75,
-      "unresolved": 0.0
-    },
-    "default_prior_mean": 0.5,
-    "default_prior_strength": 10.0,
-    "verification_history_full_count": 50
-  },
-  "events": {
-    "TRANSFER": {
-      "required_facts": [
-        "subject_id",
-        "subject_name",
-        "club_from_id",
-        "club_from_name",
-        "club_to_id",
-        "club_to_name"
-      ],
-      "allowed_subject_types": [
-        "PLAYER"
-      ],
-      "conflict_fields": [
-        "subject_id",
-        "club_from_id",
-        "club_to_id",
-        "transfer_kind"
-      ],
-      "material_fields": [
-        "club_from_id",
-        "club_to_id",
-        "transfer_kind",
-        "contract_length",
-        "fee"
-      ],
-      "official_relation_fields": [
-        "club_from_id",
-        "club_to_id",
-        "competition_id"
-      ],
-      "progressive_fields": []
-    },
-    "INJURY": {
-      "required_facts": [
-        "subject_id",
-        "subject_name",
-        "club_id",
-        "club_name",
-        "injury_status"
-      ],
-      "allowed_subject_types": [
-        "PLAYER"
-      ],
-      "conflict_fields": [
-        "subject_id",
-        "club_id",
-        "injury_status",
-        "return_date"
-      ],
-      "material_fields": [
-        "injury_status",
-        "injury_type",
-        "return_date"
-      ],
-      "official_relation_fields": [
-        "club_id",
-        "competition_id"
-      ],
-      "progressive_fields": [
-        "injury_status",
-        "injury_type",
-        "return_date"
-      ]
-    },
-    "SUSPENSION": {
-      "required_facts": [
-        "subject_id",
-        "subject_name",
-        "club_id",
-        "club_name",
-        "suspension_status"
-      ],
-      "allowed_subject_types": [
-        "PLAYER",
-        "MANAGER"
-      ],
-      "conflict_fields": [
-        "subject_id",
-        "club_id",
-        "suspension_length"
-      ],
-      "material_fields": [
-        "suspension_status",
-        "suspension_length",
-        "return_date"
-      ],
-      "official_relation_fields": [
-        "club_id",
-        "competition_id"
-      ],
-      "progressive_fields": [
-        "suspension_status",
-        "return_date"
-      ]
-    },
-    "PRESS_CONFERENCE": {
-      "_note": "Official-only, same bar as TRANSFER: only a first-party club/league source publishing or hosting the press conference (own site/video/transcript, or a verified official club account explicitly quoting it) may become authoritative. A journalist quoting the same presser is NOT sufficient -- see engine.py._configured_nonofficial_confirmation, which refuses non-official sources for this category exactly like TRANSFER.",
-      "required_facts": [
-        "subject_id",
-        "subject_name",
-        "club_id",
-        "club_name",
-        "quote_summary"
-      ],
-      "allowed_subject_types": [
-        "MANAGER",
-        "PLAYER"
-      ],
-      "conflict_fields": [
-        "subject_id",
-        "club_id",
-        "quote_summary"
-      ],
-      "material_fields": [
-        "quote_summary",
-        "quote_topic"
-      ],
-      "official_relation_fields": [
-        "club_id",
-        "competition_id"
-      ],
-      "progressive_fields": []
-    }
-  },
-  "status_order": [
-    "UNKNOWN",
-    "RUMOUR",
-    "INTEREST",
-    "TALKS",
-    "NEGOTIATION",
-    "BID",
-    "AGREEMENT",
-    "MEDICAL",
-    "HERE_WE_GO",
-    "OFFICIAL",
-    "COMPLETED"
-  ],
-  "classification": {
-    "ineligible_article_patterns": {
-      "RUMOUR": [
-        "\\brumou?r(?:s|ed)?\\b",
-        "\\bgossip\\b",
-        "\\btransfer whispers\\b"
-      ],
-      "OPINION": [
-        "\\bopinion\\b",
-        "\\bcolumn\\b"
-      ],
-      "ANALYSIS": [
-        "\\banalysis\\b",
-        "\\bexplained\\b",
-        "\\bwhat .* means\\b"
-      ],
-      "PREVIEW": [
-        "\\bpreview\\b",
-        "\\bahead of\\b"
-      ],
-      "RECAP": [
-        "\\brecap\\b",
-        "\\bhighlights\\b",
-        "\\bre-live\\b"
-      ],
-      "INTERVIEW": [
-        "\\binterview\\b",
-        "\\bexclusive interview\\b"
-      ],
-      "FEATURE": [
-        "\\bfeature\\b",
-        "\\bprofile\\b",
-        "\\bon this day\\b",
-        "\\b\\d+ years? ago\\b",
-        "\\bthrowback\\b",
-        "\\bfrom the archive\\b",
-        "\\bremember when\\b"
-      ],
-      "EDITORIAL": [
-        "\\beditorial\\b",
-        "\\bcomment\\b"
-      ]
-    },
-    "speculation_patterns": [
-      "\\bcould\\b",
-      "\\bmay\\b",
-      "\\bmight\\b",
-      "\\bconsidering\\b",
-      "\\binterested in\\b",
-      "\\blinked with\\b",
-      "\\bset to hold talks\\b",
-      "\\bexpected to bid\\b",
-      "\\bset to\\b",
-      "\\bexpected to\\b",
-      "\\bwill (?:sign|join|appoint)\\b"
-    ],
-    "negation_patterns": [
-      "\\bnot\\b",
-      "\\bno agreement\\b",
-      "\\bden(?:y|ies|ied)\\b",
-      "\\breject(?:s|ed)?\\b",
-      "\\bcollaps(?:e|ed|es)\\b",
-      "\\bdeal off\\b"
-    ],
-    "corroboration_patterns": {
-      "INJURY": [
-        "\\binjur(?:y|ed|ies)\\b",
-        "\\bhamstring\\b", "\\bknee\\b", "\\bankle\\b", "\\bacl\\b", "\\bmcl\\b",
-        "\\bcalf\\b", "\\bgroin\\b", "\\bhip\\b", "\\bthigh\\b", "\\bshoulder\\b",
-        "\\bconcussion\\b", "\\bscan\\b", "\\bsurgery\\b", "\\bmedical staff\\b",
-        "\\bphysio\\b", "\\brecover(?:y|ing)\\b", "\\brehab(?:ilitation)?\\b",
-        "\\bsidelined\\b", "\\bfitness (?:test|update|concern)\\b",
-        "\\breturn(?:s|ed)? to training\\b", "\\bstrain\\b", "\\btorn\\b",
-        "\\bsprain(?:ed)?\\b", "\\bfracture[ds]?\\b"
-      ],
-      "SUSPENSION": [
-        "\\bban(?:ned)?\\b", "\\bsuspen(?:d|ded|sion)\\b", "\\bred card\\b",
-        "\\bsent off\\b", "\\bdisciplinary\\b", "\\bmisconduct\\b",
-        "\\bmatches? (?:ban|suspension)\\b", "\\bcharged? by\\b", "\\bappeal\\b"
-      ]
-    },
-    "event_patterns": {
-      "TRANSFER": [
-        "\\bcomplet(?:e|es|ed) (?:the )?signing\\b",
-        "\\btransfer(?:red)?\\b",
-        "\\bjoins?\\b",
-        "\\bsigns? for\\b",
-        "\\bloan move\\b",
-        "\\bhas joined\\b",
-        "\\bsigned for\\b",
-        "\\bsign(?:s|ed)?\\s+(?!(?:a\\s+)?new\\s+(?:contract|deal)\\b)",
-        "\\bsigning\\s+(?!(?:a\\s+)?new\\s+(?:contract|deal)\\b)",
-        "\\bhere we go\\b",
-        "\\binterested in signing\\b",
-        "\\bmedical\\b",
-        "\\bdeal agreed\\b",
-        "\\bfee agreed\\b",
-        "\\bagreement in place\\b"
-      ],
-      "INJURY": [
-        "\\bruled out\\b",
-        "\\binjur(?:y|ed)\\b",
-        "\\bsidelined\\b",
-        "\\bunderwent surgery\\b",
-        "\\bfitness update\\b"
-      ],
-      "SUSPENSION": [
-        "\\bsuspend(?:ed|s|ion)\\b",
-        "\\bbanned?\\b",
-        "\\bserv(?:e|es|ing) a .*ban\\b"
-      ],
-      "MANAGER": [
-        "\\bappoint(?:ed|s|ment)\\b",
-        "\\bhead coach\\b",
-        "\\bmanager\\b",
-        "\\bparts? company\\b",
-        "\\bsacked\\b",
-        "\\bdismissed\\b"
-      ],
-      "CONTRACT": [
-        "\\bcontract extension\\b",
-        "\\bnew contract\\b",
-        "\\bnew deal\\b",
-        "\\bextend(?:s|ed)? (?:his|her|their|the) contract\\b"
-      ],
-      "OFFICIAL_STATEMENT": [
-        "\\bofficial statement\\b",
-        "\\bclub statement\\b",
-        "\\bstatement from\\b"
-      ],
-      "PRESS_CONFERENCE": [
-        "\\bpress conference\\b",
-        "\\bpre-match press conference\\b",
-        "\\bpost-match press conference\\b",
-        "\\bspeaking (?:to|at) (?:the )?media\\b",
-        "\\bspeaking to reporters\\b",
-        "\\bmedia briefing\\b"
-      ]
-    },
-    "status_patterns": {
-      "TRANSFER": {
-        "COMPLETED": [
-          "\\b(?:has|have) signed\\b",
-          "\\b(?:has|have) joined\\b",
-          "\\bcomplet(?:e|es|ed) (?:the )?signing\\b",
-          "\\bsigns? for\\b",
-          "(?<!to )\\bjoin(?:s|ed)?\\b",
-          "(?<!to )\\bsign(?:s|ed)?\\b"
-        ],
-        "OFFICIAL": [
-          "\\bofficial(?:ly)?\\b",
-          "\\bclub confirms?\\b",
-          "\\bannounc(?:e|es|ed)\\b"
-        ],
-        "HERE_WE_GO": [
-          "\\bhere we go\\b"
-        ],
-        "MEDICAL": [
-          "\\bmedical (?:booked|completed|passed|underway)\\b",
-          "\\bpermission to (?:travel|undergo|hold) (?:for )?(?:a )?medical\\b",
-          "\\bgiven permission to (?:travel|undergo|hold) (?:for )?(?:a )?medical\\b",
-          "\\bset for (?:a )?medical\\b"
-        ],
-        "AGREEMENT": [
-          "\\bagreement (?:reached|in place)\\b",
-          "\\bdeal agreed\\b",
-          "\\bfee agreed\\b",
-          "\\bagree(?:d|s)? (?:a )?(?:fee|deal)\\b",
-          "\\bagreement in principle\\b"
-        ],
-        "BID": [
-          "\\bbid (?:made|submitted|accepted)\\b"
-        ],
-        "NEGOTIATION": [
-          "\\bnegotiations?\\b",
-          "\\badvanced talks\\b"
-        ],
-        "TALKS": [
-          "\\bin talks\\b"
-        ],
-        "INTEREST": [
-          "\\binterested in\\b",
-          "\\bkeen on\\b"
-        ],
-        "RUMOUR": [
-          "\\brumou?r\\b",
-          "\\blinked with\\b"
-        ]
-      },
-      "INJURY": {
-        "OFFICIAL": [
-          "\\bruled out\\b",
-          "\\bwill miss\\b",
-          "\\bhas suffered\\b",
-          "\\bunderwent surgery\\b",
-          "\\bconfirmed .*injury\\b"
-        ],
-        "RUMOUR": [
-          "\\binjury concern\\b",
-          "\\binjury fear\\b",
-          "\\ba doubt\\b"
-        ]
-      },
-      "SUSPENSION": {
-        "OFFICIAL": [
-          "\\bhas been suspended\\b",
-          "\\bwill serve\\b",
-          "\\bban confirmed\\b",
-          "\\bsuspended for\\b"
-        ],
-        "RUMOUR": [
-          "\\bcould be suspended\\b",
-          "\\bfaces? a possible ban\\b"
-        ]
-      },
-      "MANAGER": {
-        "COMPLETED": [
-          "\\bhas been appointed\\b",
-          "\\bappointed as\\b",
-          "\\bparts? company\\b",
-          "\\bhas left\\b",
-          "\\bsacked\\b",
-          "\\bdismissed\\b",
-          "(?<!to )\\bappoints?\\b"
-        ],
-        "OFFICIAL": [
-          "\\bclub confirms?\\b",
-          "\\bofficial(?:ly)?\\b",
-          "\\bannounc(?:e|es|ed)\\b"
-        ],
-        "AGREEMENT": [
-          "\\bagreement (?:reached|in place)\\b",
-          "\\bhas agreed terms\\b"
-        ],
-        "RUMOUR": [
-          "\\blinked with\\b",
-          "\\bshortlisted\\b",
-          "\\bfrontrunner\\b"
-        ]
-      },
-      "CONTRACT": {
-        "COMPLETED": [
-          "\\bhas signed a new (?:deal|contract)\\b",
-          "\\bsigns? (?:a )?contract extension\\b",
-          "\\bextends? .* contract\\b",
-          "\\bsigns? (?:a )?new (?:deal|contract)\\b"
-        ],
-        "OFFICIAL": [
-          "\\bclub confirms?\\b",
-          "\\bofficial(?:ly)?\\b",
-          "\\bannounc(?:e|es|ed)\\b"
-        ],
-        "AGREEMENT": [
-          "\\bagreed a new (?:deal|contract)\\b"
-        ],
-        "RUMOUR": [
-          "\\bcontract talks\\b",
-          "\\bset to be offered\\b"
-        ]
-      },
-      "OFFICIAL_STATEMENT": {
-        "OFFICIAL": [
-          "\\bofficial statement\\b",
-          "\\bclub statement\\b",
-          "\\bstatement from\\b"
-        ]
-      },
-      "PRESS_CONFERENCE": {
-        "COMPLETED": [
-          "\\bsaid at (?:his|her|their) press conference\\b",
-          "\\btold (?:reporters|the press|media)\\b",
-          "\\bspeaking (?:to|at) (?:the )?media\\b",
-          "\\bspeaking to reporters\\b"
-        ],
-        "OFFICIAL": [
-          "\\bpress conference\\b",
-          "\\bmedia briefing\\b"
-        ]
-      }
-    },
-    "fact_patterns": {
-      "manager_action": {
-        "appointment": [
-          "\\bhas been appointed\\b",
-          "\\bappointed as\\b",
-          "\\bappoints?\\b",
-          "\\bnamed as\\b"
-        ],
-        "departure": [
-          "\\bparts? company\\b",
-          "\\bhas left\\b",
-          "\\bleaves? (?:his|her|their|the) role\\b",
-          "\\bsacked\\b",
-          "\\bdismissed\\b"
-        ]
-      },
-      "transfer_kind": {
-        "loan": [
-          "\\bon loan\\b",
-          "\\bloan move\\b",
-          "\\bseason-long loan\\b"
-        ],
-        "permanent": [
-          "\\bpermanent transfer\\b",
-          "\\bon a permanent basis\\b"
-        ],
-        "free": [
-          "\\bfree transfer\\b",
-          "\\bon a free\\b",
-          "\\bfree agent\\b"
-        ]
-      }
-    }
-  },
-  "sport": {
-    "signal_weights": {
-      "feed_metadata": 0.65,
-      "source_scope": 0.55,
-      "subject_registry": 0.9,
-      "club_registry": 0.9,
-      "competition_registry": 0.8,
-      "structured_official_data": 0.99
-    }
-  },
-  "database": {
-    "path": "data/verification.sqlite3",
-    "schema_version": 1,
-    "busy_timeout_ms": 5000,
-    "journal_mode": "DELETE"
-  },
-  "rollout": {
-    "shadow_mode_default": true,
-    "live_environment_variable": "VERIFICATION_V2_LIVE",
-    "live_required_value": "I_ACCEPT_STRICT_V2",
-    "database_rebuild_environment_variable": "VERIFICATION_V2_ALLOW_DB_REBUILD",
-    "database_rebuild_required_value": "I_ACCEPT_HISTORY_RESET"
-  },
-  "collection": {
-    "cross_verify_budget": 15,
-    "official_enrichment_budget": 10,
-    "official_page_timeout_seconds": 12,
-    "official_page_max_bytes": 2000000,
-    "feed_timeout_seconds": 15
-  },
-  "rendering": {
-    "x_character_limit": 280,
-    "max_optional_fact_chars": 140,
-    "card_width": 1200,
-    "card_height": 675
   }
 }
