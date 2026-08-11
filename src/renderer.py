@@ -679,7 +679,7 @@ def _detail_row(label, label_color, value, crest_uri=""):
     crest = f'<img class="row-crest" src="{crest_uri}" alt="" />' if crest_uri else ""
     return (
         '<div class="row">'
-        f'<div class="row-label fit-text" data-max="58" data-min="30" '
+        f'<div class="row-label fit-text" data-max="58" data-min="26" '
         f'style="color:{label_color};">{_html_escape(label)}</div>'
         f'<div class="row-value fit-text" data-max="96" data-min="42">{_html_escape(value)}</div>'
         f'{crest}'
@@ -775,33 +775,43 @@ def _build_responsive_verified_card_html(
       .left {{ min-width:0; display:grid; grid-template-rows:auto minmax(0,1fr); }}
       .left-body {{ min-width:0; align-self:center; }}
       .brand {{ display:flex; align-items:center; gap:36px; }}
-      /* Logo enlarged per spec; top-left placement and safe margin preserved. */
-      .brand-logo {{ width:150px; height:150px; object-fit:contain; border-radius:22px; flex:0 0 auto; }}
-      .brand-title {{ font-size:104px; line-height:1; font-weight:950; font-style:italic;
+      /* Logo made significantly larger -- 150px on a 3840px-wide 4K canvas
+         was only ~4% of the width and read as small/timid next to the
+         reference design's much bolder branding. */
+      .brand-logo {{ width:260px; height:260px; object-fit:contain; border-radius:32px; flex:0 0 auto; }}
+      .brand-title {{ font-size:120px; line-height:1; font-weight:950; font-style:italic;
                       letter-spacing:-1px; white-space:nowrap; }}
       /* The wordmark is the brand and never tracks the category — only the chip
          and the row labels carry colour. A logo that changes colour per story
          reads as a different publisher each time. */
       .brand-title .vortex {{ color:#00E676; }}
 
-      /* The ONLY element whose colour tracks the news category. */
-      .chip {{ display:inline-block; margin-top:52px; padding:22px 56px; border-radius:14px;
+      /* The ONLY element whose colour tracks the news category. Centering
+         is handled by .left-body {{ text-align:center }} below (see the
+         .chip.fit-text override), since fit-text's own display:block/
+         inline-block would otherwise fight a margin:auto centering here. */
+      .chip {{ padding:22px 56px; border-radius:14px;
                background:{accent}; color:#000000; font-size:66px; font-weight:950;
-               letter-spacing:3px; white-space:nowrap; }}
+               letter-spacing:3px; white-space:nowrap; margin-top:52px; }}
 
       .player-name {{ margin-top:44px; color:#FFFFFF; font-size:170px; line-height:.94;
                       font-weight:950; letter-spacing:-4px; white-space:nowrap; }}
 
       .rows {{ margin-top:56px; display:flex; flex-direction:column; gap:34px; }}
       .row {{ display:flex; align-items:center; gap:40px; min-width:0; }}
-      /* The label column is fixed-width so values align down one axis, and the
-         label itself is fitted — "CONTRACT" is twice the width of "TO" and was
-         running straight through the value beside it. */
-      .row-label {{ flex:0 0 300px; width:300px; font-size:58px; font-weight:950;
-                    letter-spacing:3px; white-space:nowrap; }}
+      /* The label column is fixed-width so values align down one axis, and
+         the label itself is fitted. Widened from 300px -- "EXPECTED RETURN"
+         (used for injury return dates) was still clipping into the value
+         column even at the fit-text shrink floor, because 300px was really
+         only enough for the shorter labels like "TO"/"FEE"/"CLUB". */
+      .row-label {{ flex:0 0 460px; width:460px; font-size:58px; font-weight:950;
+                    letter-spacing:2px; white-space:nowrap; }}
       .row-value {{ flex:0 1 auto; min-width:0; color:#FFFFFF; font-size:96px; font-weight:950;
                     letter-spacing:-1px; white-space:nowrap; }}
-      .row-crest {{ flex:0 0 auto; width:96px; height:96px; object-fit:contain; }}
+      /* Team/club crest enlarged to match the row value's visual weight --
+         96px next to 96px text read as an afterthought icon rather than a
+         proper club identity mark. */
+      .row-crest {{ flex:0 0 auto; width:140px; height:140px; object-fit:contain; }}
 
       .right {{ min-width:0; display:flex; align-items:center; justify-content:center; }}
       .photo-frame {{ position:relative; width:100%; height:100%; border:5px solid rgba({accent_rgb},.55);
@@ -832,8 +842,15 @@ def _build_responsive_verified_card_html(
       .category {{ color:{accent}; font-size:56px; font-weight:950; letter-spacing:4px; white-space:nowrap; }}
       .fit-text {{ display:block; overflow:visible; }}
       /* .fit-text sets display:block and would otherwise stretch the category
-         chip to the full column width. The chip must hug its own text. */
+         chip to the full column width. inline-block (not block/table) makes
+         it hug its own text; centering is done on the parent via
+         text-align so it doesn't fight fit-text's own display value. */
       .chip.fit-text {{ display:inline-block; }}
+      .left-body {{ text-align:center; }}
+      /* Sub-elements that must stay left-aligned despite the centered
+         parent (the chip is the only thing that should visually center;
+         name/facts still read left-to-right underneath it). */
+      .player-name, .rows {{ text-align:left; }}
     </style></head><body><section class="stage">
       <main>
         <section class="left">

@@ -304,18 +304,54 @@ class LegacyClaimAdapter:
         to_club = self._resolve_club(
             legacy_story.get("to_key"), legacy_story.get("to_club")
         )
+
+        # Resolved early (the fuller recovery-fallback resolution happens
+        # further below and reuses these) so the grammar pass right after
+        # this can anchor itself to where THIS player is actually mentioned,
+        # instead of scanning the whole document blind.
+        subject_name = _safe_string(
+            legacy_story.get("display_name") or legacy_story.get("player")
+        )
+        subject_type = self._expected_subject_type(event, legacy_story)
+        subject = self._resolve_subject(subject_name, subject_type)
+        subject_positions: Optional[List[int]] = None
+        if subject is not None:
+            name_mentions = self.entities.find_mentions(
+                document.text, {subject_type}
+            )
+            positions = [
+                pos for pos, ent, _alias in name_mentions if ent.id == subject.id
+            ]
+            if positions:
+                subject_positions = positions
+
         if event == EventType.TRANSFER:
             grammatical_from, grammatical_to = self._dynamic_transfer_direction(
-                document.text, club_mentions
+                document.text, club_mentions, subject_mentions=subject_positions
             )
+            # A fresh grammatical read that AGREES with (or adds to) the
+            # trusted, previously-verified from/to is fine to adopt. A fresh
+            # read that CONTRADICTS a previously-verified value is treated as
+            # a genuine conflict, not silently resolved in either direction:
+            # it's just as likely the new document is about a different
+            # transfer, or a stale/wrong mention, as it is a real update.
+            # Silently picking the newer one is exactly what let a wrong
+            # club overwrite a correct, sourced one in the past. The warning
+            # name reuses the existing "relationship_conflict" gate
+            # (engine.py's entity_validation gate already fails any claim
+            # whose warnings contain that substring), so this plugs into
+            # publish-blocking that's already tested rather than adding a
+            # second, easy-to-forget check.
             if grammatical_from:
                 if from_club and from_club.id != grammatical_from.id:
-                    warnings.append("legacy_origin_overridden_by_grounded_grammar")
-                from_club = grammatical_from
+                    warnings.append("origin_relationship_conflict_grounded_grammar")
+                else:
+                    from_club = grammatical_from
             if grammatical_to:
                 if to_club and to_club.id != grammatical_to.id:
-                    warnings.append("legacy_destination_overridden_by_grounded_grammar")
-                to_club = grammatical_to
+                    warnings.append("destination_relationship_conflict_grounded_grammar")
+                else:
+                    to_club = grammatical_to
 
         # A verified official club account/domain is itself evidence of club
         # context for non-directional events. It is never enough to guess a
@@ -335,11 +371,6 @@ class LegacyClaimAdapter:
             elif len(club_mentions) == 1:
                 to_club = club_mentions[0][1]
 
-        subject_name = _safe_string(
-            legacy_story.get("display_name") or legacy_story.get("player")
-        )
-        subject_type = self._expected_subject_type(event, legacy_story)
-        subject = self._resolve_subject(subject_name, subject_type)
         if subject is None and subject_type == EntityType.PLAYER:
             player_mentions = self.entities.find_mentions(
                 document.text, {EntityType.PLAYER}
@@ -575,11 +606,29 @@ class LegacyClaimAdapter:
         self,
         text: str,
         mentions: Sequence[tuple[int, EntityRecord, str]],
+        subject_mentions: Optional[Sequence[int]] = None,
+        proximity_chars: int = 400,
     ) -> tuple[Optional[EntityRecord], Optional[EntityRecord]]:
-        """Resolve direction from syntax over dynamically registered clubs."""
+        """Resolve direction from syntax over dynamically registered clubs.
+
+        subject_mentions, when given, restricts consideration to club
+        mentions that fall within `proximity_chars` of at least one mention
+        of the player this claim is actually about. Without this, a long
+        article covering several transfers in the same piece could have a
+        club from one player's paragraph misread as another player's
+        origin/destination purely because a transfer verb happened to sit
+        near it -- the parser has no other way to know which sentence is
+        about which player. This is what let an unrelated "Crystal Palace"
+        mention get attributed to a Sunderland signing in one real incident;
+        the fix is general (proximity to the subject), not a name-specific
+        patch, so it applies to any player/club combination.
+        """
         normalized = _norm_text(text)
         origin = destination = None
         for position, club, alias in mentions:
+            if subject_mentions:
+                if not any(abs(position - sp) <= proximity_chars for sp in subject_mentions):
+                    continue
             before = normalized[:position]
             after = normalized[position + len(alias):]
             if re.search(r"\bfrom\s+$", before[-40:]):

@@ -410,3 +410,77 @@ def test_skipped_unverified_transfer_is_logged_with_reason(runtime, tmp_path, mo
     content = (debug_dir / "rejections.jsonl").read_text()
     assert "SKIPPED_UNVERIFIED_TRANSFER" in content
     assert "source_not_on_official_allowlist" in content
+
+
+# ── 11. A club mentioned near an unrelated player's paragraph must never
+#        override the trusted, previously-verified destination for THIS
+#        player. Regression test for a real incident: a Sunderland signing
+#        (correctly tracked with to_key="Sunderland") was posted as joining
+#        "Crystal Palace" instead, because the grammar-direction parser
+#        scanned the whole article for any club near transfer-verb language
+#        with no check that the sentence was actually about that player.
+#        Unit-tested directly against the parser (rather than through the
+#        full pipeline) so the test isolates the actual mechanism that
+#        broke, without depending on unrelated event-classification gates.
+
+def test_11_grammar_parser_ignores_club_far_from_subject_player(runtime):
+    from src.verification.entities import EntityType
+    from src.verification.extractor import LegacyClaimAdapter
+
+    adapter = LegacyClaimAdapter(runtime.config, runtime.sources, runtime.entities)
+
+    # Realistic shape of the real incident: one paragraph genuinely about
+    # Welbeck joining Chelsea, followed by an unrelated later paragraph
+    # about Arsenal, separated by real distance (not just a period).
+    text = (
+        "Chelsea sign Danny Welbeck from Brighton in a deal announced this "
+        "morning, ending speculation over his next club after a strong "
+        "second half of last season. The move has been broadly welcomed "
+        "by supporters, who have been calling for fresh legs in that "
+        "position since the turn of the year, and the club's official "
+        "statement confirmed terms had been agreed by both parties "
+        "following a medical completed earlier in the week. "
+        "In entirely separate news reported later the same day, Arsenal "
+        "have completed the signing of a youth-team defender from a "
+        "regional academy fixture, unconnected to today's other transfer "
+        "activity across the rest of the Premier League."
+    )
+    club_mentions = runtime.entities.find_mentions(text, {EntityType.CLUB})
+    player_mentions = runtime.entities.find_mentions(text, {EntityType.PLAYER})
+    welbeck_positions = [pos for pos, ent, _ in player_mentions if "welbeck" in ent.name.lower()]
+    assert welbeck_positions, "fixture is missing Danny Welbeck in the entity registry"
+
+    # Without subject scoping (old behaviour): both clubs are visible to the
+    # parser and either could be picked up as a destination.
+    _, destination_unscoped = adapter._dynamic_transfer_direction(text, club_mentions)
+
+    # With subject scoping (the fix): only club mentions near Welbeck's own
+    # name are considered, so Arsenal -- mentioned only near a different,
+    # unrelated sentence -- must never be returned as his destination.
+    _, destination_scoped = adapter._dynamic_transfer_direction(
+        text, club_mentions, subject_mentions=welbeck_positions
+    )
+    assert destination_scoped is not None
+    assert destination_scoped.name == "Chelsea"
+    assert destination_scoped.name != "Arsenal"
+
+
+def test_11_genuine_conflicting_grammar_blocks_rather_than_silently_overrides(runtime, tmp_path):
+    # Same player, but this time the ONLY club mentioned near transfer verbs
+    # in the text genuinely conflicts with the trusted to_key (simulates a
+    # wrong/stale source, or two different transfers sharing a name). This
+    # must NOT silently publish with the newer, less-trusted destination --
+    # it should be treated as an unresolved conflict and blocked.
+    story = transfer_story(player="Danny Welbeck", destination="Chelsea")
+    conflicting_title = "Danny Welbeck has signed for Arsenal in a shock move."
+    obs = observation(
+        title=conflicting_title,
+        source_id="club.chelsea",
+        url="https://www.chelseafc.com/en/news/article/danny-welbeck-arsenal",
+        story=story,
+    )
+    decision = runtime.verify_observations([obs])
+    assert decision.decision != DecisionType.PUBLISH, (
+        "a genuine from/to conflict between the trusted story and a fresh "
+        "grammatical read was silently resolved instead of blocking"
+    )
