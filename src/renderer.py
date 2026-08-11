@@ -107,6 +107,38 @@ def get_club_color(club_key):
     color_tuple = CLUB_COLORS.get(club_key, (84, 224, 124)) # Default to VORTEX Green
     return f"rgb({color_tuple[0]}, {color_tuple[1]}, {color_tuple[2]})"
 
+
+def _hex_to_rgb(hex_color: str) -> str:
+    """'#FF453A' -> '255,69,58', for use inside an rgba(...) CSS value."""
+    h = str(hex_color or "").lstrip("#")
+    if len(h) != 6:
+        return "255,255,255"
+    try:
+        return f"{int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)}"
+    except ValueError:
+        return "255,255,255"
+
+
+def current_fpl_season(today=None) -> str:
+    """Auto-derive the season badge text, e.g. '2026/27', from the date.
+
+    The English football season runs August through May. June/July is the
+    off-season gap — no new season has started yet, so those two months
+    still read as the season that just finished in May, matching how the
+    football calendar itself names a season (there is no month where "no
+    season" is the correct label). No value is ever hardcoded; a card
+    rendered next year reads correctly with zero code change.
+    """
+    from datetime import date
+    d = today or date.today()
+    if d.month >= 8:
+        start_year = d.year
+    elif d.month <= 5:
+        start_year = d.year - 1
+    else:  # June/July off-season -> still the season that ended in May
+        start_year = d.year - 1
+    return f"{start_year}/{str(start_year + 1)[-2:]}"
+
 # Every card ships at 4K UHD, 16:9 — the master resolution. Templates keep
 # their own CSS design size; the renderer scales the browser's device pixel
 # ratio to reach this output, so a template laid out at 1380x776 produces a
@@ -171,6 +203,38 @@ def _data_uri(path: Path, min_size: int = 500) -> str:
     except Exception:
         pass
     return ""
+
+
+_LOGO_PATH_CACHE = None
+
+
+def _resolve_logo_path() -> Path:
+    """Find the brand logo file regardless of its exact filename casing.
+
+    The repo root file has been renamed between 'Logo.png' and 'logo.png'
+    at least once already (a rename that silently dropped the logo off
+    every rendered card, since _data_uri() degrades to '' on a missing
+    path with no error/log — nothing flagged it happened). Rather than
+    hardcode whichever casing happens to be current today, check the
+    repo root directory listing directly and match case-insensitively,
+    so a future rename doesn't reproduce the same silent failure. Cached
+    after the first successful resolution per process, since the
+    filesystem doesn't change mid-run.
+    """
+    global _LOGO_PATH_CACHE
+    if _LOGO_PATH_CACHE is not None and _LOGO_PATH_CACHE.exists():
+        return _LOGO_PATH_CACHE
+    repo_root = Path(__file__).resolve().parent.parent
+    for candidate in repo_root.glob("*"):
+        if candidate.is_file() and candidate.stem.lower() == "logo" and candidate.suffix.lower() in (".png", ".jpg", ".jpeg"):
+            _LOGO_PATH_CACHE = candidate
+            return candidate
+    # Nothing matched -- fall back to the most recently known filename so
+    # the caller's own missing-file handling (_data_uri returning "") still
+    # applies, but log clearly so this doesn't fail silently again.
+    print("  [ASSET] could not find a logo.png/Logo.png file in the repo root; "
+          "brand logo will be missing from rendered cards")
+    return repo_root / "logo.png"
 
 
 def _crest_uri(club_key) -> str:
@@ -294,7 +358,7 @@ def _img_assets(story):
                    or (player_el["web_name"] if player_el else story.get("player"))
                    or "PLAYER")
 
-    logo_uri = _data_uri(Path("Logo.png"))
+    logo_uri = _data_uri(_resolve_logo_path())
     photo_uri = ""
 
     # 1) Canonical FPL player identity/asset.
@@ -478,6 +542,216 @@ def _build_card_html(player_name, status, badge_color, club_color,
                 let fs = 88;
                 nameEl.style.fontSize = fs + 'px';
                 while (nameEl.scrollWidth > avail && fs > 22) {{
+                    fs -= 1; nameEl.style.fontSize = fs + 'px';
+                }}
+            }}
+            document.addEventListener("DOMContentLoaded", fitPlayerName);
+            window.addEventListener("load", fitPlayerName);
+        </script>
+    </body></html>"""
+
+
+# ── BROADCAST FRAME TEMPLATE ─────────────────────────────────────────────
+# Replaces the plain navy-gradient card above as the live production
+# template. Matches the approved reference broadcast frame (red/black,
+# diagonal corner cuts, glowing edge lines, top brand strip, bottom
+# source/social strip) with the real lion Logo.png used as the brand mark
+# instead of the reference's placeholder circular badge — that badge isn't
+# an asset that exists in this repo, so it is not something the renderer
+# can reproduce; the lion is the actual approved logo (see Logo.png).
+#
+# One frame, one background treatment, for every category — only the
+# category chip/heading colour and the edge-glow colour change, matching
+# the instruction that the background must read as identical across every
+# post and only the heading should carry category colour.
+CATEGORY_FRAME = {
+    "TRANSFER":        {"heading": "TRANSFER NEWS",     "accent": "#39FF88", "bg": "transfer_bg.jpg"},
+    "SUSPENSION":      {"heading": "SUSPENSION NEWS",   "accent": "#FFD60A", "bg": "suspension_bg.jpg"},
+    "INJURY":          {"heading": "INJURY NEWS",       "accent": "#FF3B30", "bg": "injury_bg.jpg"},
+    "PRESS_CONFERENCE":{"heading": "PRESS CONFERENCE",  "accent": "#39FF88", "bg": "press_conference_bg.jpg"},
+}
+# ^ accent is used only for text/row-icon colour now that the background
+# itself is the real per-category asset (see assets/frames/) -- the
+# reference PDF's own tint already carries the primary category colour
+# (purple/transfer, gold/suspension, magenta/injury, green/press), so the
+# accent here is deliberately the brand green almost everywhere, matching
+# how the reference's row icons and text stay green/white regardless of
+# background tint. Suspension keeps gold and injury keeps red to match
+# their reference's own heading-pill colour, since those two are the
+# exception in the source material (visibly different pill colour, not
+# just a tint).
+
+_ASSET_FRAMES_DIR = Path(__file__).resolve().parent.parent / "assets" / "frames"
+
+
+def _frame_category(event: str) -> dict:
+    key = str(event or "").upper()
+    if key in {"PRESS", "TEAM_NEWS"}:
+        key = "PRESS_CONFERENCE"
+    return CATEGORY_FRAME.get(key, CATEGORY_FRAME["TRANSFER"])
+
+
+def _frame_background_uri(event: str) -> str:
+    theme = _frame_category(event)
+    return _data_uri(_ASSET_FRAMES_DIR / theme["bg"])
+
+
+# Row icons as inline SVG (no external icon font / no network dependency),
+# matching the icon-list reference's row-icon set: person, calendar,
+# shield, clipboard, trending-chart, cash, quote-mark, speech-bubble.
+_ROW_ICONS = {
+    "person": '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>',
+    "calendar": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
+    "shield": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/></svg>',
+    "clipboard": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3a1 1 0 011-1h4a1 1 0 011 1v1M8 11h8M8 15h5"/></svg>',
+    "trend": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l6-6 4 4 8-8M15 7h6v6"/></svg>',
+    "cash": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/></svg>',
+    "quote": '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 7c-2 0-3.5 1.5-3.5 4S5 15 7 15v3c-3.5 0-6-2.5-6-6.5S3.5 5 7 5v2zm10 0c-2 0-3.5 1.5-3.5 4s1.5 4 3.5 4v3c-3.5 0-6-2.5-6-6.5S13.5 5 17 5v2z"/></svg>',
+    "mic": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v4M8 22h8"/></svg>',
+    "transfer_arrow": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h14M13 7l5 5-5 5"/></svg>',
+}
+
+
+def _row_html(icon_key: str, label: str, value: str, accent: str) -> str:
+    icon_svg = _ROW_ICONS.get(icon_key, _ROW_ICONS["clipboard"])
+    return (f'<div class="data-row"><div class="row-icon" style="color:{accent};">{icon_svg}</div>'
+            f'<div class="row-body"><div class="row-label">{label}</div>'
+            f'<div class="row-value">{value}</div></div></div>')
+
+
+def category_rows(event: str, story: dict) -> list:
+    """Build the icon-row field list for a category from REAL story/extractor
+    field names only -- no invented field names.
+
+    Field sources (see src/verification/extractor.py add_fact calls):
+      injury:     diagnosis, expected_return                (existing)
+      suspension: diagnosis (reused as reason), suspension_length, expected_return
+      transfer:   from_club/to_club, fee, contract           (existing, unchanged)
+      press_conference: quote_summary, quote_topic
+    Any field not present on the story is simply omitted from the row
+    list rather than rendered with a placeholder -- an absent fact should
+    not appear to have a value.
+    """
+    key = str(event or "").upper()
+    if key in {"PRESS", "TEAM_NEWS"}:
+        key = "PRESS_CONFERENCE"
+    rows = []
+    if key == "INJURY":
+        if story.get("diagnosis"):
+            rows.append(("clipboard", "DIAGNOSIS", str(story["diagnosis"])))
+        rows.append(("trend", "AVAILABILITY",
+                     {4: "Available / fit again", 3: "Ruled out", 2: "Doubt",
+                      1: "To be assessed"}.get(story.get("stage", 1), "To be assessed")))
+        rows.append(("calendar", "TIMELINE", story.get("expected_return") or "Awaiting update"))
+        if story.get("next_match"):
+            rows.append(("shield", "NEXT MATCH", str(story["next_match"])))
+    elif key == "SUSPENSION":
+        rows.append(("shield", "REASON", str(story.get("diagnosis") or "Disciplinary")))
+        if story.get("suspension_length"):
+            rows.append(("clipboard", "LENGTH", str(story["suspension_length"])))
+        rows.append(("calendar", "RETURNS", story.get("expected_return") or "To be confirmed"))
+    elif key == "PRESS_CONFERENCE":
+        if story.get("quote_summary"):
+            rows.append(("quote", "SAID", str(story["quote_summary"])))
+        if story.get("quote_topic"):
+            rows.append(("mic", "TOPIC", str(story["quote_topic"])))
+        if not rows:
+            rows.append(("mic", "TOPIC", "Press conference update"))
+    else:  # TRANSFER and anything else routed through the transfer path
+        pass  # transfer rows are built by the caller (create_transfer_image), unchanged
+    return rows
+
+
+def _build_photo_frame_html(player_name, status, event, logo_uri, photo_uri,
+                            crest_uri, rows, source_text, footer_tag,
+                            season_text=None):
+    """FPL VORTEX card frame using the real approved background image per
+    category (assets/frames/*.jpg, extracted from the provided reference
+    deck) instead of a CSS-drawn approximation. The header (lion logo,
+    wordmark, category pill, PL crest) and footer (source/follow/YouTube
+    strip) are baked into the background image itself; this function only
+    overlays the dynamic player content into the reserved empty region on
+    the right ~55% of the frame.
+
+    rows: list of (icon_key, label, value) tuples -- see category_rows().
+    Season text is auto-derived (current_fpl_season()) unless overridden.
+    """
+    theme = _frame_category(event)
+    accent = theme["accent"]
+    if season_text is None:
+        season_text = current_fpl_season()
+    bg_uri = _frame_background_uri(event)
+
+    photo_accent_html = f'<div class="photo-accent"><img src="{photo_uri}" /></div>' if photo_uri else ''
+    crest_badge_html = f'<img class="crest-badge" src="{crest_uri}" />' if crest_uri else ''
+
+    rows_html = "".join(_row_html(icon, label, value, accent) for (icon, label, value) in rows)
+
+    return f"""<!DOCTYPE html><html><head><style>
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&display=swap');
+        * {{ box-sizing:border-box; }}
+        body {{ margin:0; padding:0; width:1380px; height:776px; overflow:hidden; position:relative;
+                font-family:'Montserrat',sans-serif; color:#fff;
+                background-image:url('{bg_uri}'); background-size:cover; background-position:center; }}
+
+        /* Content lives in the empty right region of the reference image --
+           header (logo/wordmark/pill/PL crest) and footer (source/follow/
+           YouTube strip) are already baked into the background, so nothing
+           is drawn here for those; this only positions the dynamic card
+           content into that reserved space. */
+        .content {{ position:absolute; left:44%; right:4%; top:17%; bottom:13%;
+                    display:flex; flex-direction:column; justify-content:center; }}
+
+        .season-badge {{ position:absolute; top:-2.2%; right:0; background:rgba(0,0,0,.4);
+                         border:1px solid rgba(255,255,255,.18); border-radius:6px;
+                         padding:4px 12px; text-align:right; }}
+        .season-badge .label {{ font-size:11px; font-weight:800; letter-spacing:1.5px; color:#B8C2CC; }}
+        .season-badge .value {{ font-size:15px; font-weight:900; color:#fff; }}
+
+        .status-badge {{ display:inline-block; background:{accent}; color:#05070B; padding:10px 24px;
+                         font-size:30px; font-weight:900; border-radius:8px; letter-spacing:2px;
+                         margin-bottom:16px; text-transform:uppercase; align-self:flex-start;
+                         box-shadow:0 6px 16px rgba(0,0,0,.4); }}
+        .player-name {{ font-size:64px; font-weight:900; line-height:1.02; text-transform:uppercase;
+                        margin-bottom:22px; text-shadow:0 6px 16px rgba(0,0,0,.7); white-space:nowrap;
+                        max-width:100%; }}
+
+        /* Icon-row data fields, styled after the approved reference layout:
+           angled icon tab + bordered label/value row, one per fact. */
+        .data-row {{ display:flex; align-items:stretch; margin-bottom:12px; }}
+        .row-icon {{ flex:0 0 auto; width:52px; display:flex; align-items:center; justify-content:center;
+                    background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.18);
+                    border-right:none; border-radius:6px 0 0 6px; }}
+        .row-icon svg {{ width:26px; height:26px; }}
+        .row-body {{ flex:1; min-width:0; padding:8px 18px; background:rgba(255,255,255,.03);
+                    border:1px solid rgba(255,255,255,.18); border-radius:0 6px 6px 0; }}
+        .row-label {{ font-size:13px; font-weight:800; letter-spacing:2px; color:#B8C2CC; }}
+        .row-value {{ font-size:22px; font-weight:900; color:#fff; text-transform:uppercase;
+                     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+
+        .photo-accent {{ position:absolute; right:0; top:0; bottom:0; width:26%; z-index:0;
+                        -webkit-mask-image:linear-gradient(to right, transparent, rgba(0,0,0,.7) 45%, black 70%);
+                        mask-image:linear-gradient(to right, transparent, rgba(0,0,0,.7) 45%, black 70%); }}
+        .photo-accent img {{ width:100%; height:100%; object-fit:cover; opacity:.35; }}
+        .crest-badge {{ position:absolute; bottom:6%; right:0; width:64px; height:64px;
+                        object-fit:contain; z-index:2; filter:drop-shadow(0 3px 8px rgba(0,0,0,.7)); }}
+    </style></head><body>
+        {photo_accent_html}
+        <div class="content">
+            <div class="season-badge"><span class="label">SEASON&nbsp;</span><span class="value">{season_text}</span></div>
+            <div class="status-badge">{status}</div>
+            <div class="player-name">{player_name}</div>
+            {rows_html}
+            {crest_badge_html}
+        </div>
+        <script>
+            function fitPlayerName() {{
+                const nameEl = document.querySelector('.player-name');
+                if (!nameEl) return;
+                const avail = nameEl.parentElement.clientWidth;
+                let fs = 64;
+                nameEl.style.fontSize = fs + 'px';
+                while (nameEl.scrollWidth > avail && fs > 20) {{
                     fs -= 1; nameEl.style.fontSize = fs + 'px';
                 }}
             }}
@@ -915,7 +1189,7 @@ def create_verified_branded_card(event, subject, facts, source_handles, filename
     fpl = fetch_fpl_data()
     player_el = find_player_in_fpl(subject, fpl) if fpl else None
     status = str(facts.get("_event_status") or "").upper()
-    logo_uri = _data_uri(Path("Logo.png"))
+    logo_uri = _data_uri(_resolve_logo_path())
     source_text = " · ".join("@" + str(h).lstrip("@") for h in source_handles[:2]) or "OFFICIAL SOURCE"
     club_name = str(facts.get("club_name") or "")
     club_key = _verified_club_key(club_name)
@@ -1022,76 +1296,80 @@ def create_transfer_image(story, sources, filename, collapsed=False):
         footer_tag = "TRANSFER"
 
     if collapsed or story.get("collapsed"):
-        status, badge = "DEAL COLLAPSED", "#e31e24"
+        status = "DEAL COLLAPSED"
     elif is_staff:
         action = story.get("staff_action")
         if action == "appointment":
-            status, badge = "APPOINTED", "#54e07c"
+            status = "APPOINTED"
         elif action == "departure":
-            status, badge = "DEPARTURE", "#e31e24"
+            status = "DEPARTURE"
         else:
-            status, badge = "LINKED", "#f5c518"      # speculation, not confirmed
+            status = "LINKED"      # speculation, not confirmed
     elif mode == "rumour" or not to_key:
         # No verified destination -> never claim CONFIRMED/OFFICIAL.
-        status, badge = "TRANSFER RUMOUR", "#e31e24"
+        status = "TRANSFER RUMOUR"
     else:
         status = "OFFICIAL" if story.get("stage", 1) >= 4 else "CONFIRMED"
-        badge = "#54e07c"
 
-    club_color = get_club_color(to_key or from_key)
     main_crest = _crest_uri(to_key or from_key)
 
-    rows = []
-    if from_club:
-        rows.append(("FROM", "#f5c518", _club_cell(from_club, _crest_uri(from_key)), ""))
-    if to_club:
-        rows.append(("TO" if not is_staff else "CLUB", "#00d4ff",
-                     _club_cell(to_club, _crest_uri(to_key)), ""))
-    if is_staff:
-        # Staff/manager cards show the ROLE, never a transfer FEE.
-        rows.append(("ROLE", "#f5c518",
-                     (role.upper() if role and role.lower() != "staff" else "MANAGER"), ""))
+    # Resolve the REAL category instead of always framing as TRANSFER --
+    # suspension and press_conference stories were previously routed
+    # through this function with transfer's FROM/TO/FEE fields, which
+    # don't apply to them. Real event types now get their real category
+    # frame + real fields via category_rows(); transfer/loan/manager keep
+    # the existing FROM/TO/FEE row-building below, unchanged.
+    frame_event = "TRANSFER"
+    if ev == "suspension":
+        frame_event = "SUSPENSION"
+    elif ev == "press_conference":
+        frame_event = "PRESS_CONFERENCE"
+
+    if frame_event in ("SUSPENSION", "PRESS_CONFERENCE"):
+        rows = category_rows(frame_event, story)
     else:
-        raw_fee = story.get("fee")
-        if raw_fee:
-            fee_value = raw_fee
-        elif ev in ("loan", "loan_option"):
-            fee_value = "LOAN DEAL"
-        elif story.get("is_free"):
-            fee_value = "FREE TRANSFER"
+        rows = []
+        if from_club:
+            rows.append(("person", "FROM", _club_cell(from_club, _crest_uri(from_key))))
+        if to_club:
+            rows.append(("transfer_arrow" if not is_staff else "shield", "TO" if not is_staff else "CLUB",
+                         _club_cell(to_club, _crest_uri(to_key))))
+        if is_staff:
+            # Staff/manager cards show the ROLE, never a transfer FEE.
+            rows.append(("shield", "ROLE",
+                         (role.upper() if role and role.lower() != "staff" else "MANAGER")))
         else:
-            fee_value = "UNDISCLOSED"
-        rows.append(("FEE", "#e31e24", fee_value, "color:#54e07c;"))
+            raw_fee = story.get("fee")
+            if raw_fee:
+                fee_value = raw_fee
+            elif ev in ("loan", "loan_option"):
+                fee_value = "LOAN DEAL"
+            elif story.get("is_free"):
+                fee_value = "FREE TRANSFER"
+            else:
+                fee_value = "UNDISCLOSED"
+            rows.append(("cash", "FEE", fee_value))
 
     source_text = " · ".join(f"@{s}" for s in sources[:2])
-    html = _build_card_html(player_name, status, badge, club_color, logo_uri, photo_uri,
-                            main_crest, rows, source_text, footer_tag)
+    html = _build_photo_frame_html(player_name, status, frame_event, logo_uri, photo_uri,
+                                   main_crest, rows, source_text, footer_tag)
 
     if not _render_card(html, filename):
-        Image.new('RGB', (CARD_OUTPUT_W, CARD_OUTPUT_H), color=(11, 18, 32)).save(filename)
+        Image.new('RGB', (CARD_OUTPUT_W, CARD_OUTPUT_H), color=(7, 9, 13)).save(filename)
 
 
 def create_injury_image(story, sources, filename):
     # Same template/branding as transfer cards (lion logo + header + footer).
     player_el, player_name, logo_uri, photo_uri = _img_assets(story)
     club_key = story.get("to_key") or story.get("from_key")
-    club_color = get_club_color(club_key)
     crest_uri = _crest_uri(club_key)
 
-    stage = story.get("stage", 1)
-    avail = {4: "Available / fit again", 3: "Ruled out", 2: "Doubt", 1: "To be assessed"}.get(stage, "To be assessed")
-    rows = []
-    if story.get("diagnosis"):
-        rows.append(("DIAGNOSIS", "#ff8c8c", str(story["diagnosis"]), ""))
-    rows.append(("AVAILABILITY", "#ff8c8c", avail, ""))
-    rows.append(("TIMELINE", "#ff8c8c", story.get("expected_return") or "Awaiting update", ""))
-    if story.get("next_match"):
-        rows.append(("NEXT MATCH", "#ff8c8c", str(story["next_match"]), ""))
+    rows = category_rows("INJURY", story)
 
     source_text = " · ".join(f"@{s}" for s in sources[:2])
-    html = _build_card_html(player_name, "INJURY UPDATE", "#d2261e", club_color,
-                            logo_uri, photo_uri, crest_uri, rows, source_text,
-                            (story.get("event", "INJURY") or "INJURY").upper())
+    html = _build_photo_frame_html(player_name, "INJURY UPDATE", "INJURY",
+                                   logo_uri, photo_uri, crest_uri, rows, source_text,
+                                   (story.get("event", "INJURY") or "INJURY").upper())
 
     if not _render_card(html, filename):
         _create_injury_image_pil(story, sources, filename)
@@ -1133,7 +1411,7 @@ def _create_injury_image_pil(story, sources, filename):
                 img_pasted = True
 
     if not img_pasted:
-        logo_path = Path("Logo.png")
+        logo_path = _resolve_logo_path()
         if logo_path.exists():
             l_img = _safe_open_rgba(logo_path)
             if l_img is not None:

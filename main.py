@@ -8,6 +8,7 @@ import difflib
 import random
 import argparse
 import asyncio
+import subprocess
 import requests
 import urllib.parse
 import urllib.request
@@ -314,6 +315,78 @@ def save_data(data: dict):
     tmp = POSTED_FILE.with_suffix(".json.tmp")
     with open(tmp, "w") as f: json.dump(data, f, indent=2)
     tmp.replace(POSTED_FILE)
+
+
+def resync_dedup_state_from_origin(data: dict) -> dict:
+    """Pull the latest committed dedup state immediately before posting.
+
+    A run is checked out once at job start (see .github/workflows/bot.yml)
+    but the posting loop can run long after that — long enough for a
+    DIFFERENT run (queued behind this one under
+    concurrency.cancel-in-progress: false) to have already posted the same
+    story and pushed its updated data/posted_news.json to main in the
+    meantime. Checking `data` as loaded at job start against that scenario
+    always misses, because it was loaded before the other run's push
+    existed. This is the actual mechanism behind repeat/duplicate posts of
+    the same story minutes-to-hours apart, confirmed against real commit
+    timing on data/posted_news.json (gaps regularly exceeding the 20-minute
+    schedule interval, meaning overlapping runs are the normal case here,
+    not an edge case).
+
+    This does not change *what* counts as a duplicate — that logic lives
+    entirely in is_duplicate_content()/record_content_dedup() and is
+    untouched. It only makes sure the `data` dict that logic checks against
+    is not stale by the time a real post is about to fire. No fixed
+    interval or hardcoded delay is involved; this runs unconditionally
+    right before every post attempt, so it is correct regardless of how
+    long the run has been alive or how many other runs have completed
+    since this job's own checkout.
+
+    Best-effort: if git isn't available (e.g. local/manual runs outside
+    the workflow, or no upstream configured) or the pull fails for any
+    reason, the in-memory `data` already loaded at job start is kept as-is
+    and posting proceeds on that — this must never block a post outright,
+    only make its dedup check as fresh as possible when a refresh is
+    actually available.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "pull", "--rebase", "--autostash", "origin", "main"],
+            cwd=str(Path(__file__).resolve().parent),
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            print(f"  [RESYNC] git pull before posting failed (continuing with "
+                  f"in-memory state): {result.stderr.strip()[:200]}")
+            return data
+    except Exception as exc:
+        print(f"  [RESYNC] could not resync before posting (continuing with "
+              f"in-memory state): {exc}")
+        return data
+
+    try:
+        fresh = load_data()
+    except Exception as exc:
+        print(f"  [RESYNC] pulled latest state but could not reload it "
+              f"(continuing with in-memory state): {exc}")
+        return data
+
+    # Merge rather than replace: this run's own in-memory progress this run
+    # (anything staged in `data` but not yet saved/pushed) must not be lost
+    # just because a pull happened. Only dedup-relevant fields are unioned;
+    # everything else (daily counters, pending/extracted caches) stays
+    # whatever this run already has, since those are this run's own
+    # bookkeeping, not cross-run dedup memory.
+    for key in ("posted_ids", "posted_hashes", "posted_headlines"):
+        existing = set(data.get(key, []))
+        existing.update(fresh.get(key, []))
+        data[key] = list(existing)
+    data.setdefault("stories", {})
+    for story_key, story_val in fresh.get("stories", {}).items():
+        prev = data["stories"].get(story_key)
+        if prev is None or story_val.get("last_updated", "") >= prev.get("last_updated", ""):
+            data["stories"][story_key] = story_val
+    return data
 
 
 def write_run_status(status: dict):
@@ -1462,6 +1535,12 @@ async def post_item(post_client, item, data):
     except Exception as exc:
         print(f"  POST BLOCKED (v2_render:{exc}): {item.get('player')!r}")
         return False
+
+    # Refresh dedup memory from origin/main right before checking — a long
+    # or queued run can be posting minutes-to-hours after job start, and
+    # another run may have already posted (and pushed) this exact story in
+    # the meantime. See resync_dedup_state_from_origin() docstring.
+    data = resync_dedup_state_from_origin(data)
 
     dup, dreason = is_duplicate_content(item, data)
     if dup:
