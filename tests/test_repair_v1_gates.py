@@ -138,7 +138,7 @@ def test_publication_window_matches_the_stated_72_hour_policy():
 def test_workflow_schedule_and_switches():
     wf = Path(".github/workflows/bot.yml").read_text()
     assert 'cron: "*/20 * * * *"' in wf
-    assert "DRY_RUN: ${{ vars.DRY_RUN }}" in wf, "DRY_RUN must be flippable without a code edit"
+    assert "DRY_RUN: ${{ vars.DRY_RUN || 'false' }}" in wf, "DRY_RUN must be flippable without a code edit"
     # Unchanged guarantees that were already correct — pinned so a future edit
     # cannot quietly drop them.
     assert "concurrency:" in wf and "cancel-in-progress: false" in wf
