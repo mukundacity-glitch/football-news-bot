@@ -865,19 +865,25 @@ def _build_photo_card_html(player_name, event, logo_uri, photo_uri, crest_uri,
 
     tag_html = f'<div class="photo-tag">{theme["photo_tag"]}</div>' if theme["photo_tag"] else ''
 
+    # Built outside the f-string: a nested f-string containing backslash escapes
+    # is a syntax error before Python 3.12, and CI and the bot workflow both run
+    # 3.11 — so the module could not even be imported.
+    def _crest_img(uri):
+        return f'<img class="club-crest" src="{uri}" />' if uri else ''
+
     if theme["two_club"] and club_name and to_club_name:
         club_bar_html = (
-            f'<div class="club-bar two-club">'
-            f'{f"<img class=\"club-crest\" src=\"{crest_uri}\" />" if crest_uri else ""}'
+            '<div class="club-bar two-club">'
+            f'{_crest_img(crest_uri)}'
             f'<span>{club_name}</span>'
-            f'<span class="club-arrow">&#187;&#187;</span>'
-            f'{f"<img class=\"club-crest\" src=\"{to_crest_uri}\" />" if to_crest_uri else ""}'
+            '<span class="club-arrow">&#187;&#187;</span>'
+            f'{_crest_img(to_crest_uri)}'
             f'<span>{to_club_name}</span></div>'
         )
     elif club_name:
         club_bar_html = (
-            f'<div class="club-bar one-club">'
-            f'{f"<img class=\"club-crest\" src=\"{crest_uri}\" />" if crest_uri else ""}'
+            '<div class="club-bar one-club">'
+            f'{_crest_img(crest_uri)}'
             f'<span>{club_name}</span></div>'
         )
     else:
