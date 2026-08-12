@@ -108,6 +108,54 @@ def get_club_color(club_key):
     return f"rgb({color_tuple[0]}, {color_tuple[1]}, {color_tuple[2]})"
 
 
+# Named colour-circle emoji, each with its real approximate RGB -- used to
+# find the nearest visual match to a club's actual CLUB_COLORS RGB value
+# rather than a hand-typed per-club table, which risks getting individual
+# clubs wrong and doesn't stay correct if a club's colour data changes.
+_COLOR_EMOJI_RGB = {
+    "🔴": (237, 28, 36), "🟠": (255, 127, 0), "🟡": (255, 221, 0),
+    "🟢": (0, 166, 81), "🔵": (0, 114, 206), "🟣": (145, 65, 172),
+    "🟤": (127, 85, 57), "⚫": (30, 30, 30), "⚪": (245, 245, 245),
+}
+
+
+def nearest_color_emoji(rgb) -> str:
+    """Closest colour-circle emoji to a club's real primary RGB colour, by
+    plain Euclidean distance in RGB space. No per-club table -- correct
+    for any club present in CLUB_COLORS, and stays correct automatically
+    if that data ever changes.
+    """
+    r, g, b = rgb
+    best_emoji, best_dist = "⚪", float("inf")
+    for emoji, (er, eg, eb) in _COLOR_EMOJI_RGB.items():
+        dist = (r - er) ** 2 + (g - eg) ** 2 + (b - eb) ** 2
+        if dist < best_dist:
+            best_dist, best_emoji = dist, emoji
+    return best_emoji
+
+
+def club_color_emojis(club_key: str) -> str:
+    """One or two colour-circle emoji representing a club's real identity.
+
+    CLUB_COLORS only stores one RGB value per club (primary), so a
+    genuinely two-tone identity (Arsenal red+white, Newcastle black+
+    white) only gets its primary colour represented here, plus white as a
+    fixed second circle when the primary is a strong/dark colour (i.e.
+    not itself already near-white) -- this mirrors the common "colour +
+    white" pattern most kit-based club identities share, without
+    asserting an exact secondary colour this codebase doesn't have data
+    for. Clubs already near-white primary get no second circle, since a
+    near-white primary is very unlikely to also need a white second dot.
+    """
+    rgb = CLUB_COLORS.get(club_key)
+    if not rgb:
+        return "⚽"
+    primary = nearest_color_emoji(rgb)
+    if primary == "⚪":
+        return primary
+    return f"{primary}⚪"
+
+
 def _hex_to_rgb(hex_color: str) -> str:
     """'#FF453A' -> '255,69,58', for use inside an rgba(...) CSS value."""
     h = str(hex_color or "").lstrip("#")
@@ -660,6 +708,268 @@ def category_rows(event: str, story: dict) -> list:
     else:  # TRANSFER and anything else routed through the transfer path
         pass  # transfer rows are built by the caller (create_transfer_image), unchanged
     return rows
+
+
+# ── PROSE SENTENCE + BULLETED DETAILS (new photo-card template) ─────────
+# The reference design (Aug 2026 uploads) shows a written narrative
+# sentence plus a separate "KEY DETAILS" bulleted list -- richer than the
+# icon-row list above. Built from the SAME real field names as
+# category_rows(); no new invented fields except AGE/POSITION, which come
+# from the already-existing _optional_age()/_fpl_position() helpers (see
+# _fact_grid_items above) rather than anything new.
+
+def category_prose(event: str, story: dict, player_name: str) -> str:
+    """One narrative sentence describing what happened, matching the
+    reference's "TRANSFER CONFIRMED" / "SUSPENSION CONFIRMED" style prose
+    block. Built only from fields the story actually has; a missing field
+    shortens the sentence rather than leaving a blank or a placeholder
+    word in it.
+    """
+    key = str(event or "").upper()
+    if key in {"PRESS", "TEAM_NEWS"}:
+        key = "PRESS_CONFERENCE"
+    to_club = story.get("to_club") or ""
+    from_club = story.get("from_club") or ""
+
+    if key == "TRANSFER":
+        if to_club and from_club:
+            return f"{player_name} has completed a transfer from {from_club} to {to_club}."
+        if to_club:
+            return f"{player_name} has joined {to_club}."
+        return f"{player_name} is subject to transfer news."
+    if key == "INJURY":
+        diagnosis = story.get("diagnosis")
+        club = to_club or from_club
+        base = f"{player_name} has been assessed" + (f" with {diagnosis}" if diagnosis else "")
+        return base + (f" at {club}." if club else ".")
+    if key == "SUSPENSION":
+        reason = story.get("diagnosis")
+        base = f"{player_name} has been suspended"
+        return base + (f" following {reason}." if reason else " and will miss upcoming fixtures.")
+    if key == "PRESS_CONFERENCE":
+        club = to_club or from_club
+        topic = story.get("quote_topic")
+        base = f"{player_name} spoke to the press"
+        if club:
+            base += f" as {club} manager" if story.get("is_staff") else f" ahead of {club}'s next match"
+        return base + (f", discussing {topic.lower()}." if topic else ".")
+    return f"{player_name} is the subject of the latest FPL Vortex update."
+
+
+def category_details(event: str, story: dict, player_el, fpl_data) -> list:
+    """Bulleted KEY DETAILS list -- richer than category_rows()'s compact
+    icon-row list, matching the reference's bulleted-list panel. Reuses
+    the existing _optional_age/_fpl_position/_fpl_price helpers (already
+    used elsewhere in this file) rather than inventing new field access.
+    """
+    key = str(event or "").upper()
+    if key in {"PRESS", "TEAM_NEWS"}:
+        key = "PRESS_CONFERENCE"
+    items = []
+    age = _optional_age(player_el, story)
+    position = _safe_card_text(story.get("position") or _fpl_position(player_el, fpl_data))
+    if key == "TRANSFER":
+        if age:
+            items.append(("Age", age))
+        if position:
+            items.append(("Position", position.title()))
+        if story.get("from_club"):
+            items.append(("From", story["from_club"]))
+        if story.get("to_club"):
+            items.append(("To", story["to_club"]))
+        contract = story.get("contract")
+        if contract:
+            items.append(("Contract", str(contract)))
+        fee = story.get("fee")
+        if fee:
+            items.append(("Fee", str(fee)))
+        elif story.get("is_free"):
+            items.append(("Fee", "Free transfer"))
+    elif key == "INJURY":
+        if story.get("diagnosis"):
+            items.append(("Injury", str(story["diagnosis"])))
+        items.append(("Availability", {4: "Available / fit again", 3: "Ruled out", 2: "Doubt",
+                                        1: "To be assessed"}.get(story.get("stage", 1), "To be assessed")))
+        items.append(("Expected return", story.get("expected_return") or "Awaiting update"))
+        if story.get("next_match"):
+            items.append(("Next match", str(story["next_match"])))
+    elif key == "SUSPENSION":
+        items.append(("Reason", str(story.get("diagnosis") or "Disciplinary action")))
+        if story.get("suspension_length"):
+            items.append(("Length", str(story["suspension_length"])))
+        items.append(("Competition", "Premier League"))
+        items.append(("Expected return", story.get("expected_return") or "As per official update"))
+    elif key == "PRESS_CONFERENCE":
+        if story.get("quote_topic"):
+            items.append(("Topic", str(story["quote_topic"])))
+        if story.get("quote_summary"):
+            items.append(("Key quote", str(story["quote_summary"])))
+        club = story.get("to_club") or story.get("from_club")
+        if club:
+            items.append(("Club", club))
+    return items
+
+
+# Category-specific styling for the new photo-card template: border/pill
+# colour, the on-photo status pill text, and whether the bottom bar under
+# the photo shows one club or a from->to pair (transfer only).
+PHOTO_CARD_THEME = {
+    "TRANSFER":        {"accent": "#39FF88", "pill": "TRANSFER CONFIRMED", "photo_tag": None,          "two_club": True},
+    "INJURY":          {"accent": "#FF3B30", "pill": "INJURY UPDATE",      "photo_tag": "🩹 INJURED",   "two_club": False},
+    "SUSPENSION":      {"accent": "#FFD60A", "pill": "SUSPENSION CONFIRMED","photo_tag": "🚫 SUSPENDED","two_club": False},
+    "PRESS_CONFERENCE":{"accent": "#29B6F6", "pill": "PRESS CONFERENCE",   "photo_tag": None,          "two_club": False},
+}
+
+
+def _photo_card_theme(event: str) -> dict:
+    key = str(event or "").upper()
+    if key in {"PRESS", "TEAM_NEWS"}:
+        key = "PRESS_CONFERENCE"
+    return PHOTO_CARD_THEME.get(key, PHOTO_CARD_THEME["TRANSFER"])
+
+
+def _build_photo_card_html(player_name, event, logo_uri, photo_uri, crest_uri,
+                           to_crest_uri, prose, details, source_text, hashtag_text,
+                           age="", position="", club_name="", to_club_name="",
+                           season_text=None):
+    """New photo-card template matching the Aug 2026 reference uploads:
+    a bordered player-photo panel on the left (category-accent border,
+    on-photo status pill, age/name/position overlaid on the photo itself,
+    a club bar underneath) and a details panel on the right (heading pill,
+    prose sentence, bulleted KEY DETAILS list, CTA banner).
+
+    Built at this repo's existing 16:9 output canvas (docs/CARD_SPEC.md
+    Universal Rule #1: every card is exactly 3840x2160) rather than the
+    reference mockup's own ~1.2:1 card crop -- the reference's tweet-
+    preview panel was confirmed to be mockup context only, not part of
+    the target image, but the card itself still needs to fit this
+    pipeline's fixed output size without distortion, so the layout is
+    adapted to a wider canvas rather than the size changed to match.
+
+    A real lightning/energy background behind the photo (as in the
+    reference) is not reproduced -- that is a manually composited or
+    per-player generated art effect, not something the FPL/Wikipedia
+    photo pipeline can produce, and faking it with a generic effect would
+    look wrong often enough to not be worth it. A soft category-tinted
+    radial glow stands in for it instead.
+    """
+    theme = _photo_card_theme(event)
+    accent = theme["accent"]
+    if season_text is None:
+        season_text = current_fpl_season()
+
+    if photo_uri:
+        photo_html = f'<img class="player-photo" src="{photo_uri}" />'
+    else:
+        photo_html = '<div class="player-photo-fallback">👤</div>'
+
+    tag_html = f'<div class="photo-tag">{theme["photo_tag"]}</div>' if theme["photo_tag"] else ''
+
+    if theme["two_club"] and club_name and to_club_name:
+        club_bar_html = (
+            f'<div class="club-bar two-club">'
+            f'{f"<img class=\"club-crest\" src=\"{crest_uri}\" />" if crest_uri else ""}'
+            f'<span>{club_name}</span>'
+            f'<span class="club-arrow">&#187;&#187;</span>'
+            f'{f"<img class=\"club-crest\" src=\"{to_crest_uri}\" />" if to_crest_uri else ""}'
+            f'<span>{to_club_name}</span></div>'
+        )
+    elif club_name:
+        club_bar_html = (
+            f'<div class="club-bar one-club">'
+            f'{f"<img class=\"club-crest\" src=\"{crest_uri}\" />" if crest_uri else ""}'
+            f'<span>{club_name}</span></div>'
+        )
+    else:
+        club_bar_html = ''
+
+    details_html = "".join(
+        f'<li><span class="detail-key">{label}:</span> <span class="detail-val">{value}</span></li>'
+        for (label, value) in details)
+
+    age_line = f'<span class="age-badge">AGE {age}</span>' if age else ''
+    position_line = f'<div class="player-position">{position.upper()}</div>' if position else ''
+
+    return f"""<!DOCTYPE html><html><head><style>
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&display=swap');
+        * {{ box-sizing:border-box; }}
+        body {{ margin:0; padding:0; width:1720px; height:968px; overflow:hidden; position:relative;
+                font-family:'Montserrat',sans-serif; color:#fff; background:#05070B;
+                display:flex; flex-direction:row; padding:36px 44px; gap:32px; }}
+
+        /* ── LEFT: bordered photo panel ── */
+        .photo-panel {{ width:640px; flex:0 0 auto; position:relative; border-radius:22px;
+                        border:5px solid {accent}; box-shadow:0 0 34px rgba({_hex_to_rgb(accent)},.35);
+                        overflow:hidden; background:radial-gradient(ellipse at 50% 30%, rgba({_hex_to_rgb(accent)},.28), #05070B 70%);
+                        display:flex; flex-direction:column; }}
+        .photo-frame {{ flex:1; position:relative; overflow:hidden; }}
+        .player-photo {{ width:100%; height:100%; object-fit:cover; object-position:top center; }}
+        .player-photo-fallback {{ width:100%; height:100%; display:flex; align-items:center;
+                                  justify-content:center; font-size:220px; opacity:.15; }}
+        .photo-tag {{ position:absolute; top:22px; left:22px; background:rgba(5,7,11,.82);
+                     color:{accent}; font-size:26px; font-weight:900; padding:8px 18px;
+                     border-radius:8px; letter-spacing:1px; z-index:3; }}
+        .photo-overlay {{ position:absolute; left:0; right:0; bottom:0; z-index:2;
+                          background:linear-gradient(to top, rgba(0,0,0,.92) 40%, transparent 100%);
+                          padding:70px 26px 18px 26px; }}
+        .age-badge {{ background:{accent}; color:#05070B; font-size:22px; font-weight:900;
+                     padding:4px 12px; border-radius:5px; margin-bottom:8px; display:inline-block; }}
+        .player-name-photo {{ font-size:52px; font-weight:900; line-height:1.0; text-transform:uppercase;
+                              white-space:nowrap; max-width:100%; }}
+        .player-position {{ font-size:24px; font-weight:800; letter-spacing:4px; color:{accent};
+                            margin-top:6px; }}
+        .club-bar {{ background:#0B0E14; padding:16px 22px; display:flex; align-items:center;
+                    gap:14px; font-size:24px; font-weight:900; }}
+        .club-bar.two-club {{ justify-content:space-between; }}
+        .club-crest {{ width:44px; height:44px; object-fit:contain; }}
+        .club-arrow {{ color:{accent}; font-size:22px; }}
+
+        /* ── RIGHT: details panel ── */
+        .details-panel {{ flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center;
+                          padding:0 12px; }}
+        .heading-pill {{ display:inline-block; background:{accent}; color:#05070B; font-size:34px;
+                         font-weight:900; padding:12px 26px; border-radius:8px; letter-spacing:1px;
+                         margin-bottom:26px; align-self:flex-start; }}
+        .prose {{ font-size:30px; line-height:1.45; color:#E6EAF0; margin-bottom:30px; max-width:900px; }}
+        .prose b {{ color:{accent}; }}
+        .details-heading {{ font-size:24px; font-weight:900; letter-spacing:3px; color:{accent};
+                            margin-bottom:14px; }}
+        .details-list {{ list-style:none; margin:0 0 30px 0; padding:0; font-size:26px;
+                         line-height:1.7; max-width:900px; }}
+        .details-list li {{ margin-bottom:4px; }}
+        .detail-key {{ font-weight:900; color:#fff; }}
+        .detail-val {{ color:#B8C2CC; }}
+        .season-tag {{ position:absolute; top:36px; right:44px; background:rgba(255,255,255,.06);
+                       border:1px solid rgba(255,255,255,.16); border-radius:6px; padding:6px 14px;
+                       font-size:16px; font-weight:800; color:#B8C2CC; }}
+        .footer {{ position:absolute; bottom:14px; left:44px; right:44px; display:flex;
+                  justify-content:space-between; font-size:18px; color:#8B94A3; font-weight:700; }}
+        .footer .hashtags {{ color:{accent}; }}
+    </style></head><body>
+        <div class="season-tag">SEASON {season_text}</div>
+        <div class="photo-panel">
+            <div class="photo-frame">
+                {tag_html}
+                {photo_html}
+                <div class="photo-overlay">
+                    {age_line}
+                    <div class="player-name-photo">{player_name}</div>
+                    {position_line}
+                </div>
+            </div>
+            {club_bar_html}
+        </div>
+        <div class="details-panel">
+            <div class="heading-pill">{theme["pill"]}</div>
+            <div class="prose">{prose}</div>
+            <div class="details-heading">KEY DETAILS</div>
+            <ul class="details-list">{details_html}</ul>
+        </div>
+        <div class="footer">
+            <span>Source: {source_text}</span>
+            <span class="hashtags">{hashtag_text}</span>
+        </div>
+    </body></html>"""
 
 
 def _build_photo_frame_html(player_name, status, event, logo_uri, photo_uri,

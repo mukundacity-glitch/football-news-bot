@@ -137,33 +137,50 @@ def test_unparseable_first_seen_fails_closed_not_settled():
 
 
 # ── Source + link on every transfer post ──────────────────────────────────
+# NOTE (Aug 2026): the new fixed-format posts (build_tweet_body's dispatch
+# to format_transfer_post/format_injury_post/format_suspension_post/
+# format_press_conference_post for mode == "confirmed") deliberately omit
+# a source attribution line -- this was an explicit, direct instruction
+# ("No, keep it exactly as I wrote it — no source line"), not an
+# oversight. These tests now check the new format's real contract
+# instead of the old one's.
 
-def test_confirmed_post_includes_source_and_link():
+def test_confirmed_post_has_no_source_line_by_design():
     s = main.build_story("Chelsea complete the signing of Joao Pedro from Brighton for £30 million. Here we go!", None)
     s["display_name"] = s["player"]
     s["source_url"] = "https://x.com/FabrizioRomano/status/123"
     mode = main.classify_post(s, ["FabrizioRomano"])
     body = main.build_tweet_body(s, ["FabrizioRomano"], mode)
-    assert "SOURCE" in body
-    assert "@FabrizioRomano" in body
-    assert "https://x.com/FabrizioRomano/status/123" in body
+    # The new fixed format never includes a source handle or link --
+    # confirmed directly by the user, not inferred.
+    assert "SOURCE" not in body
+    assert "https://x.com/FabrizioRomano/status/123" not in body
+    # It still carries the real transfer facts.
+    assert "Chelsea" in body
+    assert "Brighton" in body
 
 
-def test_post_without_url_still_shows_source_handle_only():
+def test_post_without_url_still_has_no_source_line():
     s = main.build_story("Chelsea complete the signing of Joao Pedro from Brighton.", None)
     s["display_name"] = s["player"]
     s["source_url"] = None
     body = main.build_tweet_body(s, ["transfermarkt"], "confirmed")
-    assert "SOURCE — @transfermarkt" in body
-    assert "http" not in body.split("SOURCE")[1].split("\n")[0]
+    assert "SOURCE" not in body
+    assert "@transfermarkt" not in body
 
 
-def test_explicit_confirmed_rumour_status_label_present():
+def test_confirmed_uses_new_fixed_format_rumour_still_uses_explicit_status_label():
     s = main.build_story("Chelsea complete the signing of Joao Pedro from Brighton.", None)
     s["display_name"] = s["player"]
     confirmed_body = main.build_tweet_body(s, ["ChelseaFC"], "confirmed")
     rumour_body = main.build_tweet_body(s, ["transfermarkt"], "rumour")
-    assert "✅ STATUS — CONFIRMED" in confirmed_body
+    # Confirmed: the new fixed format (TRANSFER CONFIRMED! ... style),
+    # not the old explicit STATUS line.
+    assert "TRANSFER CONFIRMED!" in confirmed_body
+    assert "✅ STATUS — CONFIRMED" not in confirmed_body
+    # Rumour mode is untouched -- build_tweet_body only dispatches to the
+    # new format for mode == "confirmed", so the old stage-aware logic
+    # (including its explicit STATUS line) still applies here.
     assert "🔄 STATUS — RUMOUR" in rumour_body
 
 
