@@ -1,29 +1,5 @@
 [
   {
-    "timestamp": "2026-08-02T19:23:16.293036+00:00",
-    "gate": "validate_story",
-    "reason": "unconfirmed_player_identity",
-    "sources": [
-      "David_Ornstein"
-    ],
-    "original_text": "What we’re hearing about Arsenal’s interest in Vinicius Junior and his Real Madrid contract - The Athletic - The New York Times. What we’re hearing about Arsenal’s interest in Vinicius Junior and his Real Madrid contract - The Athletic &nbsp;&nbsp; The New York Times",
-    "extracted": {
-      "player": "Vinicius Junior",
-      "event": "transfer",
-      "from_club": null,
-      "to_club": "Arsenal",
-      "fee": null,
-      "contract": null,
-      "stage": 1,
-      "mode": null,
-      "collapsed": false
-    },
-    "entity": {
-      "type": "PLAYER",
-      "reason": "player_ok"
-    }
-  },
-  {
     "timestamp": "2026-08-02T19:23:16.322945+00:00",
     "gate": "safety_gate",
     "reason": "not_pl_relevant",
@@ -7177,6 +7153,30 @@
   },
   {
     "timestamp": "2026-08-12T12:55:41.192135+00:00",
+    "gate": "SKIPPED_UNVERIFIED_PRESS_CONFERENCE",
+    "reason": "nonfirstparty_source_cannot_authorize_press_conference",
+    "sources": [
+      "media.bbc_sport"
+    ],
+    "original_text": "",
+    "extracted": {
+      "player": "Enzo Maresca",
+      "event": "press_conference",
+      "from_club": "Chelsea",
+      "to_club": null,
+      "fee": null,
+      "contract": null,
+      "stage": 4,
+      "mode": null,
+      "collapsed": false
+    },
+    "entity": {
+      "type": "UNKNOWN",
+      "reason": "not_in_squad_registry"
+    }
+  },
+  {
+    "timestamp": "2026-08-12T13:13:07.681983+00:00",
     "gate": "SKIPPED_UNVERIFIED_PRESS_CONFERENCE",
     "reason": "nonfirstparty_source_cannot_authorize_press_conference",
     "sources": [
