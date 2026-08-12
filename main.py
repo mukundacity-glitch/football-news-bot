@@ -652,27 +652,42 @@ def is_duplicate_content(story: dict, data: dict, threshold: float = 0.90):
                 and int(story.get("stage", 1)) <= int(prev.get("stage", 0))):
             return True, "same_story_name_variant"
 
-    player_name = _norm_text(story.get("player") or "")
-    event_type = _norm_text(story.get("event") or "")
-    stage_num = str(story.get("stage", 1))
-    is_collapsed = "collapsed" if story.get("collapsed") else "active"
-    
-    if not player_name:
-        return False, ""
-        
-    head = f"{player_name}_{event_type}_stage{stage_num}_{is_collapsed}"
-    
+    head = _dedup_headline_key(story)
+
     if head:
         for prev in data.get("posted_headlines", []):
             if difflib.SequenceMatcher(None, head, prev).ratio() >= threshold:
                 return True, f"fuzzy_headline>={threshold:.2f}"
     return False, ""
 
+def _dedup_headline_key(story: dict) -> str:
+    """Wording-independent identity for the fuzzy duplicate layer.
+
+    content_hash() folds the source headline in, so the same move reported by
+    two feeds in different words produces two different hashes and passes. This
+    key deliberately drops the wording and keeps only what makes a story the
+    same story: who, what kind of event, how far along, and whether it collapsed.
+
+    ONE function feeds both the recorder and the checker. They previously built
+    the string separately — the recorder stored the raw headline text while the
+    checker compared against "player_event_stageN_active" — so the two could
+    never match (measured similarity 0.48 against a 0.90 threshold) and this
+    entire layer was dead. Sharing the function is what stops that recurring.
+    """
+    player_name = _norm_text(story.get("player") or "")
+    if not player_name:
+        return ""
+    event_type = _norm_text(story.get("event") or "")
+    stage_num = str(story.get("stage", 1))
+    is_collapsed = "collapsed" if story.get("collapsed") else "active"
+    return f"{player_name}_{event_type}_stage{stage_num}_{is_collapsed}"
+
+
 def record_content_dedup(story: dict, data: dict):
     h = content_hash(story)
     if h not in data.setdefault("posted_hashes", []):
         data["posted_hashes"].append(h)
-    head = _norm_text(story.get("headline") or story.get("player"))
+    head = _dedup_headline_key(story)
     if head and head not in data.setdefault("posted_headlines", []):
         data["posted_headlines"].append(head)
     if len(data["posted_hashes"]) > 2000: data["posted_hashes"] = data["posted_hashes"][-2000:]

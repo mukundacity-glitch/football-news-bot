@@ -26,6 +26,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # Match bot.yml. The card tests assert a real 3840x2160 render, and
+          # without a browser the renderer falls back to a 1380x776 PIL card —
+          # so this gate was measuring the fallback, not the thing that ships.
+          pip install playwright
+          python -m playwright install chromium --with-deps
 
       - name: Compile Python sources
         run: python -m compileall -q main.py src tools

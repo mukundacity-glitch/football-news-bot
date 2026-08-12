@@ -285,7 +285,24 @@ def test_create_transfer_image_renders_a_valid_landscape_card():
     assert abs((w / h) - (3840 / 2160)) < 0.01, f"aspect ratio drifted: {w}x{h}"
 
 
+def _requires_browser():
+    """Skip when there is no browser to render with.
+
+    Without Playwright the renderer silently falls back to a 1380x776 PIL card,
+    so these assertions would be measuring the fallback rather than the card
+    that ships. Skipping says that honestly instead of failing for the wrong
+    reason — and test_ci_installs_a_browser_so_these_never_silently_skip below
+    stops the skip from quietly becoming permanent in CI.
+    """
+    import pytest
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        pytest.skip("playwright not installed — cannot verify a real 4K render")
+
+
 def test_create_injury_image_renders_a_valid_landscape_card():
+    _requires_browser()
     _with_twikit_stub()
     import main as _main
     story = {
@@ -354,3 +371,16 @@ def test_old_frame_functions_have_no_remaining_callers():
         call_count = source.count(f"{fn_name}(") - source.count(f"def {fn_name}(")
         assert call_count == 0, (
             f"expected {fn_name} to have zero remaining callers, found {call_count}")
+
+
+def test_ci_installs_a_browser_so_these_never_silently_skip():
+    """The render tests skip without Playwright. That is right for a laptop and
+    wrong for CI: a gate that skips protects nothing. bot.yml installs a browser
+    because production needs one; the test workflow must match, or it measures a
+    different renderer than the one that ships."""
+    from pathlib import Path
+
+    for workflow in (".github/workflows/bot.yml", ".github/workflows/diff_test.yml"):
+        text = Path(workflow).read_text()
+        assert "pip install playwright" in text, f"{workflow} must install playwright"
+        assert "playwright install chromium" in text, f"{workflow} must install a browser"
