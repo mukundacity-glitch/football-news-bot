@@ -173,8 +173,11 @@ def render_verified_card(decision: VerificationDecision, sources: SourceRegistry
     draw.ellipse((W-1700, -400, W+400, H+600), fill=(8, 15, 22))
     draw.rectangle((0, 0, 22, H), fill=accent)
 
-    logo = Path("Logo.png")
-    if logo.exists():
+    # The brand asset was renamed Logo.png -> logo.png. Linux runners are
+    # case-sensitive, so the hardcoded name silently resolved to nothing and
+    # every published card lost its lion mark. Take whichever exists.
+    logo = next((p for p in (Path("logo.png"), Path("Logo.png")) if p.exists()), None)
+    if logo is not None:
         try:
             brand = Image.open(logo).convert("RGBA")
             brand.thumbnail((130, 130), Image.Resampling.LANCZOS)
@@ -226,9 +229,17 @@ def render_verified_card(decision: VerificationDecision, sources: SourceRegistry
     draw.rectangle((0, 1960, W, H), fill=(8, 11, 16))
     draw.rectangle((0, 1960, W, 1972), fill=accent)
     draw.text((112, 2020), f"CONFIRMED BY: {source}", font=_font(42, True), fill=(205,212,223))
-    draw.text((W-760, 2020), f"SOURCE: {source}", font=_font(42, True), fill=(205,212,223))
     draw.text((112, 2090), footer_tag, font=_font(30, True), fill=accent)
-    draw.text((W-430, 2090), "3840 × 2160  •  16:9", font=_font(30, True), fill=(120,130,145))
+
+    # Right-aligned from the MEASURED width, not a fixed offset. A hardcoded
+    # W-760 fits "SOURCE: Arsenal" and runs off the canvas the moment two
+    # sources are credited ("Aston Villa · BBC Sport"), which is the common case.
+    def _right(text, font, y, fill):
+        width = draw.textlength(text, font=font)
+        draw.text((W - 112 - width, y), text, font=font, fill=fill)
+
+    _right(f"SOURCE: {source}", _font(42, True), 2020, (205,212,223))
+    _right("3840 × 2160  •  16:9", _font(30, True), 2090, (120,130,145))
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
