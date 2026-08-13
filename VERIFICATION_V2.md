@@ -128,11 +128,12 @@ recent publication that conflicts on a critical fact is held rather than replace
 
 ## 9. Output generation
 
-Fact-only caption templates remain available for verification. All previous
-image-card renderers and graphic designs have been removed. The image boundary
-raises `RendererNotInstalledError`, so `post_item()` cannot contact X until an
-approved replacement renderer is installed. Legacy items and invalid V2
-fingerprints remain blocked independently of rendering.
+Fact-only captions and the replacement FPL VORTEX master renderer consume only
+`verified_facts`. The renderer creates RGB 3840×2160 PNGs with calculated
+layouts, automatic text fitting and identity-safe player/club assets. The strict
+card entry point revalidates transfer and press-conference authority before
+rendering. Legacy items and invalid V2 fingerprints remain blocked independently
+of visual output. Live posting stays disabled until the previews are approved.
 
 ## 10. Persistence
 

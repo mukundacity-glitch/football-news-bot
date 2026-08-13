@@ -55,11 +55,13 @@ wording.
 
 ### Renderer status
 
-All previous player-card designs, templates, graphics assets, composition code,
-and fallback renderers have been completely removed at the owner's request.
-The live bot workflow is disabled. Verification can still classify and audit
-stories, but image publishing fails closed until a new renderer is supplied,
-reviewed, and installed.
+The previous rendering systems were completely removed. The replacement
+`src/rendering/` package implements the owner's four uploaded master references:
+transfer, injury, suspension and press conference. It renders RGB 3840×2160 PNGs
+with fixed FPL VORTEX/PL header branding, a fixed five-zone footer, calculated
+data rows, automatic text fitting, verified FROM → TO direction and identity-safe
+image resolution. The live workflow remains disabled until the new previews are
+explicitly approved.
 
 ### PRESS_CONFERENCE: official-confirmed-only, same bar as TRANSFER
 
@@ -76,8 +78,8 @@ enforced the same way as TRANSFER:
    source URL/domain/allowlist, and the speaker/club/quote facts before any
    publication can be authorized.
 
-Caption generation remains fact-only for verification tests, but live posting
-is disabled because no image-card renderer is installed.
+Caption and image generation remain fact-only. Live posting is still disabled
+while the replacement graphics await visual approval.
 
 ### Injury/suspension classification: ambiguous trigger phrases require corroboration
 
@@ -170,8 +172,11 @@ when the `X_POST_*` secrets are absent.
   source outcomes, and publications
 - `src/verification/engine.py` — mandatory noncompensatory publication gates
 - `src/verification/renderer.py` — verified-facts-only text templates
-- `src/verification/card.py` — fail-closed boundary; replacement image renderer not installed
-- `src/renderer.py` — compatibility stubs and image-blank safety only; no design code
+- `src/verification/card.py` — strict authorization boundary for image rendering
+- `src/rendering/engine.py` — reusable 4K master broadcast compositor
+- `src/rendering/layout.py` — calculated layout, icons, fitting and wrapping
+- `src/rendering/assets.py` — identity-safe player/crest resolution
+- `src/renderer.py` — legacy compatibility stubs and image-blank safety only
 
 The legacy regex parser in `main.py` supplies candidate hints only. It has no live
 publication authority; `post_item()` rejects every item without a serialized V2

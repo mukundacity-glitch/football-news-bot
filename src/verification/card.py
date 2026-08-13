@@ -1,28 +1,26 @@
-"""Fail-closed boundary while no player-card renderer is installed.
-
-The previous renderer and every previous card design were removed at the
-repository owner's request. Verification may continue to classify stories, but
-nothing can produce a card or reach image-based publishing until a replacement
-renderer is supplied, reviewed, and installed.
-"""
+"""Strict entry point for the approved FPL VORTEX image renderer."""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
 
-from .models import VerificationDecision
+from src.rendering import MasterGraphicRenderer
+from .models import EventType, VerificationDecision
+from .official_transfer_gate import validate_official_transfer
+from .press_conference_gate import validate_official_press_conference
+from .reported_transfer_gate import is_reported_transfer, validate_reported_transfer
 from .source_registry import SourceRegistry
 
 
-class RendererNotInstalledError(RuntimeError):
+class RenderingAuthorizationError(RuntimeError):
     pass
 
 
-class UnverifiedTransferError(RendererNotInstalledError):
+class UnverifiedTransferError(RenderingAuthorizationError):
     pass
 
 
-class UnverifiedPressConferenceError(RendererNotInstalledError):
+class UnverifiedPressConferenceError(RenderingAuthorizationError):
     pass
 
 
@@ -33,6 +31,20 @@ def create_verified_card(
     *,
     fpl_data: Optional[dict] = None,
 ) -> str:
-    raise RendererNotInstalledError(
-        "all previous player-card renderers were removed; replacement not installed"
-    )
+    if not decision.may_publish:
+        raise RenderingAuthorizationError("cannot render an unauthorized decision")
+
+    if decision.event_type == EventType.TRANSFER:
+        validation = (
+            validate_reported_transfer(decision, sources)
+            if is_reported_transfer(decision)
+            else validate_official_transfer(decision, sources)
+        )
+        if not validation.ok:
+            raise UnverifiedTransferError(validation.reason)
+    elif decision.event_type == EventType.PRESS_CONFERENCE:
+        validation = validate_official_press_conference(decision, sources)
+        if not validation.ok:
+            raise UnverifiedPressConferenceError(validation.reason)
+
+    return MasterGraphicRenderer(sources, fpl_data=fpl_data).render(decision, output_path)

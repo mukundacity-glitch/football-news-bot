@@ -512,6 +512,14 @@ class LegacyClaimAdapter:
                     "provider_player_id", str(fotmob_row.get("playerId") or ""),
                     EvidenceSupport.STRUCTURED_DATA, str(fotmob_row.get("playerId") or ""),
                 )
+                add_fact(
+                    "provider_from_club_id", str(fotmob_row.get("fromClubId") or ""),
+                    EvidenceSupport.STRUCTURED_DATA, str(fotmob_row.get("fromClubId") or ""),
+                )
+                add_fact(
+                    "provider_to_club_id", str(fotmob_row.get("toClubId") or ""),
+                    EvidenceSupport.STRUCTURED_DATA, str(fotmob_row.get("toClubId") or ""),
+                )
                 for key in ("market_value", "position"):
                     value = legacy_story.get(key)
                     if value:
