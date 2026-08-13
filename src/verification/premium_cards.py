@@ -16,6 +16,7 @@ from io import BytesIO
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from src.cards.background import CATEGORIES, content_box_px, load_background
 from .models import EventType, VerificationDecision
 from .reported_transfer_gate import (
     is_reported_transfer,
@@ -34,6 +35,7 @@ THEMES = {
 
 def _font(size: int, bold: bool = False):
     candidates = (
+        "Montserrat-Black.ttf" if bold else "Montserrat-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
         else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold
@@ -154,115 +156,177 @@ def _draw_icon(draw, event: EventType, cx: int, cy: int, accent):
 
 
 def _tile(draw, x, y, w, h, label, value, accent):
-    draw.rounded_rectangle((x, y, x+w, y+h), radius=28, fill=(16, 20, 28), outline=(48, 55, 68), width=3)
+    draw.rounded_rectangle((x, y, x+w, y+h), radius=28, fill=(9, 12, 24), outline=accent, width=3)
     draw.rectangle((x, y, x+10, y+h), fill=accent)
-    draw.text((x+34, y+28), label.upper(), font=_font(34, True), fill=accent)
-    vf = _font(58, True)
-    draw.text((x+34, y+86), _fit(draw, value, vf, w-68), font=vf, fill=(245,248,252))
+    draw.text((x+34, y+24), label.upper(), font=_font(30, True), fill=accent)
+    vf = _font(50, True)
+    draw.text((x+34, y+76), _fit(draw, value, vf, w-68), font=vf, fill=(250,252,255))
+
+
+def _glass_panel(image: Image.Image, box, *, radius=40, fill=(3, 5, 14, 218), outline=None, width=4):
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    odraw = ImageDraw.Draw(overlay)
+    odraw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
+    image.paste(overlay, (0, 0), overlay)
+
+
+def _paste_rounded_cover(base: Image.Image, source: Image.Image, box, *, radius=42, outline=(0, 230, 90)):
+    x1, y1, x2, y2 = box
+    fitted = ImageOps.fit(
+        source.convert("RGB"), (x2-x1, y2-y1),
+        method=Image.Resampling.LANCZOS, centering=(0.5, 0.32),
+    )
+    mask = Image.new("L", fitted.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, *fitted.size), radius=radius, fill=255)
+    base.paste(fitted, (x1, y1), mask)
+    ImageDraw.Draw(base).rounded_rectangle(box, radius=radius, outline=outline, width=8)
+
+
+def _club_block(image: Image.Image, draw, box, label, club, accent):
+    x1, y1, x2, y2 = box
+    _glass_panel(image, box, radius=30, fill=(5, 8, 20, 232), outline=accent, width=3)
+    draw.text((x1+30, y1+22), label.upper(), font=_font(28, True), fill=accent)
+    crest = _load_crest(club)
+    crest_space = 150 if crest else 20
+    if crest:
+        crest.thumbnail((112, 112), Image.Resampling.LANCZOS)
+        image.paste(crest, (x2-135, y1+42), crest)
+    font = _font(54, True)
+    draw.text((x1+30, y1+82), _fit(draw, club, font, x2-x1-60-crest_space), font=font, fill=(250,252,255))
 
 
 def render_verified_card(decision: VerificationDecision, sources: SourceRegistry, output_path: str | Path, *, fpl_data: Optional[dict] = None) -> str:
+    """Composite verified facts onto Claude's approved category slide.
+
+    The artwork in ``assets/frames`` remains untouched. All variable content is
+    constrained to its measured clear content box, with the same composition
+    used for official and reported stories. Authority wording changes; branding
+    and slide design do not.
+    """
     if not decision.may_publish:
         raise ValueError("cannot render card for unverified decision")
     event = decision.event_type
     if event not in THEMES:
         raise ValueError(f"unsupported verified card event: {event.value}")
-    heading, accent, footer_tag = THEMES[event]
-    is_reported = is_reported_transfer(decision)
-    if is_reported:
-        heading = "TRANSFER REPORTED"
-        footer_tag = "TRANSFER • REPORTED"
+
+    image = load_background(event.value, SIZE)
+    draw = ImageDraw.Draw(image)
+    left, top, right, bottom = content_box_px(SIZE)
+    accent = CATEGORIES[event.value].accent
     facts = decision.verified_facts
     subject = _value(facts.get("subject_name"), "OFFICIAL UPDATE")
-    image = Image.new("RGB", SIZE, (3, 5, 8))
-    draw = ImageDraw.Draw(image)
-    W, H = SIZE
+    source = _source(decision, sources)
+    is_reported = is_reported_transfer(decision)
 
-    draw.rectangle((0, 0, W, H), fill=(3, 5, 8))
-    draw.ellipse((W-1700, -400, W+400, H+600), fill=(8, 15, 22))
-    draw.rectangle((0, 0, 22, H), fill=accent)
+    # Approved frame content regions: facts on the left, verified player image
+    # on the right. Both sit strictly between the frame's header and footer.
+    info_box = (left + 20, top + 20, left + 2220, bottom - 20)
+    photo_box = (left + 2310, top + 35, right - 35, bottom - 35)
+    _glass_panel(image, info_box, radius=46, fill=(3, 4, 15, 218), outline=(91, 37, 118, 220), width=4)
+    _glass_panel(image, photo_box, radius=46, fill=(3, 4, 15, 226), outline=accent, width=6)
 
-    # The brand asset was renamed Logo.png -> logo.png. Linux runners are
-    # case-sensitive, so the hardcoded name silently resolved to nothing and
-    # every published card lost its lion mark. Take whichever exists.
-    logo = next((p for p in (Path("logo.png"), Path("Logo.png")) if p.exists()), None)
-    if logo is not None:
-        try:
-            brand = Image.open(logo).convert("RGBA")
-            brand.thumbnail((130, 130), Image.Resampling.LANCZOS)
-            image.paste(brand, (112, 92), brand)
-        except Exception:
-            pass
-    draw.text((275, 105), "FPL", font=_font(82, True), fill=(245,248,252))
-    draw.text((430, 105), "VORTEX", font=_font(82, True), fill=(0,255,90))
-
-    draw.rounded_rectangle((112, 285, 1110, 415), radius=24, fill=accent)
-    draw.text((155, 313), heading, font=_font(58, True), fill=(0,0,0))
-    _draw_icon(draw, event, 1180, 350, accent)
-
-    photo = _load_player_image(subject)
-    frame = (2470, 170, 3700, 1880)
-    draw.rounded_rectangle(frame, radius=48, fill=(9, 13, 18), outline=accent, width=6)
-    if photo:
-        _paste_cover(image, photo, (2480, 180, 3690, 1870))
+    # Authority/status pill. Reported transfers can never visually masquerade
+    # as a first-party confirmation.
+    if event == EventType.TRANSFER:
+        status_text = (
+            reported_status_label(decision.status, facts)
+            if is_reported else "OFFICIAL TRANSFER CONFIRMED"
+        )
+    elif event == EventType.INJURY:
+        status_text = "OFFICIAL INJURY UPDATE"
+    elif event == EventType.SUSPENSION:
+        status_text = "OFFICIAL SUSPENSION UPDATE"
     else:
-        draw.ellipse((2870, 550, 3290, 970), outline=(90,98,110), width=10)
-        draw.rounded_rectangle((2750, 950, 3410, 1710), radius=180, outline=(90,98,110), width=10)
-    draw.rounded_rectangle(frame, radius=48, outline=accent, width=6)
+        status_text = "VERIFIED PRESS CONFERENCE"
+    pill = (left + 70, top + 65, left + 1020, top + 175)
+    draw.rounded_rectangle(pill, radius=28, fill=accent)
+    pill_font = _font(42, True)
+    draw.text((pill[0] + 34, pill[1] + 28), _fit(draw, status_text, pill_font, pill[2]-pill[0]-68), font=pill_font, fill=(0, 0, 0))
 
-    name_font = _font(142, True)
-    draw.text((112, 540), _fit(draw, subject.upper(), name_font, 2150), font=name_font, fill=(248,250,252))
+    name_font = _font(118, True)
+    draw.text(
+        (left + 70, top + 235),
+        _fit(draw, subject.upper(), name_font, 2070),
+        font=name_font,
+        fill=(255, 255, 255),
+    )
+    if facts.get("position"):
+        pos_font = _font(34, True)
+        draw.text((left + 75, top + 385), f"POSITION  {str(facts['position']).upper()}", font=pos_font, fill=(204, 188, 220))
 
     if event == EventType.TRANSFER:
         origin = _value(facts.get("club_from_name"), "NOT REPORTED")
         destination = _value(facts.get("club_to_name"), "NOT REPORTED")
-        _tile(draw, 112, 800, 960, 220, "ORIGIN", origin, accent)
-        _tile(draw, 1120, 800, 960, 220, "DESTINATION", destination, accent)
-        if is_reported:
-            if facts.get("structured_source") == "fotmob_transfer_table":
-                # Same visual system, four compact facts from the structured
-                # listing: no invented fee/free status or contract detail.
-                _tile(draw, 112, 1060, 468, 220, "DEAL", _value(facts.get("transfer_kind"), "NOT REPORTED"), accent)
-                _tile(draw, 606, 1060, 468, 220, "FEE", _value(facts.get("fee"), "NOT REPORTED"), accent)
-                _tile(draw, 1100, 1060, 468, 220, "CONTRACT", _value(facts.get("contract_length"), "NOT REPORTED"), accent)
-                _tile(draw, 1594, 1060, 486, 220, "MARKET VALUE", _value(facts.get("market_value"), "NOT REPORTED"), accent)
-            else:
-                _tile(draw, 112, 1060, 620, 220, "STATUS", reported_status_label(decision.status, facts), accent)
-                _tile(draw, 770, 1060, 620, 220, "REPORTED FEE", _value(facts.get("fee"), "NOT REPORTED"), accent)
-                _tile(draw, 1428, 1060, 652, 220, "DEAL TYPE", _value(facts.get("transfer_kind"), "NOT REPORTED"), accent)
+        route_y1, route_y2 = top + 455, top + 675
+        _club_block(image, draw, (left + 70, route_y1, left + 980, route_y2), "Origin", origin, accent)
+        _club_block(image, draw, (left + 1190, route_y1, left + 2100, route_y2), "Destination", destination, accent)
+        cx, cy = left + 1090, (route_y1 + route_y2) // 2
+        draw.ellipse((cx-72, cy-72, cx+72, cy+72), fill=accent)
+        draw.line((cx-35, cy, cx+35, cy), fill=(0,0,0), width=18)
+        draw.line((cx+10, cy-28, cx+40, cy), fill=(0,0,0), width=18)
+        draw.line((cx+10, cy+28, cx+40, cy), fill=(0,0,0), width=18)
+
+        fact_y = top + 740
+        gap = 22
+        tile_w = 522
+        if facts.get("structured_source") == "fotmob_transfer_table":
+            values = [
+                ("Deal", _value(facts.get("transfer_kind"), "NOT REPORTED")),
+                ("Fee", _value(facts.get("fee"), "NOT REPORTED")),
+                ("Contract", _value(facts.get("contract_length"), "NOT REPORTED")),
+                ("Market value", _value(facts.get("market_value"), "NOT REPORTED")),
+            ]
+        elif is_reported:
+            values = [
+                ("Status", reported_status_label(decision.status, facts)),
+                ("Deal", _value(facts.get("transfer_kind"), "NOT REPORTED")),
+                ("Fee", _value(facts.get("fee"), "NOT REPORTED")),
+                ("Contract", _value(facts.get("contract_length"), "NOT REPORTED")),
+            ]
         else:
-            _tile(draw, 112, 1060, 620, 220, "CONTRACT TERM", _value(facts.get("contract_length"), "NOT DISCLOSED"), accent)
-            _tile(draw, 770, 1060, 620, 220, "CONTRACT FEE", _value(facts.get("fee"), "NOT DISCLOSED"), accent)
-            _tile(draw, 1428, 1060, 652, 220, "CONTRACT TYPE", _value(facts.get("transfer_kind"), "NOT REPORTED"), accent)
+            values = [
+                ("Deal", _value(facts.get("transfer_kind"), "NOT REPORTED")),
+                ("Fee", _value(facts.get("fee"), "UNDISCLOSED")),
+                ("Contract", _value(facts.get("contract_length"), "NOT DISCLOSED")),
+                ("Status", "OFFICIAL"),
+            ]
+        for index, (label, value) in enumerate(values):
+            x = left + 70 + index * (tile_w + gap)
+            _tile(draw, x, fact_y, tile_w, 190, label, value, accent)
+
     elif event == EventType.INJURY:
-        _tile(draw, 112, 800, 1968, 220, "INJURY / DIAGNOSIS", _value(facts.get("injury_status"), "NOT REPORTED"), accent)
-        _tile(draw, 112, 1060, 950, 220, "STATUS", _value(facts.get("injury_status"), "NOT REPORTED"), accent)
-        _tile(draw, 1130, 1060, 950, 220, "EXPECTED RETURN", _value(facts.get("return_date"), "NOT OFFICIALLY CONFIRMED"), accent)
+        _tile(draw, left+70, top+500, 2030, 210, "Injury / diagnosis", _value(facts.get("injury_status")), accent)
+        _tile(draw, left+70, top+750, 990, 200, "Status", _value(facts.get("injury_status")), accent)
+        _tile(draw, left+1110, top+750, 990, 200, "Expected return", _value(facts.get("return_date"), "NOT CONFIRMED"), accent)
     elif event == EventType.SUSPENSION:
-        _tile(draw, 112, 800, 1968, 220, "SUSPENSION STATUS", _value(facts.get("suspension_status"), "NOT REPORTED"), accent)
-        _tile(draw, 112, 1060, 950, 220, "LENGTH", _value(facts.get("suspension_length"), "NOT REPORTED"), accent)
-        _tile(draw, 1130, 1060, 950, 220, "RETURN", _value(facts.get("return_date"), "NOT OFFICIALLY CONFIRMED"), accent)
+        _tile(draw, left+70, top+500, 2030, 210, "Suspension", _value(facts.get("suspension_status")), accent)
+        _tile(draw, left+70, top+750, 990, 200, "Length", _value(facts.get("suspension_length")), accent)
+        _tile(draw, left+1110, top+750, 990, 200, "Return", _value(facts.get("return_date"), "NOT CONFIRMED"), accent)
     else:
-        _tile(draw, 112, 800, 1968, 220, "CLUB", _value(facts.get("club_name"), "NOT REPORTED"), accent)
-        _tile(draw, 112, 1060, 950, 300, "WHAT WAS SAID", _value(facts.get("quote_summary"), "NOT REPORTED"), accent)
-        _tile(draw, 1130, 1060, 950, 300, "TOPIC", _value(facts.get("quote_topic"), "NOT REPORTED"), accent)
+        _tile(draw, left+70, top+500, 2030, 200, "Club", _value(facts.get("club_name")), accent)
+        _tile(draw, left+70, top+740, 2030, 260, "What was said", _value(facts.get("quote_summary")), accent)
+        _tile(draw, left+70, top+1040, 2030, 200, "Topic", _value(facts.get("quote_topic")), accent)
 
-    source = _source(decision, sources)
-    draw.rectangle((0, 1960, W, H), fill=(8, 11, 16))
-    draw.rectangle((0, 1960, W, 1972), fill=accent)
-    authority_label = "REPORTED BY" if is_reported else "CONFIRMED BY"
-    draw.text((112, 2020), f"{authority_label}: {source}", font=_font(42, True), fill=(205,212,223))
-    draw.text((112, 2090), footer_tag, font=_font(30, True), fill=accent)
+    # Actual story authority is visible only on the card, as requested. The
+    # caption renderer deliberately contains no source name or URL.
+    authority = "REPORTED" if is_reported else "CONFIRMED"
+    source_box = (left + 70, bottom - 230, left + 2100, bottom - 80)
+    _glass_panel(image, source_box, radius=28, fill=(5, 8, 20, 238), outline=accent, width=3)
+    draw.text((source_box[0]+30, source_box[1]+24), f"{authority} SOURCE", font=_font(28, True), fill=accent)
+    src_font = _font(46, True)
+    draw.text((source_box[0]+30, source_box[1]+70), _fit(draw, source, src_font, source_box[2]-source_box[0]-60), font=src_font, fill=(255,255,255))
 
-    # Right-aligned from the MEASURED width, not a fixed offset. A hardcoded
-    # W-760 fits "SOURCE: Arsenal" and runs off the canvas the moment two
-    # sources are credited ("Aston Villa · BBC Sport"), which is the common case.
-    def _right(text, font, y, fill):
-        width = draw.textlength(text, font=font)
-        draw.text((W - 112 - width, y), text, font=font, fill=fill)
-
-    _right(f"SOURCE: {source}", _font(42, True), 2020, (205,212,223))
-    _right("3840 × 2160  •  16:9", _font(30, True), 2090, (120,130,145))
+    photo = _load_player_image(subject)
+    inner_photo = (photo_box[0]+28, photo_box[1]+28, photo_box[2]-28, photo_box[3]-28)
+    if photo:
+        _paste_rounded_cover(image, photo, inner_photo, radius=36, outline=accent)
+    else:
+        pd = ImageDraw.Draw(image)
+        x1, y1, x2, y2 = inner_photo
+        cx = (x1+x2)//2
+        pd.ellipse((cx-190, y1+250, cx+190, y1+630), outline=(180,160,200), width=12)
+        pd.rounded_rectangle((cx-330, y1+620, cx+330, y2-180), radius=170, outline=(180,160,200), width=12)
+        pd.text((x1+70, y2-125), "IDENTITY VERIFIED • PHOTO UNAVAILABLE", font=_font(28, True), fill=(200,190,215))
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)

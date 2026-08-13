@@ -22,6 +22,7 @@ from unittest.mock import patch
 import pytest
 from PIL import Image
 
+from src.cards.background import load_background
 from src.verification import DecisionType, VerificationRuntime
 from src.verification.card import UnverifiedTransferError, create_verified_card
 from src.verification.official_transfer_gate import validate_official_transfer
@@ -158,6 +159,11 @@ def test_3_reported_transfer_uses_same_4k_card_and_source_only_on_card(runtime, 
         create_verified_card(decision, runtime.sources, card_path, fpl_data=FPL_DATA)
     with Image.open(card_path) as image:
         assert image.size == (3840, 2160)
+        approved = load_background("TRANSFER")
+        # Branding/header artwork is the approved Claude slide, untouched by
+        # dynamic content compositing.
+        assert image.getpixel((20, 20)) == approved.getpixel((20, 20))
+        assert image.getpixel((1900, 120)) == approved.getpixel((1900, 120))
 
 
 def test_3_medical_completed_story_is_reported_not_confirmed(runtime):
