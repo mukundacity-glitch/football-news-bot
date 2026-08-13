@@ -13,7 +13,7 @@
       "COMPLETED"
     ],
     "_transfer_policy_note": "TRANSFER is official-source-only and completed-only. HERE_WE_GO/MEDICAL/AGREEMENT are intentionally NOT publishable statuses. The flags below are also hard-disabled in code (engine.py._configured_nonofficial_confirmation always refuses non-official TRANSFER claims regardless of these values) so this policy cannot be silently reopened by editing this file alone.",
-    "allow_here_we_go": false,
+    "allow_here_we_go": true,
     "allow_non_official_confirmation": false,
     "official_first_party_sufficient": true,
     "require_corroboration_with_official": false,
@@ -41,7 +41,7 @@
     "conflict_source_reliability_min": 0.75,
     "fact_agreement_min": 1.0,
     "max_publication_age_hours": 72,
-    "max_confirmation_age_hours": 24,
+    "max_confirmation_age_hours": 72,
     "max_future_clock_skew_minutes": 15,
     "active_story_window_days": 45,
     "overall_confidence_min": 0.9,

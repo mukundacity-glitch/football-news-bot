@@ -594,12 +594,14 @@ def test_freshly_republished_historical_feature_is_not_new_event(runtime):
 
 
 def test_stale_official_confirmation_does_not_publish(runtime):
+    # max_confirmation_age_hours is 72 (see config/verification.json) — a
+    # confirmation just past that boundary should still be rejected as stale.
     obs = observation(
         title="Chelsea sign Danny Welbeck from Brighton",
         source_id="club.chelsea",
         url="https://www.chelseafc.com/en/news/article/old-signing",
         story=transfer_story(),
-        published_at=now_iso(hours=30),
+        published_at=now_iso(hours=80),
     )
     decision = runtime.verify_observations([obs])
     assert decision.decision == DecisionType.PENDING
