@@ -12,6 +12,7 @@ on:
     branches: [main]
 permissions:
   contents: write
+  actions: write  # required for the cache-pruning step (gh cache delete)
 
 concurrency:
   group: fpl-vortex-bot
@@ -40,9 +41,42 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/verification.sqlite3
+          # The exact key is unique per run on purpose — actions/cache only
+          # re-saves on a miss, and this DB is written to on every run, so a
+          # static key would restore once and then silently stop updating.
+          # restore-keys below still pulls the most recently *saved* cache
+          # on every run via prefix match, so the DB carries forward
+          # correctly. What was missing was any cleanup of old entries —
+          # see "Prune old verification-db caches" below.
           key: verification-v2-${{ github.repository_id }}-${{ github.run_id }}
           restore-keys: |
             verification-v2-${{ github.repository_id }}-
+
+      - name: Prune old verification-db caches
+        if: steps.window.outputs.should_run == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Every run saves a brand-new cache entry (see note above), so
+          # without cleanup these accumulate ~72/day, forever. Once total
+          # repo cache size crosses GitHub's 10GB cap, GitHub starts
+          # evicting the OLDEST entries — usually harmless, but a large
+          # enough burst (or bad luck) can evict the most recent one right
+          # before this run tries to restore it. That reads to the app as
+          # "database missing," and its fail-closed design means it will
+          # silently post nothing for that entire run. Keeping only the
+          # newest few caches keeps total size trivial and this scenario
+          # from ever arising in practice.
+          mapfile -t old_caches < <(
+            gh cache list --repo "${{ github.repository }}" \
+              --key "verification-v2-${{ github.repository_id }}-" \
+              --sort created_at --order desc --json id --jq '.[].id' \
+              | tail -n +6
+          )
+          for id in "${old_caches[@]:-}"; do
+            [ -n "$id" ] && gh cache delete "$id" --repo "${{ github.repository }}" || true
+          done
 
       - name: Set up Python
         if: steps.window.outputs.should_run == 'true'
@@ -107,6 +141,22 @@ jobs:
           path: |
             queue/pending/*.png
             queue/dryrun/*.png
+
+      - name: Save run status for inspection
+        # data/last_run_status.json (gitignored on purpose — it's per-run,
+        # not durable state) records exactly why a run did or didn't post
+        # (no_post_reason, live_authorized, database_was_empty, feed health,
+        # etc). Previously this only ever existed on the ephemeral runner
+        # and was lost the moment the job ended, so diagnosing "why didn't
+        # it post" meant reading through main.py by hand. Uploading it here
+        # makes it a one-click download from the run summary instead.
+        if: always() && steps.window.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-status-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: ignore
+          path: data/last_run_status.json
 
       - name: Verification V2 shadow report
         if: steps.window.outputs.should_run == 'true'
