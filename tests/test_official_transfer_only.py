@@ -484,3 +484,107 @@ def test_11_genuine_conflicting_grammar_blocks_rather_than_silently_overrides(ru
         "a genuine from/to conflict between the trusted story and a fresh "
         "grammatical read was silently resolved instead of blocking"
     )
+
+
+# ── 12. Subject resolution failing outright must not fall back to an
+# unguarded whole-article club scan (the real root cause behind a second,
+# later wrong-club incident: a Spurs player shown joining Crystal Palace/
+# Everton, after the first incident's proximity-guard fix was already
+# live -- because that guard only fires when subject_positions is
+# non-None, and subject resolution failing outright left it None) ────────
+
+def test_12_unresolvable_subject_never_reaches_the_unguarded_scan(runtime):
+    """Direct test of _guarded_transfer_direction() -- the actual method
+    the fix lives in -- rather than through the full verify_observations()
+    pipeline, which blocks an unresolved subject for its own unrelated
+    reasons (missing mandatory facts) before ever reaching this code.
+    subject_positions=None (the real signature for both "name didn't
+    resolve at all" and "resolved but no nearby mention in this
+    document") must return (None, None), never fall through to
+    _dynamic_transfer_direction()'s own unguarded scan.
+    """
+    from src.verification.extractor import LegacyClaimAdapter
+
+    adapter = LegacyClaimAdapter(runtime.config, runtime.sources, runtime.entities)
+    text = (
+        "Chelsea have completed a transfer this afternoon, the club "
+        "confirmed in an official statement. In separate news, Arsenal "
+        "have been strongly linked with several targets ahead of the "
+        "coming window, though nothing has been confirmed on that front."
+    )
+    from src.verification.entities import EntityType
+    club_mentions = adapter.entities.find_mentions(text, {EntityType.CLUB})
+
+    origin, destination = adapter._guarded_transfer_direction(
+        text, club_mentions, subject_positions=None
+    )
+    assert origin is None and destination is None, (
+        f"expected a fail-closed (None, None) when subject_positions is "
+        f"None, got origin={origin!r} destination={destination!r} -- this "
+        f"is the exact unguarded fallback that caused two real wrong-club "
+        f"incidents")
+
+
+def test_12_guarded_direction_still_works_normally_when_subject_positions_given(runtime):
+    """The wrapper must not break the working, already-tested case
+    (test_11): when subject_positions IS available, it should behave
+    identically to calling _dynamic_transfer_direction() directly.
+    """
+    from src.verification.extractor import LegacyClaimAdapter
+    from src.verification.entities import EntityType
+
+    adapter = LegacyClaimAdapter(runtime.config, runtime.sources, runtime.entities)
+    # Same text as test_11 (proven to place Arsenal outside the 400-char
+    # proximity window) -- reused rather than a shortened variant, since a
+    # shorter separation risks accidentally falling back inside the
+    # window and testing nothing real.
+    text = (
+        "Chelsea sign Danny Welbeck from Brighton in a deal announced this "
+        "morning, ending speculation over his next club after a strong "
+        "second half of last season. The move has been broadly welcomed "
+        "by supporters, who have been calling for fresh legs in that "
+        "position since the turn of the year, and the club's official "
+        "statement confirmed terms had been agreed by both parties "
+        "following a medical completed earlier in the week. "
+        "In entirely separate news reported later the same day, Arsenal "
+        "have completed the signing of a youth-team defender from a "
+        "regional academy fixture, unconnected to today's other transfer "
+        "activity across the rest of the Premier League."
+    )
+    club_mentions = adapter.entities.find_mentions(text, {EntityType.CLUB})
+    player_mentions = adapter.entities.find_mentions(text, {EntityType.PLAYER})
+    welbeck_positions = [pos for pos, ent, _ in player_mentions if "welbeck" in ent.name.lower()]
+    assert welbeck_positions, "fixture is missing Danny Welbeck in the entity registry"
+
+    origin, destination = adapter._guarded_transfer_direction(
+        text, club_mentions, subject_positions=welbeck_positions
+    )
+    assert destination is not None
+    assert destination.name == "Chelsea"
+    assert destination.name != "Arsenal"
+
+
+def test_12_full_pipeline_still_blocks_an_unresolvable_player_for_its_own_reason(runtime):
+    """Defense-in-depth check at the full-pipeline level: an unresolvable
+    player name must never publish, regardless of which specific gate
+    catches it. This does not prove the attribution fix on its own (see
+    the two tests above for that) -- it confirms the outer pipeline still
+    fails closed end-to-end.
+    """
+    story = transfer_story(player="Zzqxarian Nonexistentplayer", destination="Chelsea")
+    obs = observation(
+        title="Chelsea complete a transfer, Arsenal also active in the market",
+        source_id="club.chelsea",
+        url="https://www.chelseafc.com/en/news/article/example-transfer",
+        story=story,
+        structured=True,
+    )
+    obs["document"]["summary"] = (
+        "Chelsea have completed a transfer this afternoon, the club "
+        "confirmed in an official statement. In separate news, Arsenal "
+        "have been strongly linked with several targets ahead of the "
+        "coming window, though nothing has been confirmed on that front."
+    )
+    decision = runtime.verify_observations([obs])
+    assert not decision.may_publish
+    assert decision.rendered_text is None

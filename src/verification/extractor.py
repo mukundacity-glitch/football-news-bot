@@ -326,8 +326,8 @@ class LegacyClaimAdapter:
                 subject_positions = positions
 
         if event == EventType.TRANSFER:
-            grammatical_from, grammatical_to = self._dynamic_transfer_direction(
-                document.text, club_mentions, subject_mentions=subject_positions
+            grammatical_from, grammatical_to = self._guarded_transfer_direction(
+                document.text, club_mentions, subject_positions
             )
             # A fresh grammatical read that AGREES with (or adds to) the
             # trusted, previously-verified from/to is fine to adopt. A fresh
@@ -650,6 +650,41 @@ class LegacyClaimAdapter:
         if destination and origin and destination.id == origin.id:
             return None, None
         return origin, destination
+
+    def _guarded_transfer_direction(
+        self,
+        text: str,
+        mentions: Sequence[tuple[int, EntityRecord, str]],
+        subject_positions: Optional[Sequence[int]],
+    ) -> tuple[Optional[EntityRecord], Optional[EntityRecord]]:
+        """Fail-closed wrapper around _dynamic_transfer_direction().
+
+        subject_positions is None in two distinct failure cases, both of
+        which must fail closed here rather than fall through to
+        _dynamic_transfer_direction()'s own unguarded whole-article scan
+        (its proximity check only activates when subject_mentions is
+        truthy -- None disables it):
+          (a) subject is None -- the player's name could not be resolved
+              against the entity registry at all (unknown name, nickname,
+              unusual spelling). Most dangerous: there is no verification
+              this article is even about the claimed player.
+          (b) subject resolved fine, but this specific document has no
+              nearby textual mention of them (positions came back empty)
+              -- still ungrounded for THIS document.
+
+        This is the exact unguarded fallback that caused two separate
+        real wrong-club incidents (a Sunderland player shown as joining
+        Crystal Palace; later, after the first incident's proximity-guard
+        fix was already live, a Spurs player shown as joining Crystal
+        Palace/Everton) -- that fix added the proximity guard inside
+        _dynamic_transfer_direction() but did not cover subject
+        resolution failing outright, which is what this wrapper closes.
+        """
+        if subject_positions is None:
+            return None, None
+        return self._dynamic_transfer_direction(
+            text, mentions, subject_mentions=subject_positions
+        )
 
     def _resolve_club(self, *values: object) -> Optional[EntityRecord]:
         for value in values:
