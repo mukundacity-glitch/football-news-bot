@@ -243,12 +243,14 @@ class MasterGraphicRenderer:
             draw.text((cx, y2-165), "REAL IMAGE UNAVAILABLE", anchor="mm", font=font(42, "condensed"), fill=MUTED)
 
         metadata = resolve_player_metadata(subject, fpl_data=self.fpl_data)
-        position = clean_text(facts.get("position") or metadata.get("position"), "")
+        position = self._full_position(
+            clean_text(facts.get("position") or metadata.get("position"), "")
+        )
         if position:
             strip = (x1+40, y2-185, x2-40, y2-45)
-            draw.rounded_rectangle(strip, radius=20, fill=(0,0,0,225), outline=WHITE, width=3)
-            pfont = fit_font(draw, position.upper(), strip[2]-strip[0]-50, max_size=78, min_size=45, role="condensed")
-            draw.text(((strip[0]+strip[2])//2, (strip[1]+strip[3])//2), position.upper(), anchor="mm", font=pfont, fill=WHITE)
+            draw.rounded_rectangle(strip, radius=20, fill=(0,0,0,235), outline=CYAN, width=6)
+            pfont = fit_font(draw, position, strip[2]-strip[0]-50, max_size=92, min_size=54, role="condensed")
+            draw.text(((strip[0]+strip[2])//2, (strip[1]+strip[3])//2), position, anchor="mm", font=pfont, fill=CYAN)
 
         if style.stamp:
             stamp_font = font(92, "condensed")
@@ -532,6 +534,28 @@ class MasterGraphicRenderer:
             EventType.SUSPENSION: "warning",
             EventType.PRESS_CONFERENCE: "press",
         }[event]
+
+    @staticmethod
+    def _full_position(value: str) -> str:
+        normalized = str(value or "").strip().upper().replace("-", " ")
+        if not normalized:
+            return ""
+        compact = normalized.replace(" ", "")
+        if compact in {"GK", "GKP", "GOALKEEPER"}:
+            return "GOALKEEPER"
+        if compact in {"DEF", "CB", "LB", "RB", "LWB", "RWB", "SW", "DEFENDER"}:
+            return "DEFENDER"
+        if compact in {
+            "MID", "CM", "CDM", "DM", "CAM", "AM", "LM", "RM", "LW", "RW",
+            "MIDFIELDER", "CENTRALMIDFIELDER", "ATTACKINGMIDFIELDER",
+            "DEFENSIVEMIDFIELDER", "WINGER",
+        }:
+            return "MIDFIELDER"
+        if compact in {"FWD", "FW", "ST", "CF", "STRIKER", "FORWARD"}:
+            return "FORWARD"
+        # Already descriptive provider roles remain readable and are not reduced
+        # to abbreviations.
+        return normalized
 
     @staticmethod
     def _list_value(value: Any) -> list[str]:

@@ -556,6 +556,15 @@ class LegacyClaimAdapter:
                     "injury_status", classification.status_evidence,
                     EvidenceSupport.TEXT_SPAN, classification.status_evidence,
                 )
+            availability = _safe_string(legacy_story.get("availability_status"))
+            if (
+                availability in {"OUT", "DOUBTFUL", "RETURNING", "FIT"}
+                and document.metadata.get("structured_official")
+            ):
+                add_fact(
+                    "availability_status", availability,
+                    EvidenceSupport.STRUCTURED_DATA, availability,
+                )
             self._add_optional_grounded(
                 "return_date", legacy_story.get("expected_return"), document, add_fact
             )

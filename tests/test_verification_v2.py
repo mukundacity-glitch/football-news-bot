@@ -138,14 +138,7 @@ def test_official_title_can_recover_new_player_after_nonperson_fragment(runtime)
 
 
 def test_official_transfer_publishes_and_renders_only_verified_facts(runtime):
-    """Official-confirmed-only transfer caption template.
-
-    Per policy, the caption must always include both FROM and TO clubs and a
-    fee line (an explicit official fee, or "Fee: undisclosed" when none was
-    stated), capped at four lines with no URL/"Source:" line -- the official
-    source citation is shown on the card image footer instead, since the
-    account has no X Premium long-post allowance.
-    """
+    """Official transfers use the owner-approved master caption template."""
     obs = observation(
         title="Chelsea sign Danny Welbeck from Brighton",
         source_id="club.chelsea",
@@ -155,15 +148,12 @@ def test_official_transfer_publishes_and_renders_only_verified_facts(runtime):
     decision = runtime.verify_observations([obs])
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
     assert decision.may_publish
-    assert "Danny Welbeck has joined Chelsea from Brighton" in decision.rendered_text
+    assert "🚨 REPORTED TRANSFER: Danny Welbeck" in decision.rendered_text
+    assert "Brighton → Chelsea" in decision.rendered_text
+    assert "STATUS: OFFICIAL" in decision.rendered_text
+    assert "#TransferNews #Chelsea #DannyWelbeck #fpl" in decision.rendered_text
     assert "http" not in decision.rendered_text
     assert "Source:" not in decision.rendered_text
-    assert len(decision.rendered_text.splitlines()) <= 4
-    assert "#TransferNews" in decision.rendered_text
-    assert "#PremierLeague" in decision.rendered_text
-    assert "TBC" not in decision.rendered_text
-    assert "Contract" not in decision.rendered_text
-    assert "Fee: undisclosed" in decision.rendered_text
 
 
 def test_media_rumour_stays_pending_even_from_major_outlet(runtime):
@@ -365,13 +355,12 @@ def test_official_structured_fpl_injury_publishes(runtime):
     )
     decision = runtime.verify_observations([obs])
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert "OFFICIAL INJURY UPDATE" in decision.rendered_text
-    assert len(decision.rendered_text.splitlines()) <= 4
+    assert "🚑 INJURY UPDATE: Danny Welbeck" in decision.rendered_text
+    assert "INJURY: Hamstring injury - Expected back 15 August" in decision.rendered_text
+    assert "STATUS: RETURNING" in decision.rendered_text
+    assert "#FPL #FPLNews #Brighton #Injury" in decision.rendered_text
     assert "http" not in decision.rendered_text
     assert "Source:" not in decision.rendered_text
-    assert "#InjuryNews" in decision.rendered_text
-    assert "#PremierLeague" in decision.rendered_text
-    assert "Exact return date" not in decision.rendered_text
 
 
 def test_new_official_injury_status_is_material_progression(runtime):
@@ -686,7 +675,8 @@ def test_player_terms_wording_is_agreement_and_requires_two_sources(runtime):
     assert two.decision == DecisionType.PUBLISH, two.reasons
     assert two.may_publish
     assert two.verified_facts["reported_status_detail"] == "PLAYER TERMS AGREED"
-    assert "PLAYER TERMS AGREED" in two.rendered_text
+    assert "STATUS: REPORTED" in two.rendered_text
+    assert "Brighton → Chelsea" in two.rendered_text
     assert "CONFIRMED" not in two.rendered_text
 
 

@@ -1,15 +1,15 @@
 """Deterministic concise X post templates using verified facts only.
 
-Production rule: every live tweet must be clear, human-readable, and at most
-four visible lines. The image card carries the large visual detail AND the
-official-source citation (footer); the text caption never includes a URL or a
-"Source:" line -- this keeps captions short enough for non-premium X accounts
-without needing the character budget a link/citation would cost.
+Production captions follow the owner's event-specific master templates with
+blank-line separation between headline, facts, status and hashtags. The image
+card carries the visual detail; caption text never includes a URL or a
+"Source:" line. Every template is deterministically fitted to the X limit.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Dict, List
 
 from .models import EventStatus, EventType, VerificationDecision
@@ -61,35 +61,18 @@ class VerifiedPostRenderer:
         event = decision.event_type
 
         if event == EventType.TRANSFER:
-            if is_reported_transfer(decision):
-                return self._render_reported_transfer(decision)
-            return self._render_official_transfer(decision)
+            return self._render_transfer_template(decision)
 
         if event == EventType.PRESS_CONFERENCE:
-            return self._render_official_press_conference(decision)
+            return self._render_press_template(decision)
 
         if event == EventType.INJURY:
-            player = str(required(facts, "subject_name"))
-            club = str(required(facts, "club_name"))
-            line1 = f"🚑 OFFICIAL INJURY UPDATE: {player} — {club}"
-            status = str(required(facts, "injury_status")).rstrip(".")
-            line2 = status
-            if facts.get("return_date"):
-                line2 = f"{line2} • Return: {facts['return_date']}"
+            return self._render_injury_template(decision)
 
-        elif event == EventType.SUSPENSION:
-            person = str(required(facts, "subject_name"))
-            club = str(required(facts, "club_name"))
-            line1 = f"🟥 Official suspension: {person} — {club}"
-            status = str(required(facts, "suspension_status")).rstrip(".")
-            parts = [status]
-            if facts.get("suspension_length"):
-                parts.append(f"Length: {facts['suspension_length']}")
-            if facts.get("return_date"):
-                parts.append(f"Return: {facts['return_date']}")
-            line2 = " • ".join(parts)
+        if event == EventType.SUSPENSION:
+            return self._render_suspension_template(decision)
 
-        elif event == EventType.MANAGER:
+        if event == EventType.MANAGER:
             person = str(required(facts, "subject_name"))
             club = str(required(facts, "club_name"))
             action = str(required(facts, "manager_action"))
@@ -121,128 +104,147 @@ class VerifiedPostRenderer:
         decision.rendered_text = result
         return result
 
-    def _render_reported_transfer(self, decision: VerificationDecision) -> str:
-        """Render a tier-one report without upgrading it to confirmation.
-
-        The wording is intentionally template-only and fact-preserving. The
-        source appears on the card footer, never in the caption.
-        """
+    def _render_transfer_template(self, decision: VerificationDecision) -> str:
         facts = decision.verified_facts
         player = str(required(facts, "subject_name"))
         origin = str(required(facts, "club_from_name"))
         destination = str(required(facts, "club_to_name"))
-        status = reported_status_label(decision.status, facts)
+        if not is_reported_transfer(decision):
+            if decision.status not in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
+                raise UnverifiedTransferError(
+                    f"refusing transfer status: {decision.status.value}"
+                )
+            status = "OFFICIAL"
+        elif decision.status == EventStatus.COMPLETED:
+            status = "COMPLETED"
+        elif decision.status in {
+            EventStatus.TALKS, EventStatus.NEGOTIATION, EventStatus.BID,
+            EventStatus.AGREEMENT, EventStatus.MEDICAL, EventStatus.HERE_WE_GO,
+        }:
+            status = "REPORTED"
+        else:
+            status = "PENDING"
 
-        detail_bits = [f"Status: {status}"]
-        if facts.get("fee"):
-            detail_bits.append(f"Fee: {facts['fee']}")
-        if facts.get("contract_length"):
-            detail_bits.append(f"Contract: {facts['contract_length']}")
-        lines: List[str] = [
-            f"🚨 REPORTED TRANSFER: {player} — {origin} to {destination}",
-            " • ".join(detail_bits) + ".",
-            "This is not an official transfer announcement.",
-            self._hashtags(decision),
+        blocks = [
+            f"🚨 REPORTED TRANSFER: {self._cap(player, 64)}",
+            f"{self._cap(origin, 48)} → {self._cap(destination, 48)}",
+            f"STATUS: {status}",
+            " ".join((
+                "#TransferNews", self._tag(destination), self._tag(player), "#fpl"
+            )),
         ]
-        result = self._fit_four_lines(lines, protect_first_n=3)
-        decision.rendered_text = result
-        return result
+        return self._finish_template(decision, blocks)
 
-    def _render_official_transfer(self, decision: VerificationDecision) -> str:
-        """Exact official-confirmed-only transfer caption template.
-
-        Per the non-negotiable transfer policy this bot enforces:
-          - status must be OFFICIAL or COMPLETED ("official_confirmed")
-          - both FROM and TO clubs are always shown
-          - fee is "Fee: <official fee>" if stated, else "Fee: undisclosed" --
-            never invented, estimated, or attributed to a "reported" figure
-          - contract length is shown only if the official announcement stated it
-          - if player name, from club, to club, or official source is missing,
-            the caller must not reach this method at all (the strict gate in
-            official_transfer_gate.validate_official_transfer already refuses
-            to authorize card/caption generation in that case)
-          - no URL and no "Source:"/"Official confirmation:" line in the
-            caption text -- the official source citation is shown on the card
-            image footer instead, and the caption stays within four lines to
-            fit non-premium X accounts.
-        """
+    def _render_suspension_template(self, decision: VerificationDecision) -> str:
         facts = decision.verified_facts
-        if decision.status not in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
-            raise UnverifiedTransferError(
-                f"refusing to render a non-official-confirmed transfer status: "
-                f"{decision.status.value}"
-            )
-
         player = str(required(facts, "subject_name"))
-        destination = str(required(facts, "club_to_name"))
-        origin = str(required(facts, "club_from_name"))
-        # The official source must still exist and be resolvable -- the
-        # caption simply does not print it (it prints on the card instead).
-        authority_ids = decision.authority_source_ids or decision.source_ids
-        source_id = authority_ids[0] if authority_ids else ""
-        profile = self.sources.get(source_id)
-        if not (profile and profile.display_name) or not decision.source_url:
-            raise UnverifiedTransferError("missing official source name/url")
-
-        lines: List[str] = [
-            f"✅ Confirmed transfer: {player} has joined {destination} from {origin}."
+        club = str(required(facts, "club_name"))
+        reason = str(required(facts, "suspension_status")).rstrip(".")
+        status_text = " ".join(str(value or "") for value in (
+            facts.get("suspension_status"), facts.get("return_date")
+        )).casefold()
+        if any(token in status_text for token in ("served", "completed", "complete")):
+            status = "COMPLETED"
+        elif any(token in status_text for token in ("return", "available", "eligible")):
+            status = "RETURNING"
+        else:
+            status = "SUSPENDED"
+        blocks = [
+            f"⛔ SUSPENSION: {self._cap(player, 64)}",
+            f"{self._cap(club, 55)} | {self._cap(reason, 85)}",
+            f"STATUS: {status}",
+            " ".join(("#FPL", "#FPLNews", self._tag(club), "#suspension")),
         ]
+        return self._finish_template(decision, blocks)
 
-        meta_bits = [
-            str(b) for b in (
-                facts.get("position"),
-                facts.get("nationality"),
-                (f"Age {facts['age']}" if facts.get("age") else None),
-            ) if b
-        ]
-        if meta_bits:
-            lines.append(" | ".join(meta_bits))
-
-        fee_line = f"Fee: {facts['fee']}" if facts.get("fee") else "Fee: undisclosed"
-        if facts.get("contract_length"):
-            fee_line = f"{fee_line} • Contract: {facts['contract_length']}"
-        lines.append(fee_line)
-
-        lines.append(self._hashtags(decision))
-
-        result = self._fit_four_lines(lines, protect_first_n=2)
-        decision.rendered_text = result
-        return result
-
-    def _render_official_press_conference(self, decision: VerificationDecision) -> str:
-        """Official-confirmed-only press conference caption template.
-
-        Same non-negotiable bar as TRANSFER: only a first-party official
-        source may make this publishable (see
-        engine.py._configured_nonofficial_confirmation, which refuses every
-        non-official source for PRESS_CONFERENCE exactly like TRANSFER). A
-        reliable media outlet quoting the same presser is not sufficient.
-        """
+    def _render_injury_template(self, decision: VerificationDecision) -> str:
         facts = decision.verified_facts
-        if decision.status not in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
-            raise UnverifiedPressConferenceError(
-                f"refusing to render a non-official-confirmed press conference "
-                f"status: {decision.status.value}"
-            )
+        player = str(required(facts, "subject_name"))
+        club = str(required(facts, "club_name"))
+        injury = str(required(facts, "injury_status")).rstrip(".")
+        explicit = str(facts.get("availability_status") or "").strip().upper()
+        allowed = {"OUT", "DOUBTFUL", "RETURNING", "FIT"}
+        if explicit in allowed:
+            status = explicit
+        else:
+            evidence = " ".join(str(value or "") for value in (
+                injury, facts.get("return_date")
+            )).casefold()
+            if any(token in evidence for token in ("fit", "available", "cleared")):
+                status = "FIT"
+            elif any(token in evidence for token in (
+                "return", "back in training", "expected back", "recovery"
+            )):
+                status = "RETURNING"
+            elif any(token in evidence for token in ("doubt", "75%", "50%")):
+                status = "DOUBTFUL"
+            elif any(token in evidence for token in ("out", "ruled out", "unavailable", "will miss")):
+                status = "OUT"
+            else:
+                raise RenderingError(
+                    "verified injury is missing an OUT/DOUBTFUL/RETURNING/FIT availability cue"
+                )
+        blocks = [
+            f"🚑 INJURY UPDATE: {self._cap(player, 64)}",
+            self._cap(club, 60),
+            f"INJURY: {self._cap(injury, 95)}",
+            f"STATUS: {status}",
+            " ".join(("#FPL", "#FPLNews", self._tag(club), "#Injury")),
+        ]
+        return self._finish_template(decision, blocks)
 
+    def _render_press_template(self, decision: VerificationDecision) -> str:
+        facts = decision.verified_facts
         speaker = str(required(facts, "subject_name"))
         club = str(required(facts, "club_name"))
-        quote_summary = str(required(facts, "quote_summary")).rstrip(".")
-        authority_ids = decision.authority_source_ids or decision.source_ids
-        source_id = authority_ids[0] if authority_ids else ""
-        profile = self.sources.get(source_id)
-        if not (profile and profile.display_name) or not decision.source_url:
-            raise UnverifiedPressConferenceError("missing official source name/url")
+        update = str(required(facts, "quote_summary")).rstrip(".")
+        if decision.status in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
+            status = "CONFIRMED"
+        elif decision.status in {EventStatus.UNKNOWN, EventStatus.RUMOUR, EventStatus.INTEREST}:
+            status = "EXPECTED"
+        else:
+            status = "REPORTED"
+        blocks = [
+            "🎙️ PRESS CONFERENCE",
+            self._cap(speaker, 64),
+            f"{self._cap(club, 55)} | UPDATE: {self._cap(update, 105)}",
+            f"STATUS: {status}",
+            " ".join(("#FPL", "#FPLNews", self._tag(club))),
+        ]
+        return self._finish_template(decision, blocks)
 
-        lines: List[str] = [f"🎙️ {speaker} ({club}) — press conference"]
-        lines.append(quote_summary)
-        if facts.get("quote_topic"):
-            lines.append(str(facts["quote_topic"]))
-        lines.append(self._hashtags(decision))
+    @staticmethod
+    def _cap(value: object, maximum: int) -> str:
+        text = " ".join(str(value or "").split()).strip()
+        if len(text) <= maximum:
+            return text
+        return text[: max(1, maximum-1)].rstrip(" .;,|") + "…"
 
-        result = self._fit_four_lines(lines, protect_first_n=2)
-        decision.rendered_text = result
-        return result
+    @staticmethod
+    def _tag(value: object) -> str:
+        text = unicodedata.normalize("NFKD", str(value or ""))
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        text = re.sub(r"[^A-Za-z0-9]", "", text)
+        return "#" + (text or "FPL")
+
+    def _finish_template(self, decision: VerificationDecision, blocks: List[str]) -> str:
+        clean = [" ".join(str(block or "").split()) for block in blocks if str(block or "").strip()]
+        text = "\n\n".join(clean)
+        # Preserve the user's blank-line master layout. If an unusual long
+        # verified value exceeds the X limit, shorten the longest non-hashtag
+        # body block without removing status or hashtags.
+        while twitter_weight(text) > self.limit:
+            candidates = [
+                (len(block), index) for index, block in enumerate(clean[:-1])
+                if len(block) > 36 and not block.startswith("STATUS:")
+            ]
+            if not candidates:
+                raise RenderingError("master caption does not fit X character limit")
+            _, index = max(candidates)
+            clean[index] = self._cap(clean[index], len(clean[index]) - 8)
+            text = "\n\n".join(clean)
+        decision.rendered_text = text
+        return text
 
     def _source_line(self, decision: VerificationDecision) -> str:
         authority_ids = decision.authority_source_ids or decision.source_ids

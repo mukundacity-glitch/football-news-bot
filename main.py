@@ -1950,8 +1950,19 @@ def fetch_fpl_injury_news(fpl_data) -> list:
         chance = el.get("chance_of_playing_this_round")
         event = "suspension" if status == "s" else "injury"
         stage = status_to_stage.get(status, 2)
-        if event == "injury" and chance is not None:
-            stage = 3 if chance <= 25 else 2
+        availability_status = None
+        if event == "injury":
+            evidence = news_text.casefold()
+            if any(token in evidence for token in ("fit", "available", "cleared")):
+                availability_status = "FIT"
+            elif any(token in evidence for token in ("back in training", "return", "recovery")):
+                availability_status = "RETURNING"
+            elif status == "d" or (chance is not None and 25 < chance <= 75):
+                availability_status = "DOUBTFUL"
+            elif status in {"i", "u", "n"} or (chance is not None and chance <= 25):
+                availability_status = "OUT"
+            if chance is not None:
+                stage = 3 if chance <= 25 else 2
         tid = "fpl_" + hashlib.md5(
             f"{el['id']}_{news_text[:40]}".encode()).hexdigest()[:12]
         text = f"{player_full}: {news_text}"
@@ -1978,6 +1989,7 @@ def fetch_fpl_injury_news(fpl_data) -> list:
                 "headline": text, "body": news_text, "raw_text": text,
                 "from_video": False, "has_written_claim": True,
                 "chance_of_playing": chance,
+                "availability_status": availability_status,
                 "sources": ["officialfpl"],
             }
         })
