@@ -126,18 +126,13 @@ confirmation waits. Identical fingerprints are duplicates.
 A new post requires a higher milestone or a changed configured material fact. A
 recent publication that conflicts on a critical fact is held rather than replaced.
 
-## 9. Text and card generation
+## 9. Output generation
 
-Both caption and image card are built from `verified_facts`. The renderer:
-
-- Does not call an LLM
-- Does not infer permanent/loan/free unless verified
-- Omits unknown fees, contracts, return dates, and suspension lengths
-- Omits long source wording rather than truncating it into misleading context
-- Regenerates the caption from the serialized, gate-validated decision immediately before posting
-
-`post_item()` refuses all legacy items and rechecks the V2 decision plus publication
-fingerprint before contacting X.
+Fact-only caption templates remain available for verification. All previous
+image-card renderers and graphic designs have been removed. The image boundary
+raises `RendererNotInstalledError`, so `post_item()` cannot contact X until an
+approved replacement renderer is installed. Legacy items and invalid V2
+fingerprints remain blocked independently of rendering.
 
 ## 10. Persistence
 

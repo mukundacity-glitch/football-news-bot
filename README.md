@@ -53,18 +53,13 @@ Reliable but non-official transfer updates use a distinct **REPORTED** lane:
 posts before rendering. A reported decision can never receive confirmed
 wording.
 
-Every publishable category renders through the same production 3840×2160
-(16:9) card design. Official cards show `TRANSFER CONFIRMED`; reported cards
-show `TRANSFER REPORTED` plus the verified milestone. Captions contain no
-source name or URL—the approved source citation appears only on the card.
+### Renderer status
 
-Player photos in the production path (`src/renderer.py::_img_assets`) follow
-FPL → Wikipedia → ESPN → BBC Sport → FotMob → club crest, in that order; a
-smaller independent reference implementation of the FPL → Wikipedia →
-placeholder policy also exists at `src/verification/player_image.py` (see
-its module docstring). The FPL bootstrap-static API and Wikipedia are used
-for player metadata/imagery only and are never treated as transfer- or
-press-conference-confirmation evidence.
+All previous player-card designs, templates, graphics assets, composition code,
+and fallback renderers have been completely removed at the owner's request.
+The live bot workflow is disabled. Verification can still classify and audit
+stories, but image publishing fails closed until a new renderer is supplied,
+reviewed, and installed.
 
 ### PRESS_CONFERENCE: official-confirmed-only, same bar as TRANSFER
 
@@ -78,16 +73,11 @@ enforced the same way as TRANSFER:
    unconditionally refuses PRESS_CONFERENCE from any non-official source.
 2. `src/verification/press_conference_gate.py` — a second, independent
    `validate_official_press_conference()` gate re-checks status, the official
-   source URL/domain/allowlist, and the speaker/club/quote facts immediately
-   before any card/caption is generated, logging
-   `SKIPPED_UNVERIFIED_PRESS_CONFERENCE` on failure.
+   source URL/domain/allowlist, and the speaker/club/quote facts before any
+   publication can be authorized.
 
-### Caption format (all categories)
-
-Every caption is capped at four visible lines with **no URL and no
-"Source:"/"Official confirmation:" line** — the account has no X Premium
-long-post allowance, and the official source citation is shown on the card
-image footer instead.
+Caption generation remains fact-only for verification tests, but live posting
+is disabled because no image-card renderer is installed.
 
 ### Injury/suspension classification: ambiguous trigger phrases require corroboration
 
@@ -98,8 +88,7 @@ and on a genuine injury. `config/verification.json`'s
 evidence terms (hamstring, scan, surgery, red card, ban, ...) that must also
 appear in the document before INJURY/SUSPENSION classification is accepted;
 otherwise classification fails closed to UNKNOWN instead of guessing. This
-check is generic (config-driven, not keyed to any player/club/match) — see
-`tests/test_press_conference_and_caption_rebuild.py`.
+check is generic and config-driven, not keyed to any player, club, or match.
 
 ## Emergency stop
 
@@ -180,8 +169,9 @@ when the `X_POST_*` secrets are absent.
 - `src/verification/repository.py` — SQLite documents, claims, stories, decisions,
   source outcomes, and publications
 - `src/verification/engine.py` — mandatory noncompensatory publication gates
-- `src/verification/renderer.py` — verified-facts-only X templates
-- `src/verification/card.py` — verified-facts-only image cards
+- `src/verification/renderer.py` — verified-facts-only text templates
+- `src/verification/card.py` — fail-closed boundary; replacement image renderer not installed
+- `src/renderer.py` — compatibility stubs and image-blank safety only; no design code
 
 The legacy regex parser in `main.py` supplies candidate hints only. It has no live
 publication authority; `post_item()` rejects every item without a serialized V2

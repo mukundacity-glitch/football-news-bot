@@ -54,46 +54,8 @@ def _install_transfer_safety_boundary() -> None:
     _engine.VerificationEngine.verify = guarded_verify
 
 
-def _install_premium_card_renderer() -> None:
-    """Install the 4K renderer behind the same strict publication gates."""
-    try:
-        from . import card as _card
-        from .premium_cards import render_verified_card
-        from .official_transfer_gate import validate_official_transfer, log_skipped_unverified_transfer
-        from .reported_transfer_gate import (
-            is_reported_transfer as is_reported,
-            validate_reported_transfer,
-        )
-        from .press_conference_gate import validate_official_press_conference, log_skipped_unverified_press_conference
-    except Exception:
-        return
-
-    def guarded_render(decision, sources, output_path, *, fpl_data=None):
-        if not decision.may_publish:
-            raise ValueError("cannot render card for unverified decision")
-        if decision.event_type == EventType.TRANSFER:
-            check = (
-                validate_reported_transfer(decision, sources)
-                if is_reported(decision)
-                else validate_official_transfer(decision, sources)
-            )
-            if not check.ok:
-                log_skipped_unverified_transfer(decision, check.reason)
-                from .card import UnverifiedTransferError
-                raise UnverifiedTransferError(f"SKIPPED_UNVERIFIED_TRANSFER: {check.reason}")
-        elif decision.event_type == EventType.PRESS_CONFERENCE:
-            check = validate_official_press_conference(decision, sources)
-            if not check.ok:
-                log_skipped_unverified_press_conference(decision, check.reason)
-                from .card import UnverifiedPressConferenceError
-                raise UnverifiedPressConferenceError(f"SKIPPED_UNVERIFIED_PRESS_CONFERENCE: {check.reason}")
-        return render_verified_card(decision, sources, output_path, fpl_data=fpl_data)
-
-    _card.create_verified_card = guarded_render
-
 
 _install_transfer_safety_boundary()
-_install_premium_card_renderer()
 
 __all__ = [
     "Claim",

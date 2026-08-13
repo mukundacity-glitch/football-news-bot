@@ -4,13 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
-from PIL import Image
 
 from src.verification import DecisionType, VerificationRuntime
-from src.verification.card import create_verified_card
 from src.verification.ingestion import _fotmob_legacy_story, _fotmob_transfer_text
 from src.verification.models import EventType
 from src.verification.source_registry import SourceRegistry
@@ -167,19 +164,6 @@ def test_official_transfer_publishes_and_renders_only_verified_facts(runtime):
     assert "TBC" not in decision.rendered_text
     assert "Contract" not in decision.rendered_text
     assert "Fee: undisclosed" in decision.rendered_text
-
-
-def test_verified_card_contains_only_authorized_decision(runtime, tmp_path):
-    obs = observation(
-        title="Chelsea sign Danny Welbeck from Brighton",
-        source_id="club.chelsea",
-        url="https://www.chelseafc.com/en/news/article/chelsea-sign-danny-welbeck",
-        story=transfer_story(),
-    )
-    decision = runtime.verify_observations([obs])
-    path = tmp_path / "verified.png"
-    create_verified_card(decision, runtime.sources, path)
-    assert path.exists() and path.stat().st_size > 1000
 
 
 def test_media_rumour_stays_pending_even_from_major_outlet(runtime):
@@ -825,7 +809,7 @@ def test_structured_fotmob_lane_uses_its_configured_prior_not_free_text_history(
     assert decision.gate("source_reliability").value == pytest.approx(0.9)
 
 
-def test_real_fotmob_row_preserves_own_format_and_incoming_player_identity(runtime, tmp_path):
+def test_real_fotmob_row_preserves_own_format_and_incoming_player_identity(runtime):
     row = {
         "name": "Gerónimo Rulli", "playerId": 245555,
         "position": {"label": "GK"},
@@ -865,13 +849,6 @@ def test_real_fotmob_row_preserves_own_format_and_incoming_player_identity(runti
     assert decision.verified_facts["market_value"] == "€3.8m"
     assert "CONFIRMED" not in decision.rendered_text
     assert "Source:" not in decision.rendered_text
-
-    card_path = tmp_path / "fotmob-reported.png"
-    with patch("src.verification.premium_cards._load_player_image", return_value=None):
-        create_verified_card(decision, runtime.sources, card_path)
-    with Image.open(card_path) as image:
-        assert image.size == (3840, 2160)
-
 
 def test_current_fotmob_route_ignores_stale_unpublished_destination_claim(runtime):
     stale_claim = observation(
