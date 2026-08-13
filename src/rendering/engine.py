@@ -201,9 +201,15 @@ class MasterGraphicRenderer:
         # Dark stage remains behind the player and preserves atmosphere.
         alpha_panel(image, box, fill=(0,0,0,135), outline=(*style.banner,210), width=4, radius=20, glow=True)
         subject = clean_text(facts.get("subject_name"), "PLAYER")
-        player, _source = resolve_player_image(subject, facts, fpl_data=self.fpl_data)
+        player, image_source = resolve_player_image(subject, facts, fpl_data=self.fpl_data)
         inner = (x1+25, y1+25, x2-25, y2-65)
         if player:
+            if decision.event_type == EventType.TRANSFER and image_source == "FPL API":
+                # FPL identity photos can lag a transfer and still show an old
+                # club kit. Keep the verified face/head-and-shoulders while
+                # removing the shirt area that could misstate club identity.
+                crop_h = max(1, round(player.height * 0.66))
+                player = player.crop((0, 0, player.width, crop_h))
             alpha = player.getchannel("A") if player.mode == "RGBA" else None
             transparent = bool(alpha and alpha.getextrema()[0] < 10)
             if transparent:
