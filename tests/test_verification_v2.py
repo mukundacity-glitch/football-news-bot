@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -800,6 +801,28 @@ def test_structured_fotmob_completed_transfer_publishes_as_reported(runtime):
     assert "CONFIRMED" not in decision.rendered_text
     assert "Source:" not in decision.rendered_text
     assert "http" not in decision.rendered_text
+
+
+def test_structured_fotmob_lane_uses_its_configured_prior_not_free_text_history(runtime, monkeypatch):
+    obs = observation(
+        title="Danny Welbeck has joined Chelsea from Brighton. FotMob listed the transfer as completed.",
+        source_id="media.fotmob",
+        url="https://www.fotmob.com/leagues/47/transfers/premier-league?season=2026%2F2027",
+        story=transfer_story(),
+    )
+    obs["document"]["source_handle"] = "fotmob"
+    obs["document"]["metadata"] = {
+        "structured_fotmob_transfer": True,
+        "fotmob_row": {"playerId": 10},
+    }
+    monkeypatch.setattr(
+        runtime.engine.reliability, "evaluate",
+        lambda source_id: SimpleNamespace(score=0.1),
+    )
+    decision = runtime.verify_observations([obs])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.gate("source_reliability").value == pytest.approx(0.9)
 
 
 def test_real_fotmob_row_preserves_own_format_and_incoming_player_identity(runtime, tmp_path):

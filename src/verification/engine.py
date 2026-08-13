@@ -307,10 +307,16 @@ class VerificationEngine:
             value=1.0 if temporal_ok else 0.0,
         ))
 
-        authority_reliabilities = [
-            self.reliability.evaluate(c.source_id).score for c in authoritative
-        ]
-        source_reliability = min(authority_reliabilities, default=0.0)
+        if confirmation_kind == FOTMOB_AUTHORITY_KIND:
+            # Historical free-text outcome learning must not disable the
+            # separately approved structured table lane. Use the configured
+            # structural prior for this exact source/mode only.
+            source_reliability = self.sources.require(FOTMOB_SOURCE_ID).prior_mean
+        else:
+            authority_reliabilities = [
+                self.reliability.evaluate(c.source_id).score for c in authoritative
+            ]
+            source_reliability = min(authority_reliabilities, default=0.0)
         gates.append(GateResult(
             "source_reliability",
             GateState.PASS if source_reliability >= self.config.threshold("source_reliability_min") else GateState.WAIT,
@@ -470,6 +476,26 @@ class VerificationEngine:
         """
         if event == EventType.PRESS_CONFERENCE:
             return [], "none"
+        if (
+            event == EventType.TRANSFER
+            and self.config.policy("allow_structured_fotmob_completed_transfers")
+        ):
+            # This authority applies only to the structured PL transfer table,
+            # never to arbitrary FotMob prose. Its row identity/status/scope is
+            # rechecked again by reported_transfer_gate before rendering.
+            structured_fotmob = [
+                claim for claim in claims
+                if claim.source_id == FOTMOB_SOURCE_ID
+                and claim.document.source.verified
+                and claim.article_category == event
+                and claim.league_relevant
+                and claim.status == EventStatus.COMPLETED
+                and claim.document.metadata.get("structured_fotmob_transfer") is True
+                and claim.facts.get("structured_source") == "fotmob_transfer_table"
+            ]
+            if structured_fotmob:
+                return [structured_fotmob[0]], FOTMOB_AUTHORITY_KIND
+
         threshold = self.config.threshold("source_reliability_min")
         eligible = []
         for claim in claims:
@@ -483,16 +509,6 @@ class VerificationEngine:
             eligible.append(claim)
 
         if event == EventType.TRANSFER:
-            if self.config.policy("allow_structured_fotmob_completed_transfers"):
-                structured_fotmob = [
-                    claim for claim in eligible
-                    if claim.source_id == FOTMOB_SOURCE_ID
-                    and claim.status == EventStatus.COMPLETED
-                    and claim.document.metadata.get("structured_fotmob_transfer") is True
-                    and claim.facts.get("structured_source") == "fotmob_transfer_table"
-                ]
-                if structured_fotmob:
-                    return [structured_fotmob[0]], FOTMOB_AUTHORITY_KIND
             if not self.config.policy("allow_reported_transfers"):
                 return [], "none"
             approved = approved_source_ids()
