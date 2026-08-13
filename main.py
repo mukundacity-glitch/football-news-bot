@@ -2272,15 +2272,27 @@ async def scrape(data, fpl=None, verification_runtime=None):
     max_age_hours = runtime.config.threshold("max_publication_age_hours")
     collection_config = runtime.config.collection_config
     official_enrichment_budget = int(collection_config["official_enrichment_budget"])
+    fotmob_pipeline_stats = {"seen": 0, "grouped": 0, "posted_id_skip": 0, "age_skip": 0}
     for source_item in items:
         item_id = source_item["id"]
+        is_fotmob_item = bool(
+            source_item.get("metadata", {}).get("structured_fotmob_transfer") is True
+        )
+        if is_fotmob_item:
+            fotmob_pipeline_stats["seen"] += 1
         if item_id in data.get("posted_ids", []):
+            if is_fotmob_item:
+                fotmob_pipeline_stats["posted_id_skip"] += 1
             continue
         created = _parse_rss_date(source_item.get("created_at"))
         if created is None:
             print(f"   [V2-SKIP] unknown publication time: {source_item.get('title', '')[:80]!r}")
+            if is_fotmob_item:
+                fotmob_pipeline_stats["age_skip"] += 1
             continue
         if (datetime.now(timezone.utc) - created).total_seconds() > max_age_hours * 3600:
+            if is_fotmob_item:
+                fotmob_pipeline_stats["age_skip"] += 1
             continue
 
         if "_fpl_pre_built" in source_item:
@@ -2316,6 +2328,10 @@ async def scrape(data, fpl=None, verification_runtime=None):
         })
         group["observations"].append(observation)
         group["legacy_sources"].append(source_item.get("username") or "unknown")
+        if is_fotmob_item:
+            fotmob_pipeline_stats["grouped"] += 1
+
+    print(f"  [FOTMOB-PIPELINE] {fotmob_pipeline_stats}")
 
     # Candidate evidence search can discover an official announcement that was
     # not present in a configured feed. Every result is still re-extracted by V2.
@@ -2367,6 +2383,14 @@ async def scrape(data, fpl=None, verification_runtime=None):
             print(f"  [V2-ERROR] {key}: {exc} — fail closed")
             continue
         _v2_log_decision(decision)
+        if group["representative"].get("_structured_fotmob_transfer"):
+            print(
+                f"  [FOTMOB-DECISION] player={group['representative'].get('player')!r} "
+                f"decision={decision.decision.value} status={decision.status.value} "
+                f"authority={decision.authority_kind} "
+                f"authority_sources={decision.authority_source_ids} "
+                f"reasons={decision.reasons[:3]}"
+            )
         pending_v2[decision.story_id] = {
             "decision": decision.decision.value,
             "event": decision.event_type.value,
