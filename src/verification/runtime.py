@@ -102,6 +102,8 @@ class VerificationRuntime:
                 decision.status,
                 decision.verified_facts,
                 policy,
+                authority_kind=decision.authority_kind,
+                authority_source_ids=decision.authority_source_ids,
             )
         except Exception:
             return False

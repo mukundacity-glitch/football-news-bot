@@ -40,6 +40,9 @@ from src.verification.card import create_verified_card
 from src.verification.config import VerificationConfig as V2VerificationConfig
 from src.verification.ingestion import fetch_configured_news
 from src.verification.enrichment import enrich_official_item
+from src.verification.reported_transfer_gate import (
+    AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
+)
 
 # Shared Canvas Namespace Initialization
 FONT = ImageFont.load_default()
@@ -2185,12 +2188,22 @@ def _v2_project_verified_facts(item: dict, decision: V2VerificationDecision) -> 
     item["staff_action"] = facts.get("manager_action")
     item["quote_summary"] = facts.get("quote_summary")
     item["quote_topic"] = facts.get("quote_topic")
-    item["stage"] = 4
+    is_reported_transfer = (
+        decision.event_type.value == "TRANSFER"
+        and decision.authority_kind == REPORTED_TRANSFER_AUTHORITY
+    )
+    item["stage"] = (
+        {"TALKS": 1, "NEGOTIATION": 1, "BID": 1,
+         "AGREEMENT": 2, "MEDICAL": 3, "HERE_WE_GO": 3}.get(
+            decision.status.value, 4
+        )
+        if is_reported_transfer else 4
+    )
     item["collapsed"] = False
     item["historical"] = False
-    item["mode"] = "confirmed"
+    item["mode"] = "reported" if is_reported_transfer else "confirmed"
     item["rumour"] = False
-    item["sources"] = decision.source_ids
+    item["sources"] = decision.authority_source_ids or decision.source_ids
     item["source_url"] = decision.source_url
     item["confidence_score"] = round(decision.confidence * 100)
     item["confidence_decision"] = _conf.AUTO_POST
@@ -2888,10 +2901,10 @@ async def main(post: bool = True):
 
         print(f"\n[BOT] {len(drafts)} item(s) prepared — evaluating for live post…")
 
-        # Only fully CONFIRMED stories post live. classify_post() returns "confirmed"
-        # or None — there is no rumour path in the automated pipeline.
-        # REVIEW-tier stories (confidence 75-89) are held back and re-verified
-        # automatically on the next scheduled run; no manual step needed.
+        # V2-authorized stories may be either first-party CONFIRMED or the
+        # separate tier-one REPORTED transfer lane. Legacy rumours still have no
+        # automated route. REVIEW-tier stories are held and re-verified on the
+        # next scheduled run.
         def _conf_ok(d):
             return (
                 d.get("_v2_verified") is True
@@ -2899,10 +2912,10 @@ async def main(post: bool = True):
                 and bool(d.get("_v2_decision"))
             )
 
-        confirmed = [d for d in drafts if d.get("mode") == "confirmed"]
-        postable = [d for d in confirmed if _conf_ok(d) and _live_event_allowed(d)]
-        held = [d for d in confirmed if not _conf_ok(d)]
-        non_target = [d for d in confirmed if _conf_ok(d) and not _live_event_allowed(d)]
+        authorized = [d for d in drafts if d.get("mode") in {"confirmed", "reported"}]
+        postable = [d for d in authorized if _conf_ok(d) and _live_event_allowed(d)]
+        held = [d for d in authorized if not _conf_ok(d)]
+        non_target = [d for d in authorized if _conf_ok(d) and not _live_event_allowed(d)]
         if held:
             print(f"[BOT] {len(held)} story(ies) need more corroboration (confidence "
                   f"75-89) — held, will re-verify automatically on the next run.")
@@ -2912,7 +2925,7 @@ async def main(post: bool = True):
 
         if not postable:
             status["no_post_reason"] = status["no_post_reason"] or "no_confirmed_target_stories_after_post_filters"
-            print("[BOT] No confirmed transfer, injury, or suspension stories cleared all gates this run.")
+            print("[BOT] No confirmed/reported transfer, injury, or suspension stories cleared all gates this run.")
             return
 
         # ROUND-ROBIN CATEGORY SELECTION: a straight priority sort always puts

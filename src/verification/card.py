@@ -3,9 +3,10 @@
 Every publishable category (TRANSFER, INJURY, SUSPENSION, PRESS_CONFERENCE)
 renders through the same production 3840x2160 (16:9) Playwright pipeline in
 ``src/renderer.py`` (``create_verified_branded_card``), so a viewer reads a
-consistent visual identity no matter which category they see. TRANSFER and
-PRESS_CONFERENCE are additionally official-confirmed-only: ``create_verified_card``
-never generates either graphic unless the relevant strict gate passes.
+consistent visual identity no matter which category they see. TRANSFER has
+separate strict CONFIRMED and REPORTED gates; PRESS_CONFERENCE remains
+first-party official-confirmed-only. ``create_verified_card`` never generates a
+graphic unless the relevant strict gate passes.
 
 If the Playwright renderer is unavailable, a local PIL fallback below keeps
 the same 3840x2160 canvas and general layout so a degraded render still looks
@@ -28,6 +29,10 @@ from .press_conference_gate import (
     log_skipped_unverified_press_conference,
     validate_official_press_conference,
 )
+from .reported_transfer_gate import (
+    AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
+    validate_reported_transfer,
+)
 from .source_registry import SourceRegistry
 
 
@@ -44,9 +49,11 @@ CARD_SIZE = (3840, 2160)
 
 
 class UnverifiedTransferError(RuntimeError):
-    """Raised when a caller tries to render a transfer card that failed the
-    strict official-only validation gate. Callers must never fall back to a
-    softer card in this case -- the correct action is to skip the post."""
+    """Raised when a transfer fails its official or reported validation gate.
+
+    Callers must never fall back to a softer card; the correct action is to
+    skip the post.
+    """
 
 
 class UnverifiedPressConferenceError(RuntimeError):
@@ -81,7 +88,11 @@ def create_verified_card(
         raise ValueError("cannot render card for unverified decision")
 
     if decision.event_type == EventType.TRANSFER:
-        validation = validate_official_transfer(decision, sources)
+        validation = (
+            validate_reported_transfer(decision, sources)
+            if decision.authority_kind == REPORTED_TRANSFER_AUTHORITY
+            else validate_official_transfer(decision, sources)
+        )
         if not validation.ok:
             log_skipped_unverified_transfer(decision, validation.reason)
             raise UnverifiedTransferError(
@@ -108,6 +119,7 @@ def _create_branded_card(
 ) -> str:
     facts = dict(decision.verified_facts)
     facts["_event_status"] = decision.status.value
+    facts["_authority_kind"] = decision.authority_kind
 
     # Use the established FPL VORTEX production card treatment whenever
     # Playwright is available: player image, club crest(s), logo, channel

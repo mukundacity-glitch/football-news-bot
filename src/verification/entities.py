@@ -259,6 +259,36 @@ class EntityRegistry:
         self._add(record)
         return record
 
+    def reported_established_player(self, name: str) -> Optional[EntityRecord]:
+        """Create an in-memory identity for an incoming transfer target.
+
+        The caller is responsible for the narrow trust checks (approved tier-one
+        source, reportable transfer status, grounded active-PL relationship and
+        non-player taxonomy rejection). This method only enforces a stable,
+        person-shaped identity and never assigns a current club relationship.
+        """
+        normalized = normalize_entity_name(name)
+        tokens = normalized.split()
+        if len(tokens) < 2 or len(tokens) > 6:
+            return None
+        if any(not token.isalpha() or len(token) < 2 for token in tokens):
+            return None
+        digest = hashlib.sha256(f"reported-player:{normalized}".encode()).hexdigest()[:20]
+        display_name = re.sub(r"\s+", " ", str(name or "")).strip()
+        record = EntityRecord(
+            id=f"player:reported:{digest}",
+            name=display_name,
+            entity_type=EntityType.PLAYER,
+            sport="football",
+            confidence=0.99,
+            aliases=(name,),
+            club_id=None,
+            active_premier_league=False,
+            validation_source="approved_tier_one_transfer_report",
+        )
+        self._add(record)
+        return record
+
     def find_mentions(
         self,
         text: str,

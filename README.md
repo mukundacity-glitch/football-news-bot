@@ -11,46 +11,47 @@ The shipped policy is deliberately strict:
   PRESS_CONFERENCE quotes are eligible.** Manager appointments/departures,
   contract extensions, club statements, and all other categories are
   rejected even when officially confirmed.
-- Only `OFFICIAL` or `COMPLETED` events can publish.
+- First-party `OFFICIAL` or `COMPLETED` events publish as **CONFIRMED**.
+- A separate transfer-only **REPORTED** lane accepts only Fabrizio Romano,
+  David Ornstein/The Athletic, BBC Sport, and Sky Sports: one independent
+  source for `TALKS`/`NEGOTIATION`/`BID`; two for
+  `AGREEMENT`/`MEDICAL`/`HERE_WE_GO`. `INTEREST` and `RUMOUR` never publish.
 - First-party club, Premier League, FPL, FA, or other configured governing-body
-  evidence is required, and the story must involve an active Premier League
-  club/player relationship (league validation is a hard gate — non-PL news,
-  e.g. Real Madrid or Saudi clubs, is rejected).
-- Journalist/media reports remain pending until official confirmation.
+  evidence is still required for **CONFIRMED** wording, and every story must
+  involve an active Premier League club/player relationship (league validation
+  is a hard gate — non-PL news is rejected).
 - Missing, stale, ambiguous, cross-sport, conflicting, or ungrounded facts fail
   closed and cannot reach X.
 - Post text is deterministic and uses verified facts only. Missing fee, contract,
   diagnosis, return date, etc. are omitted rather than guessed.
 
-### TRANSFER: official-confirmed-completed only (non-negotiable)
+### TRANSFER: separate CONFIRMED and REPORTED lanes
 
-The bot posts **only** transfers that a first-party official source (buying
-club, selling club, official league site, or a verified official club social
-account explicitly stating the move is complete) confirms as signed/joined/
-completed. This is enforced at two independent layers:
+A transfer receives **CONFIRMED** wording only when a first-party official
+source (buying club, selling club, official league site, or verified official
+club account) states that the move is signed/joined/completed.
 
-1. `src/verification/engine.py` — `_configured_nonofficial_confirmation()`
-   unconditionally refuses to treat any non-official source as authoritative
-   for a TRANSFER, regardless of `config/verification.json` flags. `HERE_WE_GO`,
-   `MEDICAL`, `AGREEMENT`/"deal agreed", and structured third-party tables
-   (e.g. FotMob) can never become publication authority for a transfer.
-2. `src/verification/official_transfer_gate.py` — a second, independent
-   `validate_official_transfer()` gate re-checks the fully serialized decision
-   (status, official source URL/domain/allowlist, player/from/to presence,
-   from≠to, fee language) immediately before any image or caption is
-   generated. A failure here is logged as `SKIPPED_UNVERIFIED_TRANSFER` with
-   the exact reason (see `queue/debug/rejections.jsonl`) and never produces a
-   graphic, caption, or post.
+Reliable but non-official transfer updates use a distinct **REPORTED** lane:
 
-Every publishable category (TRANSFER, INJURY, SUSPENSION, PRESS_CONFERENCE)
-renders through the same production 3840×2160 (16:9) card design
-(`src/verification/card.py` → `src/renderer.py::create_verified_branded_card`)
-so a viewer reads one consistent visual identity no matter which category
-they see. Transfer cards show TRANSFER CONFIRMED, the player, both FROM and
-TO clubs with badges and a directional arrow, "Fee: <official fee>" or "Fee:
-undisclosed" (never a reported/estimated figure), and the official source in
-the footer — see `tests/test_official_transfer_only.py` for the full
-required-scenario test suite.
+- approved sources only: Fabrizio Romano, David Ornstein/The Athletic, BBC Sport,
+  and Sky Sports;
+- one approved source for `TALKS`, `NEGOTIATION`, or `BID`;
+- two independent approved publishers for `AGREEMENT`, `MEDICAL`, or
+  `HERE_WE_GO` (Ornstein and The Athletic count as one newsroom);
+- `INTEREST`, `RUMOUR`, and a non-official claim labelled `OFFICIAL` or
+  `COMPLETED` remain blocked;
+- player, FROM club, TO club, Premier League relevance, freshness, source URL,
+  contradiction, duplicate, and confidence gates must still pass.
+
+`src/verification/official_transfer_gate.py` protects official posts, while
+`src/verification/reported_transfer_gate.py` independently re-checks reported
+posts before rendering. A reported decision can never receive confirmed
+wording.
+
+Every publishable category renders through the same production 3840×2160
+(16:9) card design. Official cards show `TRANSFER CONFIRMED`; reported cards
+show `TRANSFER REPORTED` plus the verified milestone. Captions contain no
+source name or URL—the approved source citation appears only on the card.
 
 Player photos in the production path (`src/renderer.py::_img_assets`) follow
 FPL → Wikipedia → ESPN → BBC Sport → FotMob → club crest, in that order; a

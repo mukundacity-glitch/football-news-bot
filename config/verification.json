@@ -12,7 +12,17 @@
       "OFFICIAL",
       "COMPLETED"
     ],
-    "_transfer_policy_note": "TRANSFER is official-source-only and completed-only. HERE_WE_GO/MEDICAL/AGREEMENT are intentionally NOT publishable statuses. The flags below are also hard-disabled in code (engine.py._configured_nonofficial_confirmation always refuses non-official TRANSFER claims regardless of these values) so this policy cannot be silently reopened by editing this file alone.",
+    "_transfer_policy_note": "TRANSFER keeps two separate fail-closed lanes: first-party OFFICIAL/COMPLETED claims render as CONFIRMED; approved tier-one TALKS/NEGOTIATION/BID reports may render as REPORTED from one source, while AGREEMENT/MEDICAL/HERE_WE_GO requires two independent approved publishers. INTEREST/RUMOUR and non-official OFFICIAL/COMPLETED claims never publish. Source citation appears on the card only.",
+    "allow_reported_transfers": true,
+    "reported_transfer_single_source_statuses": ["TALKS", "NEGOTIATION", "BID"],
+    "reported_transfer_two_source_statuses": ["AGREEMENT", "MEDICAL", "HERE_WE_GO"],
+    "reported_transfer_approved_sources": [
+      "journalist.fabrizio_romano",
+      "journalist.david_ornstein",
+      "media.the_athletic",
+      "media.bbc_sport",
+      "media.sky_sports"
+    ],
     "allow_here_we_go": true,
     "allow_non_official_confirmation": false,
     "official_first_party_sufficient": true,
@@ -314,10 +324,16 @@
         "\\bsigning\\s+(?!(?:a\\s+)?new\\s+(?:contract|deal)\\b)",
         "\\bhere we go\\b",
         "\\binterested in signing\\b",
+        "\\bin talks\\b",
+        "\\b(?:active|ongoing|advanced) talks\\b",
+        "\\bnegotiations?\\b",
+        "\\bbid (?:made|submitted|accepted)\\b",
         "\\bmedical\\b",
         "\\bdeal agreed\\b",
         "\\bfee agreed\\b",
-        "\\bagreement in place\\b"
+        "\\bagreement in place\\b",
+        "\\bagreement (?:on|over) (?:personal|player) terms\\b",
+        "\\b(?:personal|player) terms (?:are )?(?:agreed|in place)\\b"
       ],
       "INJURY": [
         "\\bruled out\\b",
@@ -385,6 +401,8 @@
         ],
         "AGREEMENT": [
           "\\bagreement (?:reached|in place)\\b",
+          "\\bagreement (?:on|over) (?:personal|player) terms\\b",
+          "\\b(?:personal|player) terms (?:are )?(?:agreed|in place)\\b",
           "\\bdeal agreed\\b",
           "\\bfee agreed\\b",
           "\\bagree(?:d|s)? (?:a )?(?:fee|deal)\\b",
@@ -398,7 +416,10 @@
           "\\badvanced talks\\b"
         ],
         "TALKS": [
-          "\\bin talks\\b"
+          "\\bin talks\\b",
+          "\\b(?:active|ongoing) talks\\b",
+          "\\btalks (?:remain|stay|are|keep) active\\b",
+          "\\bclubs? (?:are )?in (?:direct )?contact\\b"
         ],
         "INTEREST": [
           "\\binterested in\\b",

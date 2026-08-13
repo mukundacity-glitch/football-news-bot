@@ -246,6 +246,11 @@ class VerificationDecision:
     fingerprint: str
     source_url: Optional[str] = None
     rendered_text: Optional[str] = None
+    # Records which evidence lane authorized publication.  This is deliberately
+    # explicit so a tier-one journalist report can never be rendered with the
+    # official/confirmed wording used for a first-party club announcement.
+    authority_kind: str = "none"
+    authority_source_ids: List[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     @property
@@ -275,6 +280,8 @@ class VerificationDecision:
             "fingerprint": self.fingerprint,
             "source_url": self.source_url,
             "rendered_text": self.rendered_text,
+            "authority_kind": self.authority_kind,
+            "authority_source_ids": self.authority_source_ids,
             "created_at": self.created_at,
         }
 
@@ -306,6 +313,8 @@ class VerificationDecision:
             fingerprint=raw["fingerprint"],
             source_url=raw.get("source_url"),
             rendered_text=raw.get("rendered_text"),
+            authority_kind=str(raw.get("authority_kind") or "none"),
+            authority_source_ids=list(raw.get("authority_source_ids") or []),
             created_at=raw.get("created_at") or utc_now_iso(),
         )
 

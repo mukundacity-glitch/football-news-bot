@@ -110,4 +110,12 @@ def test_tampered_verified_facts_fail_fingerprint_check(monkeypatch, tmp_path):
         {"posted_ids": [], "stories": {}, "daily": {"count": 0}},
     ))
     assert result is False
+
+    authority_tampered = VerificationDecision.from_dict(decision.to_dict())
+    authority_tampered.authority_source_ids = ["club.arsenal"]
+    assert not runtime.decision_integrity_ok(authority_tampered)
+
+    label_tampered = VerificationDecision.from_dict(decision.to_dict())
+    label_tampered.authority_kind = "tier_one_reported_transfer"
+    assert not runtime.decision_integrity_ok(label_tampered)
     runtime.close()

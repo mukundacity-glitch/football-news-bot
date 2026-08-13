@@ -64,7 +64,8 @@ def validate_official_transfer(
     if not _is_valid_url(url):
         return OfficialTransferValidation(False, "missing_or_invalid_official_source_url")
 
-    source_id = decision.source_ids[0] if decision.source_ids else None
+    authority_ids = decision.authority_source_ids or decision.source_ids
+    source_id = authority_ids[0] if authority_ids else None
     profile = sources.get(source_id) if source_id else None
     if profile is None or not profile.display_name:
         return OfficialTransferValidation(False, "missing_official_source_name")

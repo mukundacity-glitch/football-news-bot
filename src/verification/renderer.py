@@ -13,6 +13,10 @@ import re
 from typing import Dict, List
 
 from .models import EventStatus, EventType, VerificationDecision
+from .reported_transfer_gate import (
+    AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
+    reported_status_label,
+)
 from .source_registry import SourceRegistry
 
 
@@ -21,12 +25,11 @@ class RenderingError(RuntimeError):
 
 
 class UnverifiedTransferError(RenderingError):
-    """Raised when a TRANSFER decision is not official-confirmed.
+    """Raised when a TRANSFER decision fails its strict authority lane.
 
-    Per policy, a transfer caption is only ever generated for status
-    OFFICIAL or COMPLETED with a verified first-party source. Every other
-    status (rumour, here-we-go, deal-agreed, medical, pending, unknown) must
-    be skipped entirely rather than rendered with hedged wording.
+    Official/completed transfers require first-party evidence. The separate
+    reported lane accepts only its narrow source/status rules and is always
+    rendered with explicit REPORTED wording.
     """
 
 
@@ -58,6 +61,8 @@ class VerifiedPostRenderer:
         event = decision.event_type
 
         if event == EventType.TRANSFER:
+            if decision.authority_kind == REPORTED_TRANSFER_AUTHORITY:
+                return self._render_reported_transfer(decision)
             return self._render_official_transfer(decision)
 
         if event == EventType.PRESS_CONFERENCE:
@@ -116,6 +121,28 @@ class VerifiedPostRenderer:
         decision.rendered_text = result
         return result
 
+    def _render_reported_transfer(self, decision: VerificationDecision) -> str:
+        """Render a tier-one report without upgrading it to confirmation.
+
+        The wording is intentionally template-only and fact-preserving. The
+        source appears on the card footer, never in the caption.
+        """
+        facts = decision.verified_facts
+        player = str(required(facts, "subject_name"))
+        origin = str(required(facts, "club_from_name"))
+        destination = str(required(facts, "club_to_name"))
+        status = reported_status_label(decision.status, facts)
+
+        lines: List[str] = [
+            f"🚨 REPORTED TRANSFER: {player} — {origin} to {destination}",
+            f"Status: {status}.",
+            "This is not an official transfer announcement.",
+            self._hashtags(decision),
+        ]
+        result = self._fit_four_lines(lines, protect_first_n=3)
+        decision.rendered_text = result
+        return result
+
     def _render_official_transfer(self, decision: VerificationDecision) -> str:
         """Exact official-confirmed-only transfer caption template.
 
@@ -146,7 +173,8 @@ class VerifiedPostRenderer:
         origin = str(required(facts, "club_from_name"))
         # The official source must still exist and be resolvable -- the
         # caption simply does not print it (it prints on the card instead).
-        source_id = decision.source_ids[0] if decision.source_ids else ""
+        authority_ids = decision.authority_source_ids or decision.source_ids
+        source_id = authority_ids[0] if authority_ids else ""
         profile = self.sources.get(source_id)
         if not (profile and profile.display_name) or not decision.source_url:
             raise UnverifiedTransferError("missing official source name/url")
@@ -195,7 +223,8 @@ class VerifiedPostRenderer:
         speaker = str(required(facts, "subject_name"))
         club = str(required(facts, "club_name"))
         quote_summary = str(required(facts, "quote_summary")).rstrip(".")
-        source_id = decision.source_ids[0] if decision.source_ids else ""
+        authority_ids = decision.authority_source_ids or decision.source_ids
+        source_id = authority_ids[0] if authority_ids else ""
         profile = self.sources.get(source_id)
         if not (profile and profile.display_name) or not decision.source_url:
             raise UnverifiedPressConferenceError("missing official source name/url")
@@ -211,7 +240,8 @@ class VerifiedPostRenderer:
         return result
 
     def _source_line(self, decision: VerificationDecision) -> str:
-        source_id = decision.source_ids[0] if decision.source_ids else ""
+        authority_ids = decision.authority_source_ids or decision.source_ids
+        source_id = authority_ids[0] if authority_ids else ""
         profile = self.sources.get(source_id)
         if profile and profile.handles:
             handle = str(profile.handles[0]).strip()

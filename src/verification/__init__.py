@@ -11,6 +11,10 @@ from .models import (
 )
 from .runtime import RuntimeUnavailable, VerificationRuntime
 from ..transfer_safety import validate_before_publish
+from .reported_transfer_gate import (
+    AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
+    validate_reported_transfer,
+)
 
 
 def _install_transfer_safety_boundary() -> None:
@@ -27,7 +31,11 @@ def _install_transfer_safety_boundary() -> None:
             return decision
 
         story = decision.verified_facts or {}
-        verdict, reason = validate_before_publish(story, claims, event="TRANSFER")
+        if decision.authority_kind == REPORTED_TRANSFER_AUTHORITY:
+            check = validate_reported_transfer(decision, self.sources)
+            verdict, reason = ("ALLOW", check.reason) if check.ok else ("REJECT", check.reason)
+        else:
+            verdict, reason = validate_before_publish(story, claims, event="TRANSFER")
         decision.gates.append(GateResult(
             "transfer_publication_safety",
             GateState.PASS if verdict == "ALLOW" else GateState.FAIL,
@@ -52,6 +60,10 @@ def _install_premium_card_renderer() -> None:
         from . import card as _card
         from .premium_cards import render_verified_card
         from .official_transfer_gate import validate_official_transfer, log_skipped_unverified_transfer
+        from .reported_transfer_gate import (
+            AUTHORITY_KIND as reported_authority,
+            validate_reported_transfer,
+        )
         from .press_conference_gate import validate_official_press_conference, log_skipped_unverified_press_conference
     except Exception:
         return
@@ -60,7 +72,11 @@ def _install_premium_card_renderer() -> None:
         if not decision.may_publish:
             raise ValueError("cannot render card for unverified decision")
         if decision.event_type == EventType.TRANSFER:
-            check = validate_official_transfer(decision, sources)
+            check = (
+                validate_reported_transfer(decision, sources)
+                if decision.authority_kind == reported_authority
+                else validate_official_transfer(decision, sources)
+            )
             if not check.ok:
                 log_skipped_unverified_transfer(decision, check.reason)
                 from .card import UnverifiedTransferError

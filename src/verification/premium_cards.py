@@ -17,6 +17,10 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .models import EventType, VerificationDecision
+from .reported_transfer_gate import (
+    AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
+    reported_status_label,
+)
 from .source_registry import SourceRegistry
 
 SIZE = (3840, 2160)
@@ -60,10 +64,11 @@ def _value(value, missing="NOT REPORTED") -> str:
 
 
 def _source(decision: VerificationDecision, sources: SourceRegistry) -> str:
-    if not decision.source_ids:
+    source_ids = decision.authority_source_ids or decision.source_ids
+    if not source_ids:
         return "NOT REPORTED"
     names = []
-    for sid in decision.source_ids[:2]:
+    for sid in source_ids[:2]:
         profile = sources.get(sid)
         names.append(profile.display_name if profile else sid)
     return " · ".join(names)
@@ -163,6 +168,13 @@ def render_verified_card(decision: VerificationDecision, sources: SourceRegistry
     if event not in THEMES:
         raise ValueError(f"unsupported verified card event: {event.value}")
     heading, accent, footer_tag = THEMES[event]
+    is_reported_transfer = (
+        event == EventType.TRANSFER
+        and decision.authority_kind == REPORTED_TRANSFER_AUTHORITY
+    )
+    if is_reported_transfer:
+        heading = "TRANSFER REPORTED"
+        footer_tag = "TRANSFER • REPORTED"
     facts = decision.verified_facts
     subject = _value(facts.get("subject_name"), "OFFICIAL UPDATE")
     image = Image.new("RGB", SIZE, (3, 5, 8))
@@ -209,9 +221,14 @@ def render_verified_card(decision: VerificationDecision, sources: SourceRegistry
         destination = _value(facts.get("club_to_name"), "NOT REPORTED")
         _tile(draw, 112, 800, 960, 220, "ORIGIN", origin, accent)
         _tile(draw, 1120, 800, 960, 220, "DESTINATION", destination, accent)
-        _tile(draw, 112, 1060, 620, 220, "CONTRACT TERM", _value(facts.get("contract_length"), "NOT DISCLOSED"), accent)
-        _tile(draw, 770, 1060, 620, 220, "CONTRACT FEE", _value(facts.get("fee"), "NOT DISCLOSED"), accent)
-        _tile(draw, 1428, 1060, 652, 220, "CONTRACT TYPE", _value(facts.get("transfer_kind"), "NOT REPORTED"), accent)
+        if is_reported_transfer:
+            _tile(draw, 112, 1060, 620, 220, "STATUS", reported_status_label(decision.status, facts), accent)
+            _tile(draw, 770, 1060, 620, 220, "REPORTED FEE", _value(facts.get("fee"), "NOT REPORTED"), accent)
+            _tile(draw, 1428, 1060, 652, 220, "DEAL TYPE", _value(facts.get("transfer_kind"), "NOT REPORTED"), accent)
+        else:
+            _tile(draw, 112, 1060, 620, 220, "CONTRACT TERM", _value(facts.get("contract_length"), "NOT DISCLOSED"), accent)
+            _tile(draw, 770, 1060, 620, 220, "CONTRACT FEE", _value(facts.get("fee"), "NOT DISCLOSED"), accent)
+            _tile(draw, 1428, 1060, 652, 220, "CONTRACT TYPE", _value(facts.get("transfer_kind"), "NOT REPORTED"), accent)
     elif event == EventType.INJURY:
         _tile(draw, 112, 800, 1968, 220, "INJURY / DIAGNOSIS", _value(facts.get("injury_status"), "NOT REPORTED"), accent)
         _tile(draw, 112, 1060, 950, 220, "STATUS", _value(facts.get("injury_status"), "NOT REPORTED"), accent)
@@ -228,7 +245,8 @@ def render_verified_card(decision: VerificationDecision, sources: SourceRegistry
     source = _source(decision, sources)
     draw.rectangle((0, 1960, W, H), fill=(8, 11, 16))
     draw.rectangle((0, 1960, W, 1972), fill=accent)
-    draw.text((112, 2020), f"CONFIRMED BY: {source}", font=_font(42, True), fill=(205,212,223))
+    authority_label = "REPORTED BY" if is_reported_transfer else "CONFIRMED BY"
+    draw.text((112, 2020), f"{authority_label}: {source}", font=_font(42, True), fill=(205,212,223))
     draw.text((112, 2090), footer_tag, font=_font(30, True), fill=accent)
 
     # Right-aligned from the MEASURED width, not a fixed offset. A hardcoded

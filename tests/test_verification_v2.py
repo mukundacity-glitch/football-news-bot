@@ -21,6 +21,7 @@ def fpl_data():
             {"id": 3, "name": "Arsenal", "short_name": "ARS"},
             {"id": 4, "name": "Leeds", "short_name": "LEE"},
             {"id": 5, "name": "Crystal Palace", "short_name": "CRY"},
+            {"id": 6, "name": "Liverpool", "short_name": "LIV"},
         ],
         "elements": [
             {"id": 10, "first_name": "Danny", "second_name": "Welbeck", "web_name": "Welbeck", "team": 2},
@@ -189,13 +190,11 @@ def test_media_rumour_stays_pending_even_from_major_outlet(runtime):
     assert decision.gate("official_confirmation").state.value == "WAIT"
 
 
-def test_medical_transfer_never_publishes_even_from_two_elite_outlets(runtime):
-    """NON-NEGOTIABLE: a medical/deal-agreed transfer must NEVER publish.
+def test_medical_transfer_publishes_as_reported_from_two_elite_outlets(runtime):
+    """Two independent approved outlets may authorize a REPORTED medical.
 
-    Previously a "fast path" let two milestone-configured outlets publish a
-    booked medical as a MEDICAL-worded post. The bot's mandate now is
-    official-confirmed-completed-transfers only, so this must stay blocked
-    regardless of how many non-official outlets agree.
+    It must remain separate from first-party confirmation and must never use
+    CONFIRMED wording.
     """
     sky = observation(
         title="Chelsea agree fee with Brighton; Danny Welbeck given permission to undergo medical",
@@ -210,8 +209,12 @@ def test_medical_transfer_never_publishes_even_from_two_elite_outlets(runtime):
         story=transfer_story(),
     )
     decision = runtime.verify_observations([sky, bbc])
-    assert decision.decision == DecisionType.PENDING
-    assert not decision.may_publish
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.authority_kind == "tier_one_reported_transfer"
+    assert "REPORTED" in decision.rendered_text
+    assert "CONFIRMED" not in decision.rendered_text
+    assert "Source:" not in decision.rendered_text
 
 
 def test_single_elite_source_cannot_publish_a_medical(runtime):
@@ -300,13 +303,8 @@ def test_here_we_go_needs_a_second_publisher(runtime):
     assert not decision.may_publish
 
 
-def test_here_we_go_never_publishes_even_with_a_second_publisher(runtime):
-    """NON-NEGOTIABLE: "here we go" is a journalist milestone, never official.
-
-    A second independent publisher used to be enough to publish a HERE_WE_GO
-    post. Under the official-confirmed-only mandate this must stay blocked no
-    matter how many non-official outlets corroborate it.
-    """
+def test_here_we_go_publishes_as_reported_with_a_second_publisher(runtime):
+    """HERE_WE_GO needs two approved independent sources and stays REPORTED."""
     corroboration = observation(
         title="Danny Welbeck to join Chelsea from Brighton after fee agreed",
         source_id="media.the_athletic",
@@ -314,8 +312,14 @@ def test_here_we_go_never_publishes_even_with_a_second_publisher(runtime):
         story=transfer_story(),
     )
     decision = runtime.verify_observations([_romano_here_we_go(), corroboration])
-    assert decision.decision == DecisionType.PENDING
-    assert not decision.may_publish
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.authority_kind == "tier_one_reported_transfer"
+    assert set(decision.authority_source_ids) == {
+        "journalist.fabrizio_romano", "media.the_athletic"
+    }
+    assert "REPORTED" in decision.rendered_text
+    assert "CONFIRMED" not in decision.rendered_text
 
 
 def test_ben_duckett_cricket_failure_is_rejected_generically(runtime):
@@ -628,8 +632,8 @@ def test_low_status_media_claim_does_not_block_later_official(runtime):
     assert second.decision == DecisionType.PUBLISH, second.reasons
 
 
-def test_deal_agreed_transfer_never_publishes(runtime):
-    """NON-NEGOTIABLE: "deal agreed" is not an official confirmation."""
+def test_deal_agreed_transfer_publishes_as_reported_with_two_sources(runtime):
+    """Two approved publishers may report an agreement, never confirm it."""
     bbc = observation(
         title="Deal agreed for Danny Welbeck to join Chelsea from Brighton",
         source_id="media.bbc_sport",
@@ -643,18 +647,128 @@ def test_deal_agreed_transfer_never_publishes(runtime):
         story=transfer_story(),
     )
     decision = runtime.verify_observations([bbc, athletic])
-    assert decision.decision == DecisionType.PENDING
-    assert not decision.may_publish
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.authority_kind == "tier_one_reported_transfer"
+    assert "REPORTED" in decision.rendered_text
+    assert "CONFIRMED" not in decision.rendered_text
 
 
-def test_low_status_media_talks_remain_pending(runtime):
+def test_one_approved_source_can_publish_talks_as_reported(runtime):
     media = observation(
-        title="Talks continue for Danny Welbeck to join Chelsea from Brighton",
+        title="Chelsea are in talks with Brighton over the transfer of Danny Welbeck",
         source_id="media.bbc_sport",
         url="https://www.bbc.co.uk/sport/football/welbeck-talks",
         story=transfer_story(),
     )
     decision = runtime.verify_observations([media])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.status.value == "TALKS"
+    assert decision.authority_source_ids == ["media.bbc_sport"]
+    assert "REPORTED TRANSFER" in decision.rendered_text
+    assert "Source:" not in decision.rendered_text
+    assert "http" not in decision.rendered_text
+
+
+def test_player_terms_wording_is_agreement_and_requires_two_sources(runtime):
+    romano = observation(
+        title=("Chelsea keep talks active with Brighton for Danny Welbeck; "
+               "there is agreement on player terms"),
+        source_id="journalist.fabrizio_romano",
+        url="https://x.com/FabrizioRomano/status/998",
+        story=transfer_story(),
+        transport="X",
+    )
+    romano["document"]["source_handle"] = "FabrizioRomano"
+    romano["document"]["configured_direct_feed"] = False
+    one = runtime.verify_observations([romano])
+    assert one.status.value == "AGREEMENT"
+    assert one.decision == DecisionType.PENDING
+    assert not one.may_publish
+
+    bbc = observation(
+        title="Danny Welbeck to Chelsea from Brighton with player terms agreed",
+        source_id="media.bbc_sport",
+        url="https://www.bbc.co.uk/sport/football/welbeck-player-terms",
+        story=transfer_story(),
+    )
+    two = runtime.verify_observations([romano, bbc])
+    assert two.decision == DecisionType.PUBLISH, two.reasons
+    assert two.may_publish
+    assert two.verified_facts["reported_status_detail"] == "PLAYER TERMS AGREED"
+    assert "PLAYER TERMS AGREED" in two.rendered_text
+    assert "CONFIRMED" not in two.rendered_text
+
+
+def test_incoming_non_fpl_player_can_publish_only_through_approved_report_lane(runtime):
+    story = {
+        "player": "Bradley Barcola",
+        "event": "transfer",
+        "from_key": "Paris Saint-Germain",
+        "from_club": "Paris Saint-Germain",
+        "to_key": "Liverpool",
+        "to_club": "Liverpool",
+        "stage": 1,
+    }
+    romano = observation(
+        title="Liverpool are in talks with Paris Saint-Germain over the transfer of Bradley Barcola",
+        source_id="journalist.fabrizio_romano",
+        url="https://x.com/FabrizioRomano/status/999",
+        story=story,
+        transport="X",
+    )
+    romano["document"]["source_handle"] = "FabrizioRomano"
+    romano["document"]["configured_direct_feed"] = False
+    decision = runtime.verify_observations([romano])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.verified_facts["subject_name"] == "Bradley Barcola"
+    assert decision.authority_kind == "tier_one_reported_transfer"
+    assert "REPORTED" in decision.rendered_text
+    assert "CONFIRMED" not in decision.rendered_text
+
+
+def test_unapproved_media_cannot_publish_reported_talks(runtime):
+    media = observation(
+        title="Chelsea are in talks with Brighton over the transfer of Danny Welbeck",
+        source_id="media.the_guardian",
+        url="https://www.theguardian.com/football/welbeck-talks",
+        story=transfer_story(),
+    )
+    decision = runtime.verify_observations([media])
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish
+
+
+def test_interest_is_not_reportable_even_from_approved_source(runtime):
+    media = observation(
+        title="Chelsea are interested in a transfer for Danny Welbeck from Brighton",
+        source_id="media.bbc_sport",
+        url="https://www.bbc.co.uk/sport/football/welbeck-interest",
+        story=transfer_story(),
+    )
+    decision = runtime.verify_observations([media])
+    assert decision.decision == DecisionType.PENDING
+    assert not decision.may_publish
+
+
+def test_ornstein_and_athletic_count_as_one_newsroom(runtime):
+    ornstein = observation(
+        title="Agreement reached for Danny Welbeck to join Chelsea from Brighton",
+        source_id="journalist.david_ornstein",
+        url="https://x.com/David_Ornstein/status/123",
+        story=transfer_story(),
+        transport="X",
+    )
+    ornstein["document"]["source_handle"] = "David_Ornstein"
+    athletic = observation(
+        title="Danny Welbeck to join Chelsea from Brighton after fee agreed",
+        source_id="media.the_athletic",
+        url="https://www.nytimes.com/athletic/welbeck-fee-agreed",
+        story=transfer_story(),
+    )
+    decision = runtime.verify_observations([ornstein, athletic])
     assert decision.decision == DecisionType.PENDING
     assert not decision.may_publish
 

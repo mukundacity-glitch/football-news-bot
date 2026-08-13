@@ -30,6 +30,7 @@ from .models import (
     RawDocument,
 )
 from .source_registry import SourceRegistry
+from .reported_transfer_gate import REPORTED_STATUSES, approved_source_ids
 from src.entity_guard import classify_entity_detailed, is_staff_subject, _HARD_REJECT
 from src import squad_registry
 
@@ -88,6 +89,43 @@ def _clause(text: str, start: int, end: int, max_chars: int = 260) -> str:
 def _safe_string(value: object) -> Optional[str]:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     return text or None
+
+
+def _reported_transfer_status_detail(status: EventStatus, text: str) -> Optional[str]:
+    """Map an evidenced milestone to a controlled, non-promotional label.
+
+    The value is intentionally not free-form source prose.  This prevents a
+    rewrite from changing "player terms agreed" into the materially different
+    claim "clubs agreed a fee" while still preserving the source's meaning.
+    """
+    value = re.sub(r"\s+", " ", str(text or "")).casefold()
+    if status == EventStatus.TALKS:
+        return "ACTIVE TALKS" if "active talks" in value else "TALKS ONGOING"
+    if status == EventStatus.NEGOTIATION:
+        return "ADVANCED NEGOTIATIONS" if "advanced" in value else "NEGOTIATIONS ONGOING"
+    if status == EventStatus.BID:
+        if re.search(r"\bbid\s+accepted\b", value):
+            return "BID ACCEPTED"
+        if re.search(r"\bbid\s+(?:made|submitted)\b", value):
+            return "BID SUBMITTED"
+        return "BID REPORTED"
+    if status == EventStatus.AGREEMENT:
+        if re.search(r"\b(?:personal|player)\s+terms?\b", value):
+            return "PLAYER TERMS AGREED"
+        if re.search(r"\b(?:fee|club-to-club deal)\s+agreed\b", value):
+            return "TRANSFER FEE AGREED"
+        if "agreement in principle" in value:
+            return "AGREEMENT IN PRINCIPLE"
+        return "AGREEMENT REPORTED"
+    if status == EventStatus.MEDICAL:
+        if "medical completed" in value or "medical passed" in value:
+            return "MEDICAL COMPLETED"
+        if "medical booked" in value or "set for a medical" in value:
+            return "MEDICAL SCHEDULED"
+        return "MEDICAL REPORTED"
+    if status == EventStatus.HERE_WE_GO:
+        return "HERE WE GO REPORTED"
+    return None
 
 
 @dataclass(frozen=True)
@@ -400,6 +438,14 @@ class LegacyClaimAdapter:
             if subject:
                 warnings.append("entity_established_by_first_party_announcement")
 
+        if subject_name and subject is None and self._may_establish_from_reported_transfer(
+            document, profile, event, classification.status, from_club, to_club,
+            subject_name,
+        ):
+            subject = self.entities.reported_established_player(subject_name)
+            if subject:
+                warnings.append("entity_established_by_approved_tier_one_report")
+
         if subject:
             subject_span = self._ground_entity(document.text, subject, subject_name)
             if subject_span:
@@ -415,6 +461,20 @@ class LegacyClaimAdapter:
                 document, legacy_story, profile, from_club, to_club,
                 add_fact, warnings,
             )
+            # Preserve the precise *kind* of reported milestone without copying
+            # a publisher's prose into the caption.  Only a controlled label
+            # grounded in the matched source clause is carried forward, so
+            # "player terms agreed" can never turn into "clubs agreed a fee".
+            reported_detail = _reported_transfer_status_detail(
+                classification.status, document.text
+            )
+            if reported_detail and classification.status_evidence:
+                add_fact(
+                    "reported_status_detail",
+                    reported_detail,
+                    EvidenceSupport.TEXT_SPAN,
+                    classification.status_evidence,
+                )
         elif event in {EventType.INJURY, EventType.SUSPENSION, EventType.CONTRACT}:
             club = to_club or from_club
             if not club and subject and subject.club_id:
@@ -757,6 +817,54 @@ class LegacyClaimAdapter:
         return (
             "premier_league_ecosystem" in profile.official_scope
             and club.active_premier_league
+        )
+
+    def _may_establish_from_reported_transfer(
+        self,
+        document: RawDocument,
+        profile: Any,
+        event: EventType,
+        status: EventStatus,
+        from_club: Optional[EntityRecord],
+        to_club: Optional[EntityRecord],
+        name: str,
+    ) -> bool:
+        """Allow an incoming non-FPL player only inside the approved report lane.
+
+        This is not a general media fallback. It requires a verified source from
+        the hard allowlist, a reportable transfer milestone, exact name grounding,
+        at least one active Premier League club, and the full entity blacklist.
+        The record is in-memory only and carries no inferred current-club link.
+        """
+        if (
+            event != EventType.TRANSFER
+            or status not in REPORTED_STATUSES
+            or not profile
+            or profile.id not in approved_source_ids()
+            or profile.is_official
+            or not document.source.verified
+        ):
+            return False
+        if not any(
+            club and self.entities.active_premier_league_club(club.id)
+            for club in (from_club, to_club)
+        ):
+            return False
+        normalized_name = _norm_text(name)
+        if not normalized_name or not re.search(
+            r"(?<![a-z0-9])" + re.escape(normalized_name) + r"(?![a-z0-9])",
+            _norm_text(document.text),
+        ):
+            return False
+        entity_type, reason = classify_entity_detailed(name, document.text, None)
+        # The only accepted UNKNOWN is a person-shaped name that survived every
+        # journalist/media/company/club/staff/country blacklist and failed only
+        # because it is not yet in the Premier League squad registry.
+        if entity_type != "UNKNOWN" or reason != "not_in_squad_registry":
+            return False
+        tokens = normalized_name.split()
+        return 2 <= len(tokens) <= 6 and all(
+            token.isalpha() and len(token) >= 2 for token in tokens
         )
 
     def _may_establish_from_official(

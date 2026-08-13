@@ -1,12 +1,11 @@
-"""Required test suite for the official-confirmed-only transfer policy.
+"""Required tests for official-confirmed and tier-one-reported transfers.
 
-Covers every scenario specified in the non-negotiable transfer mandate:
-  1. Official club announcement with all required fields -> publish, FROM/TO
-     shown, correct official source shown.
-  2. Reputable news article without official confirmation -> blocked, no
-     image/caption, correct skip reason logged.
-  3. "Deal agreed"/"medical completed" story -> blocked.
-  4. FPL data changed but no official source -> blocked.
+Covers the strict split authority policy:
+  1. Official club announcement with all required fields -> CONFIRMED.
+  2. A lone non-official completion claim remains blocked.
+  3. Two approved independent sources may publish AGREEMENT/MEDICAL as
+     REPORTED, never CONFIRMED, using the same 4K card.
+  4. FPL data changed but no source evidence -> blocked.
   5. Official announcement with no fee -> publish, "Fee: undisclosed".
   6. Official fee stated -> publish, shows only that fee.
   7. FPL player image available -> card uses a valid, large FPL image.
@@ -115,7 +114,7 @@ def test_2_reputable_media_only_is_blocked_with_no_image_or_caption(runtime, tmp
 
 # ── 3. "Deal agreed" / "medical completed" story ──────────────────────────
 
-def test_3_deal_agreed_story_is_blocked(runtime):
+def test_3_deal_agreed_story_is_reported_not_confirmed(runtime):
     bbc = observation(
         title="Deal agreed for Danny Welbeck to join Chelsea from Brighton",
         source_id="media.bbc_sport",
@@ -129,11 +128,39 @@ def test_3_deal_agreed_story_is_blocked(runtime):
         story=transfer_story(),
     )
     decision = runtime.verify_observations([bbc, athletic])
-    assert decision.decision == DecisionType.PENDING
-    assert not decision.may_publish
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.authority_kind == "tier_one_reported_transfer"
+    assert "REPORTED" in decision.rendered_text
+    assert "CONFIRMED" not in decision.rendered_text
 
 
-def test_3_medical_completed_story_is_blocked(runtime):
+def test_3_reported_transfer_uses_same_4k_card_and_source_only_on_card(runtime, tmp_path):
+    bbc = observation(
+        title="Deal agreed for Danny Welbeck to join Chelsea from Brighton",
+        source_id="media.bbc_sport",
+        url="https://www.bbc.co.uk/sport/football/welbeck-deal-agreed",
+        story=transfer_story(),
+    )
+    sky = observation(
+        title="Danny Welbeck to join Chelsea from Brighton after fee agreed",
+        source_id="media.sky_sports",
+        url="https://www.skysports.com/football/news/welbeck-fee-agreed",
+        story=transfer_story(),
+    )
+    decision = runtime.verify_observations([bbc, sky])
+    assert decision.may_publish, decision.reasons
+    assert "Source:" not in decision.rendered_text
+    assert "http" not in decision.rendered_text
+
+    card_path = tmp_path / "reported-card.png"
+    with patch("src.verification.premium_cards._load_player_image", return_value=None):
+        create_verified_card(decision, runtime.sources, card_path, fpl_data=FPL_DATA)
+    with Image.open(card_path) as image:
+        assert image.size == (3840, 2160)
+
+
+def test_3_medical_completed_story_is_reported_not_confirmed(runtime):
     sky = observation(
         title="Chelsea agree fee with Brighton; Danny Welbeck given permission to undergo medical",
         source_id="media.sky_sports",
@@ -147,8 +174,11 @@ def test_3_medical_completed_story_is_blocked(runtime):
         story=transfer_story(),
     )
     decision = runtime.verify_observations([sky, bbc])
-    assert decision.decision == DecisionType.PENDING
-    assert not decision.may_publish
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.authority_kind == "tier_one_reported_transfer"
+    assert "REPORTED" in decision.rendered_text
+    assert "CONFIRMED" not in decision.rendered_text
 
 
 # ── 4. FPL data changed, no official source ───────────────────────────────

@@ -63,6 +63,24 @@ class VerificationConfig:
         if self.policy("fail_closed") is not True:
             raise ConfigurationError("policy.fail_closed must be true")
 
+        if self.policy("allow_reported_transfers") is True:
+            # The human-readable config and the defense-in-depth hard gate must
+            # describe exactly the same narrow lane; drift fails startup closed.
+            from .reported_transfer_gate import (
+                SINGLE_SOURCE_STATUSES,
+                TWO_SOURCE_STATUSES,
+                approved_source_ids,
+            )
+            configured_sources = set(self.policy("reported_transfer_approved_sources"))
+            configured_single = set(self.policy("reported_transfer_single_source_statuses"))
+            configured_double = set(self.policy("reported_transfer_two_source_statuses"))
+            if configured_sources != set(approved_source_ids()):
+                raise ConfigurationError("reported transfer source allowlist does not match hard gate")
+            if configured_single != {status.value for status in SINGLE_SOURCE_STATUSES}:
+                raise ConfigurationError("reported transfer one-source statuses do not match hard gate")
+            if configured_double != {status.value for status in TWO_SOURCE_STATUSES}:
+                raise ConfigurationError("reported transfer two-source statuses do not match hard gate")
+
         statuses = self.raw["status_order"]
         if len(statuses) != len(set(statuses)):
             raise ConfigurationError("status_order contains duplicates")

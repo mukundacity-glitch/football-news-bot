@@ -28,6 +28,14 @@ from .models import (
     VerificationDecision,
 )
 from .reliability import SourceReliabilityModel
+from .reported_transfer_gate import (
+    AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
+    REPORTED_STATUSES,
+    SINGLE_SOURCE_STATUSES,
+    TWO_SOURCE_STATUSES,
+    approved_source_ids,
+    source_independence_group,
+)
 from .repository import RepositoryError, VerificationRepository
 from .source_registry import SourceRegistry
 
@@ -98,7 +106,14 @@ class VerificationEngine:
 
         provisional_facts = consensus.agreed_facts
         family_id, story_id = self._story_ids(event, provisional_facts, event_claims)
-        fingerprint = self._fingerprint(event, status, provisional_facts, policy)
+        fingerprint = self._fingerprint(
+            event,
+            status,
+            provisional_facts,
+            policy,
+            authority_kind=confirmation_kind,
+            authority_source_ids=[c.source_id for c in authoritative],
+        )
         gates: List[GateResult] = []
 
         gates.append(GateResult(
@@ -195,14 +210,22 @@ class VerificationEngine:
             "authoritative source URL captured" if source_url_present else "authoritative source URL missing",
         ))
 
+        reported_transfer_status = (
+            event == EventType.TRANSFER
+            and confirmation_kind == REPORTED_TRANSFER_AUTHORITY
+            and status in REPORTED_STATUSES
+        )
+        status_is_publishable = (
+            status in self.config.publishable_statuses or reported_transfer_status
+        )
         status_state = (
-            GateState.PASS if confirmation_ready and status in self.config.publishable_statuses
+            GateState.PASS if confirmation_ready and status_is_publishable
             else GateState.WAIT
         )
         gates.append(GateResult(
             "event_status",
             status_state,
-            f"status={status.value}; publishable={status in self.config.publishable_statuses}",
+            f"status={status.value}; publishable={status_is_publishable}",
         ))
 
         official_state = GateState.PASS if confirmation_ready else GateState.WAIT
@@ -212,6 +235,7 @@ class VerificationEngine:
             "configured_nonofficial": "configured multi-publisher confirmation",
             "configured_elite_medical": "elite source medical/deal-agreed transfer milestone",
             "configured_structured_fotmob": "structured FotMob completed transfer row",
+            REPORTED_TRANSFER_AUTHORITY: "approved tier-one reported-transfer evidence",
             "none": "media/journalist evidence remains pending",
         }[confirmation_kind]
         if authoritative and not confirmation_ready:
@@ -349,6 +373,8 @@ class VerificationEngine:
             evidence_document_ids=list(dict.fromkeys(c.document.id for c in event_claims)),
             fingerprint=fingerprint,
             source_url=source_url,
+            authority_kind=confirmation_kind,
+            authority_source_ids=list(dict.fromkeys(c.source_id for c in authoritative)),
         )
         self.repository.upsert_story(decision, claims)
         self.repository.record_decision(decision)
@@ -395,7 +421,10 @@ class VerificationEngine:
                 continue
             if claim.article_category != event:
                 continue
-            if claim.status not in self.config.publishable_statuses:
+            # First-party authority means an announcement that is actually
+            # OFFICIAL/COMPLETED. Reported milestones such as TALKS or
+            # HERE_WE_GO use the separate, explicitly labelled report lane.
+            if claim.status not in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
                 continue
             if not self._official_relation(profile, claim, event):
                 continue
@@ -405,27 +434,15 @@ class VerificationEngine:
     def _configured_nonofficial_confirmation(
         self, claims: Sequence[Claim], event: EventType
     ) -> tuple[List[Claim], str]:
-        """Optional policies, disabled by default in the shipped config.
+        """Optional, tightly scoped non-official evidence lanes.
 
-        HERE_WE_GO requires at least one source explicitly configured for that
-        milestone plus independent high-status support. Generic non-official
-        confirmation requires the separately configured publisher minimum.
-
-        NON-NEGOTIABLE HARD GATE: a TRANSFER or PRESS_CONFERENCE can NEVER be
-        published from this path, no matter what config/verification.json
-        says. Only a first-party official source (club/league website,
-        official league data feed, or a verified official club account
-        explicitly stating the move is complete / hosting the press
-        conference) may make either of these authoritative — see
-        ``_authoritative_claims``. Journalists, "here we go" posts, deal-agreed
-        reports, medical bulletins, structured third-party tables (e.g.
-        FotMob), and media outlets merely quoting a press conference they
-        attended are explicitly excluded from ever becoming publication
-        authority for these two categories. This check is intentionally
-        hardcoded, not config-driven, so a config edit alone can never reopen
-        this hole.
+        PRESS_CONFERENCE remains first-party-only. TRANSFER has one separate
+        *reported* lane: a narrow hard-coded source allowlist, one source for
+        TALKS/NEGOTIATION/BID, and two independent sources for
+        AGREEMENT/MEDICAL/HERE_WE_GO. It never authorizes CONFIRMED wording;
+        that remains exclusive to first-party OFFICIAL/COMPLETED claims.
         """
-        if event in {EventType.TRANSFER, EventType.PRESS_CONFERENCE}:
+        if event == EventType.PRESS_CONFERENCE:
             return [], "none"
         threshold = self.config.threshold("source_reliability_min")
         eligible = []
@@ -438,6 +455,44 @@ class VerificationEngine:
             if self.reliability.evaluate(claim.source_id).score < threshold:
                 continue
             eligible.append(claim)
+
+        if event == EventType.TRANSFER:
+            if not self.config.policy("allow_reported_transfers"):
+                return [], "none"
+            approved = approved_source_ids()
+            report_claims = [
+                claim for claim in eligible
+                if claim.source_id in approved and claim.status in REPORTED_STATUSES
+            ]
+            # Collapse sources from the same newsroom. In particular, David
+            # Ornstein and The Athletic are one independent publisher, not two.
+            by_report_group = {}
+            for claim in report_claims:
+                group = source_independence_group(claim.source_id)
+                if not group:
+                    continue
+                existing = by_report_group.get(group)
+                if (
+                    existing is None
+                    or self.config.status_rank(claim.status)
+                    > self.config.status_rank(existing.status)
+                ):
+                    by_report_group[group] = claim
+            independent_reports = list(by_report_group.values())
+            highest = self._highest_status(independent_reports)
+            if highest in SINGLE_SOURCE_STATUSES:
+                support = [c for c in independent_reports if c.status == highest]
+                if support:
+                    return support, REPORTED_TRANSFER_AUTHORITY
+            if highest in TWO_SOURCE_STATUSES:
+                minimum_rank = self.config.status_rank(EventStatus.AGREEMENT)
+                support = [
+                    c for c in independent_reports
+                    if self.config.status_rank(c.status) >= minimum_rank
+                ]
+                if len(support) >= 2:
+                    return support, REPORTED_TRANSFER_AUTHORITY
+            return [], "none"
 
         by_group = {claim.publisher_group: claim for claim in eligible}
         independent = list(by_group.values())
@@ -611,11 +666,15 @@ class VerificationEngine:
         if newly_verified_fields:
             fields = ", ".join(newly_verified_fields)
             return GateState.PASS, GateState.PASS, f"new verified material facts: {fields}"
-        if (
-            not policy
-            and self.config.status_rank(status) > self.config.status_rank(old_status)
-        ):
-            return GateState.PASS, GateState.PASS, "verified status progression"
+        if self.config.status_rank(status) > self.config.status_rank(old_status):
+            # A reported transfer may legitimately progress TALKS -> AGREEMENT
+            # -> OFFICIAL. OFFICIAL -> COMPLETED with no new facts is still a
+            # duplicate and must not create a second post.
+            if (
+                event == EventType.TRANSFER
+                and old_status in REPORTED_STATUSES
+            ) or not policy:
+                return GateState.PASS, GateState.PASS, "verified status progression"
         return GateState.FAIL, GateState.FAIL, "no new verified milestone or material fact"
 
     def _progression_fields(
@@ -681,6 +740,9 @@ class VerificationEngine:
         status: EventStatus,
         facts: Mapping[str, Any],
         policy: Any,
+        *,
+        authority_kind: str = "none",
+        authority_source_ids: Sequence[str] = (),
     ) -> str:
         fields = sorted(facts)
         payload = {
@@ -688,6 +750,11 @@ class VerificationEngine:
             "status": status.value,
             "subject": facts.get("subject_id") or facts.get("club_id"),
             "facts": {field: normalize_fact(facts.get(field)) for field in fields},
+            # Bind the decision to the exact authority lane and sources. A
+            # mutable queue item cannot swap REPORTED/CONFIRMED labels or
+            # substitute a publisher while retaining a valid fingerprint.
+            "authority_kind": str(authority_kind or "none"),
+            "authority_source_ids": sorted(set(authority_source_ids)),
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
