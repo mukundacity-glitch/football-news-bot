@@ -5,8 +5,10 @@ This lane is intentionally separate from official transfer confirmation:
 * TALKS / NEGOTIATION / BID may publish from one approved tier-one publisher.
 * AGREEMENT / MEDICAL / HERE_WE_GO require two independent approved publishers.
 * INTEREST / RUMOUR never publish.
-* OFFICIAL / COMPLETED still require a first-party club, league, or governing
-  body source and therefore are not authorized by this module.
+* OFFICIAL / COMPLETED normally require a first-party club, league, or
+  governing-body source.
+* The structured FotMob Premier League transfer table may publish COMPLETED as
+  a clearly labelled third-party listing, never as official confirmation.
 
 The distinction is carried on ``VerificationDecision.authority_kind`` so no
 reported item can accidentally receive CONFIRMED wording or card treatment.
@@ -23,6 +25,9 @@ from .source_registry import SourceRegistry
 
 
 AUTHORITY_KIND = "tier_one_reported_transfer"
+FOTMOB_AUTHORITY_KIND = "structured_fotmob_reported_transfer"
+FOTMOB_SOURCE_ID = "media.fotmob"
+REPORTED_AUTHORITY_KINDS = frozenset({AUTHORITY_KIND, FOTMOB_AUTHORITY_KIND})
 
 # User-approved, deliberately narrow list.  David Ornstein and The Athletic
 # share one independence group so the same newsroom cannot count twice.
@@ -86,6 +91,13 @@ def _norm(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().casefold())
 
 
+def is_reported_transfer(decision: VerificationDecision) -> bool:
+    return (
+        decision.event_type == EventType.TRANSFER
+        and decision.authority_kind in REPORTED_AUTHORITY_KINDS
+    )
+
+
 def validate_reported_transfer(
     decision: VerificationDecision,
     sources: SourceRegistry,
@@ -95,35 +107,46 @@ def validate_reported_transfer(
         return ReportedTransferValidation(False, "not_a_transfer_event")
     if decision.decision != DecisionType.PUBLISH or not decision.may_publish:
         return ReportedTransferValidation(False, "engine_did_not_authorize_publish")
-    if decision.authority_kind != AUTHORITY_KIND:
+    if decision.authority_kind not in REPORTED_AUTHORITY_KINDS:
         return ReportedTransferValidation(False, "wrong_authority_kind")
-    if decision.status not in REPORTED_STATUSES:
-        return ReportedTransferValidation(
-            False, f"status_not_reportable:{decision.status.value}"
-        )
     if not _valid_url(decision.source_url):
         return ReportedTransferValidation(False, "missing_or_invalid_source_url")
 
     authority_ids = list(dict.fromkeys(decision.authority_source_ids))
     if not authority_ids:
         return ReportedTransferValidation(False, "missing_authority_sources")
-    if any(source_id not in APPROVED_SOURCE_GROUPS for source_id in authority_ids):
-        return ReportedTransferValidation(False, "source_not_on_tier_one_allowlist")
     if any(sources.get(source_id) is None for source_id in authority_ids):
         return ReportedTransferValidation(False, "source_profile_missing")
 
-    groups = {
-        source_independence_group(source_id)
-        for source_id in authority_ids
-        if source_independence_group(source_id)
-    }
-    needed = required_independent_publishers(decision.status)
-    if len(groups) < needed:
-        return ReportedTransferValidation(
-            False, f"insufficient_independent_sources:{len(groups)}/{needed}"
-        )
-
     facts: Mapping[str, Any] = decision.verified_facts
+    if decision.authority_kind == FOTMOB_AUTHORITY_KIND:
+        if decision.status != EventStatus.COMPLETED:
+            return ReportedTransferValidation(
+                False, f"fotmob_status_not_completed:{decision.status.value}"
+            )
+        if authority_ids != [FOTMOB_SOURCE_ID]:
+            return ReportedTransferValidation(False, "fotmob_authority_source_mismatch")
+        if facts.get("structured_source") != "fotmob_transfer_table":
+            return ReportedTransferValidation(False, "fotmob_structured_marker_missing")
+        if not str(facts.get("provider_player_id") or "").isdigit():
+            return ReportedTransferValidation(False, "fotmob_player_id_missing")
+    else:
+        if decision.status not in REPORTED_STATUSES:
+            return ReportedTransferValidation(
+                False, f"status_not_reportable:{decision.status.value}"
+            )
+        if any(source_id not in APPROVED_SOURCE_GROUPS for source_id in authority_ids):
+            return ReportedTransferValidation(False, "source_not_on_tier_one_allowlist")
+        groups = {
+            source_independence_group(source_id)
+            for source_id in authority_ids
+            if source_independence_group(source_id)
+        }
+        needed = required_independent_publishers(decision.status)
+        if len(groups) < needed:
+            return ReportedTransferValidation(
+                False, f"insufficient_independent_sources:{len(groups)}/{needed}"
+            )
     player = facts.get("subject_name")
     origin = facts.get("club_from_name")
     destination = facts.get("club_to_name")
@@ -141,6 +164,9 @@ def validate_reported_transfer(
 
 def reported_status_label(status: EventStatus, facts: Mapping[str, Any]) -> str:
     """Return a factual card/caption label without promoting the milestone."""
+    if facts.get("structured_source") == "fotmob_transfer_table":
+        kind = str(facts.get("transfer_kind") or "").strip().upper()
+        return f"{kind} LISTED COMPLETED" if kind else "LISTED COMPLETED"
     detail = str(facts.get("reported_status_detail") or "").strip()
     if detail:
         return detail.upper()

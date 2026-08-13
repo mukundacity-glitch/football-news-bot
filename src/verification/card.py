@@ -30,7 +30,7 @@ from .press_conference_gate import (
     validate_official_press_conference,
 )
 from .reported_transfer_gate import (
-    AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
+    is_reported_transfer,
     validate_reported_transfer,
 )
 from .source_registry import SourceRegistry
@@ -90,7 +90,7 @@ def create_verified_card(
     if decision.event_type == EventType.TRANSFER:
         validation = (
             validate_reported_transfer(decision, sources)
-            if decision.authority_kind == REPORTED_TRANSFER_AUTHORITY
+            if is_reported_transfer(decision)
             else validate_official_transfer(decision, sources)
         )
         if not validation.ok:

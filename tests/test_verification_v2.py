@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
+from PIL import Image
 
 from src.verification import DecisionType, VerificationRuntime
 from src.verification.card import create_verified_card
+from src.verification.ingestion import _fotmob_legacy_story, _fotmob_transfer_text
 from src.verification.models import EventType
 from src.verification.source_registry import SourceRegistry
 
@@ -22,6 +25,7 @@ def fpl_data():
             {"id": 4, "name": "Leeds", "short_name": "LEE"},
             {"id": 5, "name": "Crystal Palace", "short_name": "CRY"},
             {"id": 6, "name": "Liverpool", "short_name": "LIV"},
+            {"id": 7, "name": "Man City", "short_name": "MCI"},
         ],
         "elements": [
             {"id": 10, "first_name": "Danny", "second_name": "Welbeck", "web_name": "Welbeck", "team": 2},
@@ -773,13 +777,8 @@ def test_ornstein_and_athletic_count_as_one_newsroom(runtime):
     assert not decision.may_publish
 
 
-def test_structured_fotmob_completed_transfer_never_publishes(runtime):
-    """NON-NEGOTIABLE: FotMob is a third-party table, never an official source.
-
-    A structured FotMob "completed" row used to be treated as publication
-    authority. It must now always stay pending, exactly like free-text FotMob
-    coverage, until a genuine first-party official source confirms the move.
-    """
+def test_structured_fotmob_completed_transfer_publishes_as_reported(runtime):
+    """A real structured table row may publish, but never as CONFIRMED."""
     obs = observation(
         title="Danny Welbeck has joined Chelsea from Brighton. FotMob listed the transfer as completed.",
         source_id="media.fotmob",
@@ -787,10 +786,85 @@ def test_structured_fotmob_completed_transfer_never_publishes(runtime):
         story=transfer_story(),
     )
     obs["document"]["source_handle"] = "fotmob"
+    obs["document"]["metadata"] = {
+        "structured_fotmob_transfer": True,
+        "fotmob_row": {"playerId": 10},
+    }
+    decision = runtime.verify_observations([obs])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.authority_kind == "structured_fotmob_reported_transfer"
+    assert decision.authority_source_ids == ["media.fotmob"]
+    assert decision.verified_facts["structured_source"] == "fotmob_transfer_table"
+    assert "REPORTED TRANSFER" in decision.rendered_text
+    assert "CONFIRMED" not in decision.rendered_text
+    assert "Source:" not in decision.rendered_text
+    assert "http" not in decision.rendered_text
+
+
+def test_real_fotmob_row_preserves_own_format_and_incoming_player_identity(runtime, tmp_path):
+    row = {
+        "name": "Gerónimo Rulli", "playerId": 245555,
+        "position": {"label": "GK"},
+        "transferDate": now_iso(),
+        "fromClub": "Marseille", "fromClubFullName": "Marseille", "fromClubId": 8592,
+        "toClub": "Man City", "toClubFullName": "Manchester City", "toClubId": 8456,
+        "fee": {"feeText": "fee", "value": 2_000_000},
+        "transferType": {"text": "contract"}, "onLoan": False,
+        "toDate": "2028-06-30T00:00:00Z", "marketValue": 3_834_094,
+    }
+    text = _fotmob_transfer_text(row)
+    story = _fotmob_legacy_story(row)
+    assert story["fee"] == "€2m"
+    assert story["contract"] == "Jun 2028"
+    assert story["market_value"] == "€3.8m"
+    obs = observation(
+        title=text,
+        source_id="media.fotmob",
+        url="https://www.fotmob.com/leagues/47/transfers/premier-league?season=2026%2F2027",
+        story=story,
+        transport="FOTMOB",
+        published_at=row["transferDate"],
+    )
+    obs["document"]["source_handle"] = "fotmob"
+    obs["document"]["configured_direct_feed"] = False
+    obs["document"]["metadata"] = {
+        "structured_fotmob_transfer": True, "fotmob_row": row
+    }
+    decision = runtime.verify_observations([obs])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.verified_facts["subject_name"] == "Gerónimo Rulli"
+    assert decision.verified_facts["club_from_name"] == "Marseille"
+    assert decision.verified_facts["club_to_name"] == "Man City"
+    assert decision.verified_facts["fee"] == "€2m"
+    assert decision.verified_facts["contract_length"] == "Jun 2028"
+    assert decision.verified_facts["market_value"] == "€3.8m"
+    assert "CONFIRMED" not in decision.rendered_text
+    assert "Source:" not in decision.rendered_text
+
+    card_path = tmp_path / "fotmob-reported.png"
+    with patch("src.verification.premium_cards._load_player_image", return_value=None):
+        create_verified_card(decision, runtime.sources, card_path)
+    with Image.open(card_path) as image:
+        assert image.size == (3840, 2160)
+
+
+def test_structured_fotmob_row_older_than_48_hours_stays_pending(runtime):
+    old = (datetime.now(timezone.utc) - timedelta(hours=49)).isoformat()
+    obs = observation(
+        title="Danny Welbeck has joined Chelsea from Brighton. FotMob listed the transfer as completed.",
+        source_id="media.fotmob",
+        url="https://www.fotmob.com/leagues/47/transfers/premier-league?season=2026%2F2027",
+        story={**transfer_story(), "event_time": old},
+        published_at=old,
+    )
+    obs["document"]["source_handle"] = "fotmob"
     obs["document"]["metadata"] = {"structured_fotmob_transfer": True}
     decision = runtime.verify_observations([obs])
     assert decision.decision == DecisionType.PENDING
     assert not decision.may_publish
+    assert "FotMob listing is" in "; ".join(decision.reasons)
 
 
 def test_fotmob_text_without_structured_table_flag_stays_pending(runtime):

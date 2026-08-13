@@ -40,9 +40,7 @@ from src.verification.card import create_verified_card
 from src.verification.config import VerificationConfig as V2VerificationConfig
 from src.verification.ingestion import fetch_configured_news
 from src.verification.enrichment import enrich_official_item
-from src.verification.reported_transfer_gate import (
-    AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
-)
+from src.verification.reported_transfer_gate import is_reported_transfer
 
 # Shared Canvas Namespace Initialization
 FONT = ImageFont.load_default()
@@ -2183,25 +2181,24 @@ def _v2_project_verified_facts(item: dict, decision: V2VerificationDecision) -> 
         item["from_key"] = resolve_club_key(facts["club_name"])
     item["fee"] = facts.get("fee")
     item["contract"] = facts.get("contract_length")
+    item["market_value"] = facts.get("market_value")
+    item["position"] = facts.get("position")
     item["diagnosis"] = facts.get("injury_status") or facts.get("suspension_status")
     item["expected_return"] = facts.get("return_date")
     item["staff_action"] = facts.get("manager_action")
     item["quote_summary"] = facts.get("quote_summary")
     item["quote_topic"] = facts.get("quote_topic")
-    is_reported_transfer = (
-        decision.event_type.value == "TRANSFER"
-        and decision.authority_kind == REPORTED_TRANSFER_AUTHORITY
-    )
+    is_reported = is_reported_transfer(decision)
     item["stage"] = (
         {"TALKS": 1, "NEGOTIATION": 1, "BID": 1,
          "AGREEMENT": 2, "MEDICAL": 3, "HERE_WE_GO": 3}.get(
             decision.status.value, 4
         )
-        if is_reported_transfer else 4
+        if is_reported else 4
     )
     item["collapsed"] = False
     item["historical"] = False
-    item["mode"] = "reported" if is_reported_transfer else "confirmed"
+    item["mode"] = "reported" if is_reported else "confirmed"
     item["rumour"] = False
     item["sources"] = decision.authority_source_ids or decision.source_ids
     item["source_url"] = decision.source_url

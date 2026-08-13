@@ -333,14 +333,32 @@ class LegacyClaimAdapter:
                 {"type": support_type.value, "evidence": str(evidence)}
             )
 
-        club_mentions = self.entities.find_mentions(
-            document.text, {EntityType.CLUB}
+        structured_fotmob = bool(
+            document.metadata.get("structured_fotmob_transfer") is True
+            and document.source.profile_id == "media.fotmob"
         )
+        fotmob_row = document.metadata.get("fotmob_row") or {}
         from_club = self._resolve_club(
             legacy_story.get("from_key"), legacy_story.get("from_club")
         )
         to_club = self._resolve_club(
             legacy_story.get("to_key"), legacy_story.get("to_club")
+        )
+        if structured_fotmob:
+            provider_from = self.entities.structured_provider_club(
+                "fotmob", fotmob_row.get("fromClubId"),
+                str(fotmob_row.get("fromClubFullName") or fotmob_row.get("fromClub") or ""),
+            )
+            provider_to = self.entities.structured_provider_club(
+                "fotmob", fotmob_row.get("toClubId"),
+                str(fotmob_row.get("toClubFullName") or fotmob_row.get("toClub") or ""),
+            )
+            from_club = provider_from or from_club
+            to_club = provider_to or to_club
+
+        # Provider clubs must be registered before mention/direction grounding.
+        club_mentions = self.entities.find_mentions(
+            document.text, {EntityType.CLUB}
         )
 
         # Resolved early (the fuller recovery-fallback resolution happens
@@ -352,6 +370,16 @@ class LegacyClaimAdapter:
         )
         subject_type = self._expected_subject_type(event, legacy_story)
         subject = self._resolve_subject(subject_name, subject_type)
+        if subject is None and structured_fotmob and subject_name:
+            entity_type, reason = classify_entity_detailed(
+                subject_name, document.text, None
+            )
+            if entity_type == "UNKNOWN" and reason == "not_in_squad_registry":
+                subject = self.entities.structured_provider_player(
+                    "fotmob", fotmob_row.get("playerId"), subject_name
+                )
+                if subject:
+                    warnings.append("entity_established_by_structured_fotmob_id")
         subject_positions: Optional[List[int]] = None
         if subject is not None:
             name_mentions = self.entities.find_mentions(
@@ -475,6 +503,21 @@ class LegacyClaimAdapter:
                     EvidenceSupport.TEXT_SPAN,
                     classification.status_evidence,
                 )
+            if structured_fotmob:
+                add_fact(
+                    "structured_source", "fotmob_transfer_table",
+                    EvidenceSupport.STRUCTURED_DATA, "structured_fotmob_transfer=true",
+                )
+                add_fact(
+                    "provider_player_id", str(fotmob_row.get("playerId") or ""),
+                    EvidenceSupport.STRUCTURED_DATA, str(fotmob_row.get("playerId") or ""),
+                )
+                for key in ("market_value", "position"):
+                    value = legacy_story.get(key)
+                    if value:
+                        add_fact(
+                            key, value, EvidenceSupport.STRUCTURED_DATA, str(value)
+                        )
         elif event in {EventType.INJURY, EventType.SUSPENSION, EventType.CONTRACT}:
             club = to_club or from_club
             if not club and subject and subject.club_id:

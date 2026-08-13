@@ -74,4 +74,4 @@ The renderer never copies arbitrary article text into the card.
 5. Club crests are resolved from canonical verified club facts.
 6. Source text is derived from the decision's source IDs, not a hard-coded publisher.
 7. All four families share the same canvas, brand position, typography hierarchy, footer and safe margins.
-8. Transfer cards have separate authority labels: first-party official/completed decisions render as `TRANSFER CONFIRMED`; the hard-allowlisted tier-one report lane renders as `TRANSFER REPORTED`. A reported decision can never use confirmed wording.
+8. Transfer cards have separate authority labels: first-party official/completed decisions render as `TRANSFER CONFIRMED`; the hard-allowlisted tier-one and structured FotMob report lanes render as `TRANSFER REPORTED`. A reported/listed decision can never use confirmed wording.

@@ -92,38 +92,77 @@ def _all_feed_definitions(runtime: VerificationRuntime) -> List[FeedDefinition]:
     return feeds
 
 
+def _fotmob_euro(value: object) -> str:
+    """Format FotMob's euro-denominated numeric values without inventing precision."""
+    try:
+        amount = int(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    if amount <= 0:
+        return ""
+    if amount >= 1_000_000:
+        millions = f"{amount / 1_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"€{millions}m"
+    if amount >= 1_000:
+        return f"€{round(amount / 1_000):,}k"
+    return f"€{amount:,}"
+
+
+def _fotmob_contract_until(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.strftime("%b %Y")
+    except Exception:
+        return text[:10]
+
+
 def _fotmob_transfer_text(row: Dict[str, Any]) -> str:
     name = str(row.get("name") or "").strip()
     from_club = str(row.get("fromClubFullName") or row.get("fromClub") or "").strip()
     to_club = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
-    transfer_type = (row.get("transferType") or {}).get("text") or ""
     fee = row.get("fee") or {}
-    fee_text = str(fee.get("feeText") or "").strip()
-    until = str(row.get("toDate") or "").strip()
-    if row.get("onLoan"):
+    fee_label = str(fee.get("feeText") or "").strip().lower()
+    fee_value = _fotmob_euro(fee.get("value"))
+    contract_until = _fotmob_contract_until(row.get("toDate"))
+    market_value = _fotmob_euro(row.get("marketValue"))
+    position = str((row.get("position") or {}).get("label") or "").strip()
+    is_loan = bool(row.get("onLoan")) or "loan" in fee_label
+    is_free = "free" in fee_label
+    if is_loan:
         lead = f"{name} has joined {to_club} from {from_club} on loan."
-    elif fee_text and "free" in fee_text.lower():
+    elif is_free:
         lead = f"{name} has joined {to_club} from {from_club} on a free transfer."
     else:
         lead = f"{name} has joined {to_club} from {from_club}."
     bits = [lead, "FotMob listed the transfer as completed."]
-    if fee_text:
-        bits.append(f"Fee: {fee_text}.")
-    if until:
-        bits.append(f"Contract until {until[:10]}.")
+    if is_loan:
+        bits.append("Deal type: loan.")
+    elif is_free:
+        bits.append("Deal type: free transfer.")
+    else:
+        bits.append("Deal type: permanent transfer.")
+    if fee_value:
+        bits.append(f"Fee: {fee_value}.")
+    if contract_until:
+        bits.append(f"Contract until {contract_until}.")
+    if market_value:
+        bits.append(f"Market value: {market_value}.")
+    if position:
+        bits.append(f"Position: {position}.")
     return " ".join(bits)
 
 
 def _fotmob_legacy_story(row: Dict[str, Any]) -> Dict[str, Any]:
     fee = row.get("fee") or {}
-    fee_text = str(fee.get("feeText") or "").strip()
-    if not fee_text and fee.get("value"):
-        try:
-            fee_text = f"€{int(fee['value']):,}"
-        except Exception:
-            fee_text = str(fee.get("value"))
-    transfer_kind = "loan" if row.get("onLoan") else "free" if "free" in fee_text.lower() else "permanent"
-    event = "loan" if row.get("onLoan") else "transfer"
+    fee_label = str(fee.get("feeText") or "").strip().lower()
+    fee_text = _fotmob_euro(fee.get("value"))
+    is_loan = bool(row.get("onLoan")) or "loan" in fee_label
+    is_free = "free" in fee_label
+    transfer_kind = "loan" if is_loan else "free" if is_free else "permanent"
+    event = "loan" if is_loan else "transfer"
     player_name = str(row.get("name") or "").strip()
     from_club = str(row.get("fromClubFullName") or row.get("fromClub") or "").strip()
     to_club = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
@@ -135,7 +174,10 @@ def _fotmob_legacy_story(row: Dict[str, Any]) -> Dict[str, Any]:
         "_structured_fotmob_transfer": True,
         "_structured_transfer_group": f"{player_name}|{from_club}|{to_club}",
         "fee": fee_text or None,
-        "contract": str(row.get("toDate") or "").strip()[:10] or None,
+        "contract": _fotmob_contract_until(row.get("toDate")) or None,
+        "market_value": _fotmob_euro(row.get("marketValue")) or None,
+        "position": str((row.get("position") or {}).get("label") or "").strip() or None,
+        "event_time": row.get("transferDate") or row.get("fromDate"),
         "transfer_kind": transfer_kind,
         "stage": 4,
         "collapsed": False,

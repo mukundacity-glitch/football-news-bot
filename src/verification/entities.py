@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from .models import EntityRecord, EntityType
+from src.constants import CLUB_ALIASES
 
 
 def normalize_entity_name(value: object) -> str:
@@ -74,14 +75,15 @@ class EntityRegistry:
         # clubs/players).  It is data, not executable logic, and can be refreshed
         # by any future API adapter without changing this module.
         registry._load_snapshot(snapshot_path)
-        registry._load_reference_clubs("data/clubs_extended.json")
 
         if not isinstance(fpl_data, dict):
+            registry._load_reference_clubs("data/clubs_extended.json")
             registry.health_reason = "official_fpl_registry_unavailable"
             return registry
         teams = fpl_data.get("teams")
         elements = fpl_data.get("elements")
         if not isinstance(teams, list) or not teams or not isinstance(elements, list):
+            registry._load_reference_clubs("data/clubs_extended.json")
             registry.health_reason = "official_fpl_registry_incomplete"
             return registry
 
@@ -91,15 +93,24 @@ class EntityRegistry:
             if not name or team.get("id") is None:
                 continue
             club_id = f"club:{entity_slug(name)}"
-            aliases = tuple(
-                value
-                for value in (
+            # Reuse the existing club-alias family so provider spellings such
+            # as "Manchester City", "Tottenham Hotspur" and "Brighton & Hove
+            # Albion" resolve to the live FPL club instead of becoming a second
+            # non-PL entity.
+            family = CLUB_ALIASES.get(normalize_entity_name(name))
+            family_aliases = (
+                [alias for alias, key in CLUB_ALIASES.items() if key == family]
+                if family else []
+            )
+            aliases = tuple(dict.fromkeys(
+                str(value) for value in (
                     team.get("short_name"),
                     team.get("code"),
                     name.replace(" and ", " & "),
+                    *family_aliases,
                 )
                 if value
-            )
+            ))
             registry._add(
                 EntityRecord(
                     id=club_id,
@@ -113,6 +124,10 @@ class EntityRegistry:
                 )
             )
             team_ids[int(team["id"])] = club_id
+
+        # Load foreign/EFL reference clubs only after active PL clubs so exact
+        # aliases cannot create duplicate ambiguous entities.
+        registry._load_reference_clubs("data/clubs_extended.json")
 
         for player in elements:
             if player.get("id") is None:
@@ -189,7 +204,7 @@ class EntityRegistry:
             if not display:
                 continue
             club_id = f"club:{entity_slug(display)}"
-            if club_id in self._records:
+            if club_id in self._records or self.resolve_club(display):
                 continue
             self._add(
                 EntityRecord(
@@ -285,6 +300,75 @@ class EntityRegistry:
             club_id=None,
             active_premier_league=False,
             validation_source="approved_tier_one_transfer_report",
+        )
+        self._add(record)
+        return record
+
+    def structured_provider_club(
+        self, provider: str, provider_id: object, name: str
+    ) -> Optional[EntityRecord]:
+        """Establish a non-PL club from a structured provider identifier."""
+        if provider != "fotmob" or not str(provider_id or "").isdigit():
+            return None
+        display = re.sub(r"\s+", " ", str(name or "")).strip()
+        if not display:
+            return None
+        if existing := self.resolve_club(display):
+            if (
+                not existing.active_premier_league
+                and existing.validation_source == "football_club_reference"
+                and existing.name != display
+            ):
+                existing = EntityRecord(
+                    id=existing.id,
+                    name=display,
+                    entity_type=EntityType.CLUB,
+                    sport="football",
+                    confidence=0.99,
+                    aliases=tuple(dict.fromkeys((display, existing.name, *existing.aliases))),
+                    active_premier_league=False,
+                    validation_source="structured_fotmob_transfer_table",
+                )
+                self._add(existing)
+            return existing
+        record = EntityRecord(
+            id=f"club:fotmob:{provider_id}",
+            name=display,
+            entity_type=EntityType.CLUB,
+            sport="football",
+            confidence=0.99,
+            aliases=(display,),
+            active_premier_league=False,
+            validation_source="structured_fotmob_transfer_table",
+        )
+        self._add(record)
+        return record
+
+    def structured_provider_player(
+        self, provider: str, provider_id: object, name: str
+    ) -> Optional[EntityRecord]:
+        """Establish a player identity from a structured provider player ID."""
+        if provider != "fotmob" or not str(provider_id or "").isdigit():
+            return None
+        display = re.sub(r"\s+", " ", str(name or "")).strip()
+        normalized = normalize_entity_name(display)
+        tokens = normalized.split()
+        if len(tokens) < 2 or len(tokens) > 6:
+            return None
+        if any(not token.isalpha() or len(token) < 2 for token in tokens):
+            return None
+        if existing := self.resolve_player(display):
+            return existing
+        record = EntityRecord(
+            id=f"player:fotmob:{provider_id}",
+            name=display,
+            entity_type=EntityType.PLAYER,
+            sport="football",
+            confidence=0.99,
+            aliases=(display,),
+            club_id=None,
+            active_premier_league=False,
+            validation_source="structured_fotmob_transfer_table",
         )
         self._add(record)
         return record

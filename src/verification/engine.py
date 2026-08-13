@@ -30,6 +30,8 @@ from .models import (
 from .reliability import SourceReliabilityModel
 from .reported_transfer_gate import (
     AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
+    FOTMOB_AUTHORITY_KIND,
+    FOTMOB_SOURCE_ID,
     REPORTED_STATUSES,
     SINGLE_SOURCE_STATUSES,
     TWO_SOURCE_STATUSES,
@@ -212,8 +214,16 @@ class VerificationEngine:
 
         reported_transfer_status = (
             event == EventType.TRANSFER
-            and confirmation_kind == REPORTED_TRANSFER_AUTHORITY
-            and status in REPORTED_STATUSES
+            and (
+                (
+                    confirmation_kind == REPORTED_TRANSFER_AUTHORITY
+                    and status in REPORTED_STATUSES
+                )
+                or (
+                    confirmation_kind == FOTMOB_AUTHORITY_KIND
+                    and status == EventStatus.COMPLETED
+                )
+            )
         )
         status_is_publishable = (
             status in self.config.publishable_statuses or reported_transfer_status
@@ -234,8 +244,8 @@ class VerificationEngine:
             "configured_here_we_go": "configured elite milestone with independent fact agreement",
             "configured_nonofficial": "configured multi-publisher confirmation",
             "configured_elite_medical": "elite source medical/deal-agreed transfer milestone",
-            "configured_structured_fotmob": "structured FotMob completed transfer row",
             REPORTED_TRANSFER_AUTHORITY: "approved tier-one reported-transfer evidence",
+            FOTMOB_AUTHORITY_KIND: "structured FotMob completed-transfer listing",
             "none": "media/journalist evidence remains pending",
         }[confirmation_kind]
         if authoritative and not confirmation_ready:
@@ -273,7 +283,9 @@ class VerificationEngine:
             value=consensus.fact_agreement,
         ))
 
-        temporal_ok, temporal_reason, freshness = self._temporal(authoritative, now)
+        temporal_ok, temporal_reason, freshness = self._temporal(
+            authoritative, now, confirmation_kind=confirmation_kind
+        )
         gates.append(GateResult(
             "temporal_consistency",
             GateState.PASS if temporal_ok else GateState.WAIT,
@@ -457,6 +469,16 @@ class VerificationEngine:
             eligible.append(claim)
 
         if event == EventType.TRANSFER:
+            if self.config.policy("allow_structured_fotmob_completed_transfers"):
+                structured_fotmob = [
+                    claim for claim in eligible
+                    if claim.source_id == FOTMOB_SOURCE_ID
+                    and claim.status == EventStatus.COMPLETED
+                    and claim.document.metadata.get("structured_fotmob_transfer") is True
+                    and claim.facts.get("structured_source") == "fotmob_transfer_table"
+                ]
+                if structured_fotmob:
+                    return [structured_fotmob[0]], FOTMOB_AUTHORITY_KIND
             if not self.config.policy("allow_reported_transfers"):
                 return [], "none"
             approved = approved_source_ids()
@@ -509,22 +531,6 @@ class VerificationEngine:
             ]
             if milestone and len(support) >= int(self.config.policy("minimum_here_we_go_publishers")):
                 return support, "configured_here_we_go"
-
-        # Structured FotMob transfer table: the user relies on this source for
-        # complete same-day transfer coverage. FotMob can become publication
-        # authority only for completed TRANSFER rows that arrived through the
-        # structured table collector, and still must pass player identity,
-        # from/to club grounding, PL relevance, freshness, reliability,
-        # duplicate and conflict gates below.
-        if event == EventType.TRANSFER and self.config.policy("allow_structured_fotmob_completed_transfers"):
-            support = [
-                claim for claim in independent
-                if claim.source_id == "media.fotmob"
-                and claim.status == EventStatus.COMPLETED
-                and claim.document.metadata.get("structured_fotmob_transfer") is True
-            ]
-            if support:
-                return support, "configured_structured_fotmob"
 
         # Optional fast transfer mode: allow elite sources to publish MEDICAL /
         # DEAL AGREED transfer milestones. This never labels the card/caption as
@@ -588,13 +594,26 @@ class VerificationEngine:
         return False
 
     def _temporal(
-        self, authoritative: Sequence[Claim], now: datetime
+        self,
+        authoritative: Sequence[Claim],
+        now: datetime,
+        *,
+        confirmation_kind: str = "none",
     ) -> tuple[bool, str, float]:
         if not authoritative:
             return False, "awaiting authoritative timestamp", 0.0
-        max_age = self.config.threshold("max_confirmation_age_hours")
+        max_age = (
+            self.config.threshold("max_fotmob_transfer_age_hours")
+            if confirmation_kind == FOTMOB_AUTHORITY_KIND
+            else self.config.threshold("max_confirmation_age_hours")
+        )
         future_skew = timedelta(
             minutes=self.config.threshold("max_future_clock_skew_minutes")
+        )
+        age_label = (
+            "FotMob listing"
+            if confirmation_kind == FOTMOB_AUTHORITY_KIND
+            else "official confirmation"
         )
         ages = []
         for claim in authoritative:
@@ -607,7 +626,7 @@ class VerificationEngine:
             if age_hours < 0:
                 age_hours = 0.0
             if age_hours > max_age:
-                return False, f"official confirmation is {age_hours:.1f}h old", 0.0
+                return False, f"{age_label} is {age_hours:.1f}h old", 0.0
             event_time = parse_timestamp(claim.facts.get("event_time"))
             if event_time is not None:
                 event_age = (now - event_time).total_seconds() / 3600
@@ -618,7 +637,7 @@ class VerificationEngine:
             ages.append(age_hours)
         newest = min(ages) if ages else max_age
         freshness = 1.0 if newest <= max_age / 2 else 0.95
-        return True, f"fresh official confirmation ({newest:.1f}h)", freshness
+        return True, f"fresh {age_label} ({newest:.1f}h)", freshness
 
     def _database_gates(
         self,

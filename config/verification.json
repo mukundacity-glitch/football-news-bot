@@ -12,7 +12,7 @@
       "OFFICIAL",
       "COMPLETED"
     ],
-    "_transfer_policy_note": "TRANSFER keeps two separate fail-closed lanes: first-party OFFICIAL/COMPLETED claims render as CONFIRMED; approved tier-one TALKS/NEGOTIATION/BID reports may render as REPORTED from one source, while AGREEMENT/MEDICAL/HERE_WE_GO requires two independent approved publishers. INTEREST/RUMOUR and non-official OFFICIAL/COMPLETED claims never publish. Source citation appears on the card only.",
+    "_transfer_policy_note": "TRANSFER keeps separate fail-closed lanes: first-party OFFICIAL/COMPLETED claims render as CONFIRMED; approved tier-one TALKS/NEGOTIATION/BID reports may render as REPORTED from one source, while AGREEMENT/MEDICAL/HERE_WE_GO requires two independent approved publishers; structured FotMob Premier League table rows may render COMPLETED as REPORTED/LISTED within 48 hours. INTEREST/RUMOUR and unstructured third-party completion claims never publish. Source citation appears on the card only.",
     "allow_reported_transfers": true,
     "reported_transfer_single_source_statuses": ["TALKS", "NEGOTIATION", "BID"],
     "reported_transfer_two_source_statuses": ["AGREEMENT", "MEDICAL", "HERE_WE_GO"],
@@ -40,7 +40,7 @@
       "MEDICAL"
     ],
     "minimum_elite_medical_publishers": 2,
-    "allow_structured_fotmob_completed_transfers": false
+    "allow_structured_fotmob_completed_transfers": true
   },
   "thresholds": {
     "entity_certainty_min": 0.98,
@@ -52,6 +52,7 @@
     "fact_agreement_min": 1.0,
     "max_publication_age_hours": 72,
     "max_confirmation_age_hours": 72,
+    "max_fotmob_transfer_age_hours": 48,
     "max_future_clock_skew_minutes": 15,
     "active_story_window_days": 45,
     "overall_confidence_min": 0.9,

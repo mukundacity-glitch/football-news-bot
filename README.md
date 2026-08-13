@@ -12,10 +12,12 @@ The shipped policy is deliberately strict:
   contract extensions, club statements, and all other categories are
   rejected even when officially confirmed.
 - First-party `OFFICIAL` or `COMPLETED` events publish as **CONFIRMED**.
-- A separate transfer-only **REPORTED** lane accepts only Fabrizio Romano,
+- A separate transfer-only **REPORTED** lane accepts Fabrizio Romano,
   David Ornstein/The Athletic, BBC Sport, and Sky Sports: one independent
   source for `TALKS`/`NEGOTIATION`/`BID`; two for
-  `AGREEMENT`/`MEDICAL`/`HERE_WE_GO`. `INTEREST` and `RUMOUR` never publish.
+  `AGREEMENT`/`MEDICAL`/`HERE_WE_GO`. It also accepts structured completed rows
+  from FotMob's Premier League transfer table within 48 hours. `INTEREST`,
+  `RUMOUR`, and unstructured third-party completion claims never publish.
 - First-party club, Premier League, FPL, FA, or other configured governing-body
   evidence is still required for **CONFIRMED** wording, and every story must
   involve an active Premier League club/player relationship (league validation
@@ -38,8 +40,11 @@ Reliable but non-official transfer updates use a distinct **REPORTED** lane:
 - one approved source for `TALKS`, `NEGOTIATION`, or `BID`;
 - two independent approved publishers for `AGREEMENT`, `MEDICAL`, or
   `HERE_WE_GO` (Ornstein and The Athletic count as one newsroom);
-- `INTEREST`, `RUMOUR`, and a non-official claim labelled `OFFICIAL` or
-  `COMPLETED` remain blocked;
+- structured FotMob rows may publish `COMPLETED` only as **REPORTED/LISTED**, are
+  limited to 48 hours, and must carry a real FotMob player ID plus a current PL
+  club on at least one side of the move;
+- `INTEREST`, `RUMOUR`, unstructured FotMob text, and other non-official claims
+  labelled `OFFICIAL` or `COMPLETED` remain blocked;
 - player, FROM club, TO club, Premier League relevance, freshness, source URL,
   contradiction, duplicate, and confidence gates must still pass.
 

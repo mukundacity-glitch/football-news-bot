@@ -14,7 +14,7 @@ from typing import Dict, List
 
 from .models import EventStatus, EventType, VerificationDecision
 from .reported_transfer_gate import (
-    AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
+    is_reported_transfer,
     reported_status_label,
 )
 from .source_registry import SourceRegistry
@@ -61,7 +61,7 @@ class VerifiedPostRenderer:
         event = decision.event_type
 
         if event == EventType.TRANSFER:
-            if decision.authority_kind == REPORTED_TRANSFER_AUTHORITY:
+            if is_reported_transfer(decision):
                 return self._render_reported_transfer(decision)
             return self._render_official_transfer(decision)
 
@@ -133,9 +133,14 @@ class VerifiedPostRenderer:
         destination = str(required(facts, "club_to_name"))
         status = reported_status_label(decision.status, facts)
 
+        detail_bits = [f"Status: {status}"]
+        if facts.get("fee"):
+            detail_bits.append(f"Fee: {facts['fee']}")
+        if facts.get("contract_length"):
+            detail_bits.append(f"Contract: {facts['contract_length']}")
         lines: List[str] = [
             f"🚨 REPORTED TRANSFER: {player} — {origin} to {destination}",
-            f"Status: {status}.",
+            " • ".join(detail_bits) + ".",
             "This is not an official transfer announcement.",
             self._hashtags(decision),
         ]
