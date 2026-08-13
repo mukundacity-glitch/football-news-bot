@@ -2263,6 +2263,8 @@ async def scrape(data, fpl=None, verification_runtime=None):
     data["last_read_health"] = health
     print(
         f"  [V2-READ] {len(rss_items)} RSS/social + {len(fpl_items)} structured FPL items; "
+        f"FotMob fresh={health.get('fotmob_items_within_48h', 0)}/"
+        f"{health.get('fotmob_items', 0)}; "
         f"{health['feeds_failed']}/{health['feeds_total']} feeds failed"
     )
 

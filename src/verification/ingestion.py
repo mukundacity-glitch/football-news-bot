@@ -224,7 +224,15 @@ def _fetch_fotmob_transfers(
             .get("data", [])
         )
         items: List[Dict[str, Any]] = []
-        for row in transfers[:80]:
+        # FotMob does not guarantee row order across regions/caches. Sort by the
+        # structured timestamp before limiting so fresh rows can never fall
+        # outside an arbitrary first-80 slice on a GitHub runner.
+        ordered = sorted(
+            transfers,
+            key=lambda row: str(row.get("transferDate") or row.get("fromDate") or ""),
+            reverse=True,
+        )
+        for row in ordered[:200]:
             name = str(row.get("name") or "").strip()
             to_club = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
             from_club = str(row.get("fromClubFullName") or row.get("fromClub") or "").strip()
@@ -344,10 +352,24 @@ def fetch_configured_news(
     successes += social_successes
     failures.extend(social_failures)
     total = len(feed_definitions) + len(runtime.feeds.social_feeds) + 1
+    fotmob_recent = 0
+    for item in fotmob_items:
+        try:
+            published = datetime.fromisoformat(
+                str(item.get("created_at") or "").replace("Z", "+00:00")
+            )
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - published).total_seconds() <= 48 * 3600:
+                fotmob_recent += 1
+        except Exception:
+            continue
     health = {
         "feeds_total": total,
         "feeds_succeeded": successes,
         "feeds_failed": len(failures),
+        "fotmob_items": len(fotmob_items),
+        "fotmob_items_within_48h": fotmob_recent,
         "fail_ratio": len(failures) / total if total else 1.0,
         "failures": failures,
         "at": fetched_at,
