@@ -850,6 +850,33 @@ def test_real_fotmob_row_preserves_own_format_and_incoming_player_identity(runti
         assert image.size == (3840, 2160)
 
 
+def test_current_fotmob_route_ignores_stale_unpublished_destination_claim(runtime):
+    stale_claim = observation(
+        title="Deal agreed for Danny Welbeck to join Arsenal from Brighton",
+        source_id="media.the_guardian",
+        url="https://www.theguardian.com/football/welbeck-arsenal",
+        story=transfer_story(destination="Arsenal"),
+    )
+    first = runtime.verify_observations([stale_claim])
+    assert not first.may_publish
+
+    current = observation(
+        title="Danny Welbeck has joined Chelsea from Brighton. FotMob listed the transfer as completed.",
+        source_id="media.fotmob",
+        url="https://www.fotmob.com/leagues/47/transfers/premier-league?season=2026%2F2027",
+        story=transfer_story(destination="Chelsea"),
+    )
+    current["document"]["source_handle"] = "fotmob"
+    current["document"]["metadata"] = {
+        "structured_fotmob_transfer": True,
+        "fotmob_row": {"playerId": 10},
+    }
+    decision = runtime.verify_observations([current])
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.verified_facts["club_to_name"] == "Chelsea"
+
+
 def test_structured_fotmob_row_older_than_48_hours_stays_pending(runtime):
     old = (datetime.now(timezone.utc) - timedelta(hours=49)).isoformat()
     obs = observation(

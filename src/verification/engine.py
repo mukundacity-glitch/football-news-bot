@@ -70,7 +70,21 @@ class VerificationEngine:
             self.repository.record_claim(claim)
 
         event, event_claims, event_ambiguity = self._select_event(claims)
-        if not event_ambiguity and event in self.config.publishable_categories:
+        current_structured_fotmob = any(
+            claim.source_id == FOTMOB_SOURCE_ID
+            and claim.document.metadata.get("structured_fotmob_transfer") is True
+            for claim in event_claims
+        )
+        if (
+            not event_ambiguity
+            and event in self.config.publishable_categories
+            # A current structured transfer row is a complete route-specific
+            # snapshot. Do not merge stale historical rumours/old parser claims
+            # for the same player but a different destination into its fact
+            # consensus. Publication history is still checked below, so real
+            # reposts remain blocked.
+            and not current_structured_fotmob
+        ):
             provisional_family, _ = self._story_ids(event, {}, event_claims)
             since = (
                 now - timedelta(days=self.config.threshold("active_story_window_days"))
