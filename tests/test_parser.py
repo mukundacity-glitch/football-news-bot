@@ -74,6 +74,27 @@ def test_leading_injury_news_still_classified_as_injury():
     assert s["event"] == "injury", s["event"]
 
 
+# -- FROM-club must come from known identity, never bare text, when the ----
+# live FPL feed is unavailable -----------------------------------------------
+# With fpl_data=None, actual_current_club_key previously stayed None and
+# from_key fell through to "whichever club the text mentions first" -- an
+# article can claim ANY club as the origin for a real player and the parser
+# had no independent way to catch it. Pascal Struijk is declared real at
+# Leeds in conftest.py's TEST_SQUAD; a fabricated article claiming he is
+# leaving Man City must still resolve from_key to his actual club (Leeds),
+# with the fabricated club relegated to to_key, where downstream gates (e.g.
+# entity_guard, transfer_safety.validate_before_publish) can scrutinize it
+# as an unverified destination claim rather than a trusted origin.
+
+def test_from_club_resolves_via_registry_when_fpl_feed_unavailable():
+    text = ("BREAKING: Pascal Struijk completes move away from Manchester City "
+            "in official transfer to Fulham. The deal has been confirmed by "
+            "both clubs. Here we go!")
+    s = extract_story_fallback(text, None)
+    assert s["from_key"] == "Leeds", s["from_key"]
+    assert s["from_key"] != "Man_City"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

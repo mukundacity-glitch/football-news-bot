@@ -769,8 +769,20 @@ class VerificationEngine:
         if not subject:
             subject = next(
                 (c.facts.get("subject_id") or c.facts.get("club_id") for c in claims if c.facts),
-                "unknown",
+                None,
             )
+        if not subject:
+            # No claim in this batch resolved a real subject/club identity.
+            # A constant fallback here (e.g. the literal string "unknown")
+            # would give every unrelated no-subject claim, from any source,
+            # in any run, the SAME family_id -- and claims_for_family's plain
+            # family_id match then pools all of their history together on the
+            # next run, regardless of which player or club each one is
+            # actually about. Falling back to the first claim's own identity
+            # instead means two claims only ever land in the same family when
+            # they share a genuinely resolved subject; unresolved claims never
+            # merge with each other purely because both are unresolved.
+            subject = f"unresolved:{claims[0].id}" if claims else "unresolved:empty"
         family_raw = f"{event.value}|{subject}"
         if event == EventType.OFFICIAL_STATEMENT and facts.get("statement_topic"):
             # Separate official statements are separate stories; identical topics

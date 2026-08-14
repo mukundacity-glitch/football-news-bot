@@ -5,7 +5,7 @@ Handles regex matching, categorization, and FPL-relevance safety gates.
 
 import re
 from datetime import datetime, timezone
-from src.fpl_feed import find_player_in_fpl, fpl_team_key
+from src.fpl_feed import find_player_in_fpl, fpl_team_key, resolve_club_key
 from src.constants import (
     FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES, CLUB_ALIASES,
     POSITION_WORDS, NATIONALITY_ADJECTIVES, OFFICIAL_INJURY_ACCOUNTS,
@@ -14,6 +14,7 @@ from src.constants import (
 from src.entity_guard import (
     detect_country_entity, detect_competition_entity, _strip as _eg_strip,
 )
+from src import squad_registry
 
 # Sort aliases by length descending
 _SORTED_ALIASES = sorted(CLUB_ALIASES.keys(), key=len, reverse=True)
@@ -272,6 +273,27 @@ def extract_story_fallback(tweet_text: str, fpl_data=None) -> dict:
 
     fpl_player_el = find_player_in_fpl(name, fpl_data) if name and fpl_data else None
     actual_current_club_key = fpl_team_key(fpl_player_el, fpl_data) if fpl_player_el else None
+
+    # FALLBACK WHEN THE LIVE FPL FEED IS UNAVAILABLE (fpl_data empty/unreachable
+    # this run): without this, actual_current_club_key stays None and the
+    # from_key assignment below falls through to trusting whichever club the
+    # article text happens to mention first -- the exact gap that lets a
+    # fabricated "FROM" club through the parser. squad_registry.resolve_player
+    # is a second, independent source of truth (a locally persisted copy of the
+    # last-known-good FPL cache, plus vouched-for manual overrides), so this
+    # only ever narrows what text can claim; it never invents a club the
+    # registry doesn't already know.
+    if name and actual_current_club_key is None:
+        _registry_record = squad_registry.resolve_player(name, fpl_data)
+        if _registry_record and _registry_record.club_key:
+            # Canonicalize through the same resolver the primary (live-FPL)
+            # path uses, rather than trusting the registry's own casing --
+            # different registry sources (test fixtures, squad_overrides.json,
+            # the FPL cache) are not guaranteed to agree on casing/format, and
+            # from_key must be identical either way downstream.
+            actual_current_club_key = (
+                resolve_club_key(_registry_record.club_key) or _registry_record.club_key
+            )
 
     # CLAUSE-SCOPING GUARD: an article naming two separate transfers in one
     # SENTENCE must not let the second player's destination club get attached

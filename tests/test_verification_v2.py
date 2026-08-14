@@ -137,6 +137,54 @@ def test_official_title_can_recover_new_player_after_nonperson_fragment(runtime)
     assert decision.verified_facts["subject_name"] == "Maxence Lacroix"
 
 
+# -- dynamic-registry recovery must not substitute an unrelated player -----
+# Real, reproduced incident: the shared fpl_data fixture below has a player
+# whose web_name is the bare word "Player" (id 11, "Example Player") -- a
+# stand-in for any real player whose FPL web_name happens to be short or
+# generic. Before this fix, ANY claimed subject_name containing that word
+# as a token (a completely fabricated name, unrelated to this player) would
+# fail to resolve via resolve_player, fall through to the single-mention
+# "recovery" fallback, find exactly one known-registry player mentioned in
+# the text (this one, via its own alias), and silently substitute it in as
+# the subject -- with entity_validation then PASSING and the claim reaching
+# transfer_publication_safety=PASS. The fix requires the recovered player's
+# name/aliases to share a real word-token with the CLAIMED subject_name, not
+# merely "this is the only known player mentioned anywhere in the document."
+
+def test_dynamic_registry_recovery_rejects_unrelated_player(runtime):
+    obs = observation(
+        title="Marcus Delgado signs for Chelsea",
+        source_id="club.chelsea",
+        url="https://www.chelseafc.com/en/news/article/marcus-delgado-signs",
+        story={
+            "player": "Marcus Delgado", "event": "transfer",
+            "from_club": "Brighton", "to_club": "Chelsea", "stage": 4,
+        },
+    )
+    decision = runtime.verify_observations([obs])
+    assert decision.verified_facts.get("subject_id") is None
+    assert decision.verified_facts.get("subject_name") is None
+    assert decision.decision != DecisionType.PUBLISH
+
+
+def test_dynamic_registry_recovery_still_finds_garbled_real_name(runtime):
+    # "Welbeck" alone is a genuine partial/garbled read of the real player
+    # (id 10, "Danny Welbeck") already in the shared fixture -- this must
+    # still recover, confirming the fix narrows the fallback rather than
+    # disabling the legitimate case it exists for.
+    obs = observation(
+        title="Chelsea sign Welbeck from Brighton in club-record deal",
+        source_id="club.chelsea",
+        url="https://www.chelseafc.com/en/news/article/welbeck-signs",
+        story={
+            "player": "Welbeck", "event": "transfer",
+            "from_club": "Brighton", "to_club": "Chelsea", "stage": 4,
+        },
+    )
+    decision = runtime.verify_observations([obs])
+    assert decision.verified_facts.get("subject_name") == "Danny Welbeck"
+
+
 def test_official_transfer_publishes_and_renders_only_verified_facts(runtime):
     """Official transfers use the owner-approved master caption template."""
     obs = observation(
@@ -895,3 +943,43 @@ def test_fotmob_text_without_structured_table_flag_stays_pending(runtime):
     decision = runtime.verify_observations([obs])
     assert decision.decision == DecisionType.PENDING
     assert not decision.may_publish
+
+
+# -- unrelated unresolved-subject claims must never share a story family ---
+# Real production incident, 13 Aug 2026: two claims about two entirely
+# different, unrelated players (neither resolves a subject_id -- both are
+# outside the FPL-known roster) arrived in separate run-cycles from two
+# different official club feeds. _story_ids previously fell back to the
+# CONSTANT string "unknown" whenever no subject resolved, so both claims
+# hashed to the same family_id, and claims_for_family's plain family_id
+# match then pooled them together on the second run. fact_consensus then
+# reported a "conflict" between two clubs (e.g. Chelsea vs Fulham) that were
+# never actually claims about the same transfer -- they just happened to
+# share the unresolved-subject bucket. The fail-closed gate blocked
+# publication either way, but the conflict reason was meaningless, and nearby
+# unrelated stories piggybacked on it every subsequent run. Reproduced here:
+# this exact scenario regenerates the identical story_id the real log showed
+# (544060e49e943f51bc155175f85e75d9) against the pre-fix code.
+
+def test_unrelated_unresolved_subjects_do_not_share_a_story_family(runtime):
+    first = observation(
+        title="Marcus Delgado Junior signs for Chelsea",
+        source_id="club.chelsea",
+        url="https://www.chelseafc.com/en/news/article/marcus-delgado-junior-signs",
+        story=transfer_story(player="Marcus Delgado Junior", destination="Chelsea"),
+    )
+    second = observation(
+        title="Tobias Okonkwo Reyes signs for Fulham",
+        source_id="club.fulham",
+        url="https://www.fulhamfc.com/news/tobias-okonkwo-reyes-signs",
+        story=transfer_story(player="Tobias Okonkwo Reyes", destination="Fulham"),
+    )
+    # Separate calls, matching how the real bot invokes verify_observations
+    # once per run-cycle (~20 min apart) -- the collapse only manifests via
+    # claims_for_family's historical lookup across calls, not within one.
+    first_decision = runtime.verify_observations([first])
+    second_decision = runtime.verify_observations([second])
+    assert first_decision.story_id != second_decision.story_id
+    fact_consensus_gate = second_decision.gate("fact_consensus")
+    if fact_consensus_gate is not None:
+        assert "club_to_id" not in fact_consensus_gate.reason

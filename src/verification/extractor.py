@@ -442,9 +442,29 @@ class LegacyClaimAdapter:
                 document.text, {EntityType.PLAYER}
             )
             if len(player_mentions) == 1:
-                subject = player_mentions[0][1]
-                subject_name = subject.name
-                warnings.append("subject_recovered_from_dynamic_registry")
+                _recovered = player_mentions[0][1]
+                # This recovers a real player whose name extraction failed
+                # (e.g. a garbled/partial string that still shares a real
+                # name-token, like a truncated surname) -- it must NOT
+                # recover a player who merely happens to be textually
+                # mentioned somewhere in the document with no relationship
+                # to what the story actually claimed as the subject. A
+                # short or generic alias (a single common word, a
+                # web_name that is itself a plain dictionary word) is
+                # exactly the case that makes an unrelated match possible,
+                # so this checks for genuine word-level overlap with the
+                # claimed subject_name rather than trusting "only one
+                # player mentioned" as sufficient on its own.
+                _claimed_tokens = set(_norm_text(subject_name).split())
+                _recovered_tokens = set(_norm_text(_recovered.name).split())
+                for _alias in _recovered.aliases:
+                    _recovered_tokens |= set(_norm_text(_alias).split())
+                if not subject_name or (_claimed_tokens & _recovered_tokens):
+                    subject = _recovered
+                    subject_name = subject.name
+                    warnings.append("subject_recovered_from_dynamic_registry")
+                else:
+                    warnings.append("subject_recovery_rejected_no_name_overlap")
             elif len(player_mentions) > 1:
                 warnings.append("multiple_registry_players_in_document")
 
