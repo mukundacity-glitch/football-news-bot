@@ -4,10 +4,9 @@ Handles regex matching, categorization, and FPL-relevance safety gates.
 """
 
 import re
-from datetime import datetime, timezone
 from src.fpl_feed import find_player_in_fpl, fpl_team_key, resolve_club_key
 from src.constants import (
-    FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES, CLUB_ALIASES,
+    STAFF_BLOCK_KW, MANAGER_SURNAMES, CLUB_ALIASES,
     POSITION_WORDS, NATIONALITY_ADJECTIVES, OFFICIAL_INJURY_ACCOUNTS,
     STRONG_OFFICIAL_CUES
 )

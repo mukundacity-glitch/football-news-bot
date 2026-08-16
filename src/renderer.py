@@ -22,7 +22,7 @@ class RendererNotInstalledError(RuntimeError):
     pass
 
 
-def _removed(*args, **kwargs):
+def _removed(*_args, **_kwargs):
     raise RendererNotInstalledError(
         "player-card renderer removed; install and approve the replacement renderer"
     )
@@ -53,7 +53,7 @@ def club_color_emojis(club_key):
         _COLOR_EMOJI_RGB,
         key=lambda emoji: sum(
             (value - target) ** 2
-            for value, target in zip((r, g, b), _COLOR_EMOJI_RGB[emoji])
+            for value, target in zip((r, g, b), _COLOR_EMOJI_RGB[emoji], strict=True)
         ),
     )
     return primary if primary == "⚪" else f"{primary}⚪"

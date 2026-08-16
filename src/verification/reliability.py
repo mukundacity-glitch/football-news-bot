@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict
 
 from .config import VerificationConfig
-from .models import SourceProfile
 from .repository import VerificationRepository
 from .source_registry import SourceRegistry
 
@@ -51,7 +49,6 @@ class SourceReliabilityModel:
         confirmed = max(0.0, stats.get("officially_confirmed", 0.0))
         contradicted = max(0.0, stats.get("contradicted", 0.0))
         corrected = max(0.0, stats.get("corrected", 0.0))
-        unresolved = max(0.0, stats.get("unresolved", 0.0))
         resolved = confirmed + contradicted + corrected
 
         posterior_accuracy = (

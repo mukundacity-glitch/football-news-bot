@@ -12,7 +12,7 @@ import json
 import math
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, List, Mapping, Optional, Sequence
 
 from .config import VerificationConfig
 from .consensus import FactConsensusEngine, ConsensusResult, normalize_fact
@@ -20,7 +20,6 @@ from .entities import EntityRegistry
 from .models import (
     Claim,
     DecisionType,
-    EntityType,
     EventStatus,
     EventType,
     GateResult,
@@ -38,7 +37,7 @@ from .reported_transfer_gate import (
     approved_source_ids,
     source_independence_group,
 )
-from .repository import RepositoryError, VerificationRepository
+from .repository import VerificationRepository
 from .source_registry import SourceRegistry
 
 
@@ -97,7 +96,7 @@ class VerificationEngine:
             event_claims = [c for c in claims if c.event_type == event]
         status = self._highest_status(event_claims)
         policy = self.config.event_policy(event) if event in self.config.publishable_categories else None
-        official_claims = self._authoritative_claims(event_claims, event, status)
+        official_claims = self._authoritative_claims(event_claims, event)
         authoritative = list(official_claims)
         confirmation_kind = "first_party_official" if official_claims else "none"
         if not authoritative and policy:
@@ -440,7 +439,6 @@ class VerificationEngine:
         self,
         claims: Sequence[Claim],
         event: EventType,
-        aggregate_status: EventStatus,
     ) -> List[Claim]:
         result = []
         for claim in claims:

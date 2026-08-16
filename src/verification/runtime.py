@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
-from .config import ConfigurationError, VerificationConfig
+from .config import VerificationConfig
 from .documents import DocumentFactory, FeedRegistry
 from .engine import VerificationEngine
 from .entities import EntityRegistry
 from .extractor import LegacyClaimAdapter
 from .models import Claim, VerificationDecision
 from .renderer import VerifiedPostRenderer
-from .repository import RepositoryError, VerificationRepository
+from .repository import VerificationRepository
 from .source_registry import SourceRegistry
 
 

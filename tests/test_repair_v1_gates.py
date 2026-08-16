@@ -4,7 +4,6 @@ Each test here corresponds to one measured finding from the repository audit,
 and fails if that finding is reintroduced.
 """
 
-import asyncio
 import json
 from pathlib import Path
 

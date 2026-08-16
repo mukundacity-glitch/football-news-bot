@@ -11,7 +11,7 @@ import calendar
 import re
 import time
 import urllib.parse
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import feedparser
 import requests

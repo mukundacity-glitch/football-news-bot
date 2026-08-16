@@ -119,7 +119,7 @@ def test_reference_and_brand_assets_exist():
         with Image.open(path) as image:
             assert image.size[0] / image.size[1] == pytest.approx(16/9, rel=0.01)
     for path in (
-        Path("logo.png"), Path("assets/branding/fpl_lion.jpg"),
+        Path("assets/branding/logo.png"), Path("assets/branding/fpl_lion.jpg"),
         Path("assets/branding/fpl_vortex_full.png"),
         Path("assets/branding/premier_league.png"),
         Path("assets/branding/stadium_texture.jpg"),

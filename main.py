@@ -3,35 +3,33 @@ import os
 import re
 import json
 import hashlib
-import base64
 import difflib
 import random
 import argparse
 import asyncio
 import subprocess
-import requests
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageChops
-from pilmoji import Pilmoji
 
 # Connected to Core Engines & Ground Truth Caches
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key
-from src.squad_registry import is_known_player, resolve_player, refresh_registry
-from src.renderer import (create_transfer_image, create_injury_image, _create_fallback_card,
-                          create_verified_branded_card, image_is_blank)
+from src.squad_registry import is_known_player, resolve_player
+from src.renderer import (
+    club_color_emojis,
+    create_transfer_image,
+    create_injury_image,
+    image_is_blank,
+)
+from src.rendering import MasterGraphicRenderer
 from src.parser import extract_story_fallback, detect_historical, passes_safety_gate, _clean_source_text
-from src.entity_guard import (is_postable_player, classify_entity,
-                              is_staff_subject, staff_role_of, staff_action_of)
+from src.entity_guard import is_postable_player, is_staff_subject, staff_role_of, staff_action_of
 from src import confidence as _conf
 from src import direction as _direction
 from src.verifier import cross_verify, reset_x_search_health, x_search_health
 from src.rejection_log import log_rejection
 from src.verification import (
-    DecisionType as V2DecisionType,
     RuntimeUnavailable as V2RuntimeUnavailable,
     VerificationDecision as V2VerificationDecision,
     VerificationRuntime,
@@ -41,10 +39,23 @@ from src.verification.config import VerificationConfig as V2VerificationConfig
 from src.verification.ingestion import fetch_configured_news
 from src.verification.enrichment import enrich_official_item
 from src.verification.reported_transfer_gate import is_reported_transfer
-
-# Shared Canvas Namespace Initialization
-FONT = ImageFont.load_default()
-font = FONT 
+from src.verification.source_registry import SourceRegistry as V2SourceRegistry
+from src.constants import (
+    POSTED_FILE,
+    PENDING_DIR,
+    POSTED_DIR,
+    JOURNALISTS,
+    OFFICIAL_ACCOUNTS,
+    OFFICIAL_INJURY_ACCOUNTS,
+    ELITE_TRUSTED,
+    TRUSTED_MEDIA,
+    MANAGER_SURNAMES,
+    CLUB_ALIASES,
+    FPL_LOGO_IDS,
+    CLUB_HASHTAG_MAP,
+    STRONG_OFFICIAL_CUES,
+    TRANSFER_CONFIRM_CUES,
+)
 
 # Twikit API Runtime Inline Workaround
 try:
@@ -93,7 +104,6 @@ X_CT0_TOKEN = (os.getenv("X_CT0_TOKEN") or "").strip()
 X_POST_AUTH_TOKEN = (os.getenv("X_POST_AUTH_TOKEN") or X_AUTH_TOKEN or "").strip()
 X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or X_CT0_TOKEN or "").strip()
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
-GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 
 # Set once by main(); post_item uses the same verified decision ledger that
 # authorized the draft. A missing runtime always blocks live publication.
@@ -131,34 +141,16 @@ def _env_flag(name, default=False):
 DRY_RUN = _env_flag("DRY_RUN", default=False)
 
 # ── PATHS ────────────────────────────────────────────────────────────────
-# POSTED_FILE is imported from src.constants below (data/posted_news.json).
-# It was previously also assigned here as a bare "posted_news.json"; the import
-# happened afterwards and silently won, so the two only agreed by accident.
-# Reordering the imports would have repointed the dedup ledger at a file that
-# does not exist, and the bot would have forgotten everything it had posted.
+# Shared state paths come from src.constants so every pipeline stage uses the
+# same committed ledger and queue directories.
 RUN_STATUS_FILE = Path("data/last_run_status.json")
-PENDING_DIR = Path("queue/pending")
-POSTED_DIR = Path("queue/posted")
 DRAFTS_DIR = Path("fpl_drafts")
 for d in (PENDING_DIR, POSTED_DIR, Path("logos"), Path("players"), DRAFTS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-# ── CHANNEL BRANDING ─────────────────────────────────────────────────────
-CHANNEL_NAME = "FPL VORTEX"
-CHANNEL_HANDLE = "@FPLVortex"
-
 # Bump this string whenever extraction/validation logic changes.
 # It auto-clears the 'extracted' cache so old tweets re-run through new code.
 _LOGIC_VER = "2026-08-02-verification-engine-v2"
-
-# ── CONFIGURATION & BRANDING (Imported from src.constants) ───────────────
-from src.constants import (
-    CHANNEL_NAME, CHANNEL_HANDLE, POSTED_FILE, PENDING_DIR, POSTED_DIR,
-    JOURNALISTS, NITTER_INSTANCES, OFFICIAL_ACCOUNTS, OFFICIAL_INJURY_ACCOUNTS,
-    ELITE_TRUSTED, TRUSTED_MEDIA, FOOTBALL_KW, STAFF_BLOCK_KW, MANAGER_SURNAMES,
-    CLUB_ALIASES, FPL_LOGO_IDS, CLUB_COLORS, CLUB_HASHTAG_MAP, STRONG_OFFICIAL_CUES,
-    TRANSFER_CONFIRM_CUES,
-)
 
 # Tier sets are compared on a normalised (alphanumeric-only) form so feed
 # names like "BBC_Sport" / "Sky Sports" match their canonical handles
@@ -361,7 +353,7 @@ def resync_dedup_state_from_origin(data: dict) -> dict:
         result = subprocess.run(
             ["git", "pull", "--rebase", "--autostash", "origin", "main"],
             cwd=str(Path(__file__).resolve().parent),
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, check=False,
         )
         if result.returncode != 0:
             print(f"  [RESYNC] git pull before posting failed (continuing with "
@@ -1321,7 +1313,6 @@ def format_suspension_post(story) -> str:
     ⚽🏟️/emoji choices and exact wording were reproduced from what they
     wrote, with real data substituted for Saka/Arsenal.
     """
-    from src.renderer import club_color_emojis
     player = tweet_player_name(story)
     club_key = story.get("to_key") or story.get("from_key")
     club_name = club_display(club_key) or _tbd(None)
@@ -1329,13 +1320,10 @@ def format_suspension_post(story) -> str:
     # form (e.g. "Arsenal"), but story club keys are lowercase -- the same
     # gap hashtag_for() already bridges via resolve_club_key().
     club_emoji = club_color_emojis(resolve_club_key(club_key) or club_key) if club_key else "⚽"
-    reason = story.get("diagnosis") or "disciplinary action"
-    ret = story.get("expected_return") or _tbd(None)
-
     lines = [
         f"🚨🔴 SUSPENDED! {player} ❌ unavailable for {club_name} due to suspension. ⚽🏟️",
         f"{club_emoji} {club_name.upper()} | Player: {player} | Status: SUSPENDED 🚫",
-        f"📉 A major FPL blow — check your squad before the deadline! ⏰",
+        "📉 A major FPL blow — check your squad before the deadline! ⏰",
     ]
     return "\n".join(lines) + "\n\n" + build_hashtags(story)
 
@@ -1347,7 +1335,6 @@ def format_transfer_post(story) -> str:
     the story actually has, exactly matching the "adapt to available
     data" instruction.
     """
-    from src.renderer import club_color_emojis
     player = tweet_player_name(story)
     to_key = story.get("to_key")
     from_key = story.get("from_key")
@@ -1382,19 +1369,17 @@ def format_injury_post(story) -> str:
     shape) with injury-specific wording and fields, rather than a
     genuinely new, unverified format.
     """
-    from src.renderer import club_color_emojis
     player = tweet_player_name(story)
     club_key = story.get("to_key") or story.get("from_key")
     club_name = club_display(club_key) or _tbd(None)
     club_emoji = club_color_emojis(resolve_club_key(club_key) or club_key) if club_key else "⚽"
     diagnosis = story.get("diagnosis") or "an injury"
-    ret = story.get("expected_return") or _tbd(None)
     avail = _avail_text(story.get("stage", 1))
 
     lines = [
         f"🚨🩹 INJURY! {player} ❌ a doubt for {club_name} with {diagnosis}. ⚽🏟️",
         f"{club_emoji} {club_name.upper()} | Player: {player} | Status: {avail.upper()}",
-        f"📉 Keep an eye on this one before the FPL deadline! ⏰",
+        "📉 Keep an eye on this one before the FPL deadline! ⏰",
     ]
     return "\n".join(lines) + "\n\n" + build_hashtags(story)
 
@@ -1405,7 +1390,6 @@ def format_press_conference_post(story) -> str:
     quote_topic fields (src/verification/extractor.py) rather than
     inventing new field names.
     """
-    from src.renderer import club_color_emojis
     player = tweet_player_name(story)
     club_key = story.get("to_key") or story.get("from_key")
     club_name = club_display(club_key) or _tbd(None)
@@ -1535,8 +1519,8 @@ def build_tweet_body(story, sources, mode) -> str:
 
     else:
         headline = f"🔵 NEWS- {player}."
-        details.append(f"📰 UPDATE — Latest football news.")
-        details.append(f"🏴󠁧󠁢󠁥󠁮󠁧󠁿 LEAGUE — PREMIER LEAGUE")
+        details.append("📰 UPDATE — Latest football news.")
+        details.append("🏴󠁧󠁢󠁥󠁮󠁧󠁿 LEAGUE — PREMIER LEAGUE")
 
     lines = [headline] + details
     return "\n".join(lines) + "\n\n" + build_hashtags(story)
@@ -1802,7 +1786,7 @@ async def post_item(post_client, item, data):
         if kind in ("flagged", "rate_limited"):
             # Automation/spam/rate-limit flag — abort the whole run, do not retry.
             _set_cooldown(data, kind)
-            raise XBackoffError(kind, exc)
+            raise XBackoffError(kind, exc) from exc
         if kind == "auth":
             # Posting cookies are invalid/expired — EVERY post will fail the same
             # way, so abort once with an actionable message (no cooldown; a re-run
@@ -1811,7 +1795,7 @@ async def post_item(post_client, item, data):
                   "authenticate you'). The posting cookies are expired or wrong.\n"
                   "          Refresh the GitHub Secrets X_POST_AUTH_TOKEN and "
                   "X_POST_CT0_TOKEN, then re-run. Nothing was posted; account is NOT flagged.")
-            raise XBackoffError("auth", exc)
+            raise XBackoffError("auth", exc) from exc
         # transient -> let the caller's single cautious retry handle it.
         raise
 
@@ -2285,7 +2269,8 @@ async def scrape(data, fpl=None, verification_runtime=None):
     collection_config = runtime.config.collection_config
     official_enrichment_budget = int(collection_config["official_enrichment_budget"])
     fotmob_pipeline_stats = {"seen": 0, "grouped": 0, "posted_id_skip": 0, "age_skip": 0}
-    for source_item in items:
+    for raw_source_item in items:
+        source_item = raw_source_item
         item_id = source_item["id"]
         is_fotmob_item = bool(
             source_item.get("metadata", {}).get("structured_fotmob_transfer") is True
@@ -2366,7 +2351,8 @@ async def scrape(data, fpl=None, verification_runtime=None):
             )
         except Exception as exc:
             result = {"evidence": [], "log": [f"collector error: {exc}"]}
-        for evidence_item in result.get("evidence", []):
+        for raw_evidence_item in result.get("evidence", []):
+            evidence_item = raw_evidence_item
             if official_enrichment_budget > 0:
                 enriched = enrich_official_item(evidence_item, runtime)
                 if enriched.get("metadata", {}).get("official_page_enriched"):
@@ -2471,7 +2457,6 @@ async def build_draft(item, data, fpl):
         return None
         
     mode = item.get("mode", "rumour")
-    rumour = (mode == "rumour")
     label = status_label(item, mode)
     
     if label is None or label not in APPROVED_LABELS:
@@ -2628,6 +2613,40 @@ def _dry_run_facts(story: dict) -> dict:
     return facts
 
 
+def _dry_run_decision(story: dict, source_id: str) -> V2VerificationDecision:
+    """Build an authorized preview envelope for fixture-only card rendering.
+
+    This object never enters the posting pipeline. Live cards continue to use
+    decisions produced by Verification Engine V2 and its integrity checks.
+    """
+    event = _dry_run_event(story)
+    story_id = str(story.get("id") or story.get("key") or "dry-run-preview")
+    return V2VerificationDecision.from_dict({
+        "decision": "PUBLISH",
+        "story_id": story_id,
+        "family_id": f"dry-run:{story_id}",
+        "event_type": event,
+        "status": "COMPLETED" if event == "TRANSFER" else "OFFICIAL",
+        "verified_facts": _dry_run_facts(story),
+        "source_ids": [source_id],
+        "publisher_groups": [source_id],
+        "gates": [{
+            "name": "dry_run_preview",
+            "state": "PASS",
+            "reason": "fixture-only renderer pre-flight",
+        }],
+        "reasons": [],
+        "confidence": 1.0,
+        "confidence_dimensions": {},
+        "evidence_document_ids": [story_id],
+        "fingerprint": f"dry-run:{story_id}",
+        "source_url": story.get("source_url"),
+        "authority_kind": "dry_run_preview",
+        "authority_source_ids": [source_id],
+        "created_at": story.get("created_at") or datetime.now(timezone.utc).isoformat(),
+    })
+
+
 async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
     print(f"\n[DRY-RUN] Using fixtures: {fixtures_path} (x{runs} pass(es))")
     init_club_data()
@@ -2635,11 +2654,11 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
     fx = Path(fixtures_path)
     if not fx.exists():
         print(f"[DRY-RUN] FIXTURE FILE NOT FOUND: {fixtures_path}")
-        return
+        return 1
     try: fixtures = json.loads(fx.read_text())
     except Exception as e:
         print(f"[DRY-RUN] could not parse fixtures: {e}")
-        return
+        return 1
     data = {"daily": {"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                       "count": 0, "limit": 24},
             "stories": {}, "posted_ids": [], "pending": {}, "extracted": {},
@@ -2647,6 +2666,8 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
     total_accepted = total_dup_blocked = total_img_ok = total_img_fail = 0
     dryrun_dir = Path("queue/dryrun")
     dryrun_dir.mkdir(parents=True, exist_ok=True)
+    source_registry = V2SourceRegistry.load()
+    card_renderer = MasterGraphicRenderer(source_registry, fpl_data=fpl)
 
     for run_i in range(1, runs + 1):
         print(f"\n[DRY-RUN] ===== PASS {run_i}/{runs} =====")
@@ -2680,31 +2701,22 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
                 continue
             slug = re.sub(r'[^a-z0-9_]', '', story['key'])
             img_path = dryrun_dir / f"{slug}.png"
-            # Render BOTH cards. The legacy card is what this fixture path has
-            # always produced; the V2 branded card is what actually gets posted,
-            # and a pre-flight that never renders it proves nothing about a
-            # real run.
-            for label, render in (
-                ("legacy", lambda p: create_transfer_image(
-                    story, story["sources"], str(p),
-                    collapsed=(story.get("collapsed", False)))),
-                ("v2", lambda p: create_verified_branded_card(
-                    _dry_run_event(story), story.get("player", ""),
-                    _dry_run_facts(story), story["sources"], str(p))),
-            ):
-                path = img_path if label == "legacy" else dryrun_dir / f"{slug}_v2.png"
-                try:
-                    render(path)
-                    # Size alone cannot see a blank card: the fallback rectangle
-                    # is several KB of flat colour and passes any size check.
-                    if image_is_blank(path):
-                        total_img_fail += 1
-                        print(f"  [DRY] IMAGE BLANK ({label}): {story['key']}")
-                    else:
-                        total_img_ok += 1
-                except Exception as e:
+            # Render the exact card engine used by verified production drafts.
+            # The removed legacy compatibility stubs are intentionally excluded.
+            profile = source_registry.profile_for_handle(username)
+            source_id = profile.id if profile else username
+            try:
+                card_renderer.render(_dry_run_decision(story, source_id), img_path)
+                # Size alone cannot see a blank card: a flat fallback can still
+                # be several KB and pass a naive file-size check.
+                if image_is_blank(img_path):
                     total_img_fail += 1
-                    print(f"  [DRY] IMAGE EXCEPTION ({label}): {e}")
+                    print(f"  [DRY] IMAGE BLANK: {story['key']}")
+                else:
+                    total_img_ok += 1
+            except Exception as e:
+                total_img_fail += 1
+                print(f"  [DRY] IMAGE EXCEPTION: {e}")
             record_content_dedup(story, data)
             data["stories"][story["key"]] = {
                 "stage": story.get("stage", 1), "player": story["player"],
@@ -2720,13 +2732,13 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
     print(f"  Fixtures processed : {len(fixtures)} x {runs} pass(es)")
     print(f"  Unique accepted    : {total_accepted}")
     print(f"  Duplicates blocked : {total_dup_blocked}  (should be > 0 if runs>1)")
-    print(f"  Cards with content : {total_img_ok}  (legacy + V2 per story)")
+    print(f"  Cards with content : {total_img_ok}")
     print(f"  Blank/failed cards : {total_img_fail}  (MUST be 0)")
     print(f"  Daily cap          : {_cap_label(data['daily']['limit'])}")
     est = total_accepted if int(data['daily']['limit']) <= 0 else min(total_accepted, data['daily']['limit'])
     print(f"  Est. posts/day     : ~{est} (capped at {_cap_label(data['daily']['limit'])}; "
-          f"1/run × 30-min cron, hour cap {_cap_label(MAX_POSTS_PER_HOUR)})")
-    print(f"  Classifier         : regex-only (no LLM)")
+          f"1/run × 20-min cron, hour cap {_cap_label(MAX_POSTS_PER_HOUR)})")
+    print("  Classifier         : regex-only (no LLM)")
     print(f"  Cards written to   : {dryrun_dir}/")
     # ... (End of run_dry_run function)
     print("[DRY-RUN] ==========================================")
@@ -2734,6 +2746,7 @@ async def run_dry_run(fixtures_path="fixtures/tweets.json", runs=1):
         print("[DRY-RUN] PASS: no blank/broken images.")
     else: 
         print("[DRY-RUN] FAIL: some images did not render — investigate above.")
+    return 0 if total_img_fail == 0 else 1
 
 
 async def main(post: bool = True):
@@ -2982,8 +2995,8 @@ async def main(post: bool = True):
         for s in postable:
             cat = _CATEGORY.get(s.get("event"), "other")
             _buckets.setdefault(cat, []).append(s)
-        for cat in _buckets:
-            _buckets[cat].sort(key=lambda s: (
+        for bucket in _buckets.values():
+            bucket.sort(key=lambda s: (
                 0 if s.get("collapsed") else 1,
                 -int(s.get("stage", 1)),
             ))
@@ -3130,13 +3143,15 @@ if __name__ == "__main__":
     parser.add_argument("--draft-only", action="store_true",
                         help="Force draft-only mode (no posting). Default is LIVE.")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Offline test: run fixtures through the full pipeline.")
+                        help="Fixture pre-flight: verify dedup and render cards without X.")
     parser.add_argument("--fixtures", default="fixtures/tweets.json",
                         help="Path to fixture tweets JSON for --dry-run.")
     parser.add_argument("--runs", type=int, default=2,
                         help="How many passes over fixtures in --dry-run (>=2 proves dedup).")
     args = parser.parse_args()
     if args.dry_run:
-        asyncio.run(run_dry_run(fixtures_path=args.fixtures, runs=args.runs))
+        raise SystemExit(asyncio.run(
+            run_dry_run(fixtures_path=args.fixtures, runs=args.runs)
+        ))
     else:
         asyncio.run(main(post=not args.draft_only))

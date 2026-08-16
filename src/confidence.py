@@ -76,7 +76,7 @@ def _norm(s):
 # ── Club knowledge (for club-existence + direction validation) ────────────
 def _load_clubs():
     try:
-        c = json.load(open(_DATA / "clubs_cache.json", encoding="utf-8"))
+        c = json.loads((_DATA / "clubs_cache.json").read_text(encoding="utf-8"))
     except Exception:
         return set(), set()
     pl = set()

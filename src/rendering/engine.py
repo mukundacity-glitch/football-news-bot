@@ -9,9 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Optional, Sequence
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
 from src.verification.models import EventType, VerificationDecision
 from src.verification.reported_transfer_gate import is_reported_transfer, reported_status_label
@@ -488,7 +488,6 @@ class MasterGraphicRenderer:
 
     def _press_body(self, image: Image.Image, decision: VerificationDecision) -> None:
         facts = decision.verified_facts
-        draw = ImageDraw.Draw(image)
         top, bottom = 410, 1870
         gap = 35
         widths = (1320, 1260, 1050)

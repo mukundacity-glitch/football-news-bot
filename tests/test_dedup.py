@@ -101,6 +101,7 @@ def test_genuinely_conflicting_clubs_flagged_as_contradiction_not_corroboration(
     # These two do NOT share a key today (different club pairs) — the
     # contradiction path only triggers when they land under the SAME key.
     # Simulate that directly via the merge predicate used in scrape().
+    assert key1 != key2
     new_to = main._norm_text(s2.get("to_key") or s2.get("to_club") or "")
     ex_to = main._norm_text(s1.get("to_key") or s1.get("to_club") or "")
     new_from = main._norm_text(s2.get("from_key") or s2.get("from_club") or "")
