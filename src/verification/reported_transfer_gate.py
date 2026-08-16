@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional
 from urllib.parse import urlparse
 
 from .models import DecisionType, EventStatus, EventType, VerificationDecision

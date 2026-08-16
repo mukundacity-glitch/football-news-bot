@@ -26,8 +26,8 @@ from src.constants import CLUB_ALIASES
 try:
     import json
     from pathlib import Path
-    _ext = json.load(open(Path(__file__).resolve().parent.parent /
-                          "data" / "clubs_extended.json", encoding="utf-8"))
+    _ext_path = Path(__file__).resolve().parent.parent / "data" / "clubs_extended.json"
+    _ext = json.loads(_ext_path.read_text(encoding="utf-8"))
     _EXTRA_CLUBS = list(_ext.get("known_clubs", []))
 except Exception:
     _EXTRA_CLUBS = []

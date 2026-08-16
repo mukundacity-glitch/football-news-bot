@@ -13,10 +13,9 @@ first-party source relationship.
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from .config import VerificationConfig
 from .entities import EntityRegistry, normalize_entity_name

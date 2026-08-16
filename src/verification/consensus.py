@@ -7,7 +7,7 @@ import unicodedata
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence
 
 from .config import EventPolicy, VerificationConfig
 from .models import Claim, EventStatus, EventType

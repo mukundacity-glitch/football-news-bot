@@ -13,10 +13,7 @@ import unicodedata
 from typing import Dict, List
 
 from .models import EventStatus, EventType, VerificationDecision
-from .reported_transfer_gate import (
-    is_reported_transfer,
-    reported_status_label,
-)
+from .reported_transfer_gate import is_reported_transfer
 from .source_registry import SourceRegistry
 
 

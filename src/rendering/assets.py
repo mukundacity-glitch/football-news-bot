@@ -3,12 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import io
-import json
 import re
 import unicodedata
 from pathlib import Path
 from typing import Any, Mapping, Optional
-from urllib.parse import quote
 
 import requests
 from PIL import Image, ImageDraw

@@ -9,13 +9,13 @@ import re
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import feedparser
 import requests
 
 from .club_feeds import as_feed_definitions, resolve_club_feeds, summary
-from .documents import FeedDefinition, FeedRegistry
+from .documents import FeedDefinition
 from .runtime import VerificationRuntime
 
 

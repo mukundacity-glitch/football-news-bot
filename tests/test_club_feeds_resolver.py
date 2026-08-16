@@ -8,8 +8,6 @@ found, cheap enough to run every 20 minutes, and incapable of breaking a run.
 import json
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from src.verification import club_feeds
 
 

@@ -1,10 +1,7 @@
 """Reusable 4K layout primitives for the FPL VORTEX broadcast renderer."""
 from __future__ import annotations
 
-import math
-import textwrap
 from pathlib import Path
-from typing import Iterable, Sequence
 
 from PIL import Image, ImageDraw, ImageFont
 

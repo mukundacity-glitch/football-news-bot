@@ -56,4 +56,4 @@ shirt fallback and never presents a generated face or an unverified club identit
 - Fixed header/footer preserved.
 - No text outside allocated regions.
 - No unauthorized decision can render.
-- Live workflow remains disabled until preview approval.
+- The approved renderer is active for V2-verified production drafts.

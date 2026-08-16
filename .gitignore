@@ -18,7 +18,7 @@ data/last_run_status.json
 .cache/
 .pytest_cache/
 
-# Generated bot output (historical tracked files remain until a separate archive)
+# Generated bot output
 fpl_drafts/
 queue/pending/*
 !queue/pending/.gitkeep
@@ -28,8 +28,8 @@ queue/dryrun/
 queue/debug/*.jsonl
 queue/debug/rejected_latest.json
 queue/debug/decisions_*.json
+!queue/debug/.gitkeep
 
 # Downloaded runtime image caches (regenerated on every run)
 logos/
 players/
-

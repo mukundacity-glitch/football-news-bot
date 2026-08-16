@@ -60,8 +60,8 @@ The previous rendering systems were completely removed. The replacement
 transfer, injury, suspension and press conference. It renders RGB 3840×2160 PNGs
 with fixed FPL VORTEX/PL header branding, a fixed five-zone footer, calculated
 data rows, automatic text fitting, verified FROM → TO direction and identity-safe
-image resolution. The live workflow remains disabled until the new previews are
-explicitly approved.
+image resolution. The approved renderer is used by verified production drafts
+for every supported category.
 
 ### PRESS_CONFERENCE: official-confirmed-only, same bar as TRANSFER
 
@@ -78,8 +78,8 @@ enforced the same way as TRANSFER:
    source URL/domain/allowlist, and the speaker/club/quote facts before any
    publication can be authorized.
 
-Caption and image generation remain fact-only. Live posting is still disabled
-while the replacement graphics await visual approval.
+Caption and image generation remain fact-only. Live posting still requires a
+fully publishable V2 decision and all event-specific authorization gates.
 
 ### Injury/suspension classification: ambiguous trigger phrases require corroboration
 
@@ -106,7 +106,7 @@ You can also disable the `FPL Vortex Bot` workflow in the Actions UI.
 
 The scheduled GitHub workflow is configured for **set-and-forget live posting**:
 
-- the main bot checks for new official confirmed stories every **15 minutes**
+- the main bot checks for new official confirmed stories every **20 minutes**
   so transfer, injury, and suspension confirmations are not stale. X only sees
   actual posts, not source checks.
 - live posting is enabled automatically on every scheduled run
