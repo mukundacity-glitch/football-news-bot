@@ -21,8 +21,10 @@ The four files under `assets/reference/` are the visual authority:
 ## Dynamic body
 
 - No player, club, value, date, category fact or source is hardcoded.
-- Data rows are calculated from available verified facts.
-- Generic row structure: icon | cyan uppercase label | white value.
+- Player cards use a large responsive name hero, with the final name segment in
+  the category accent color and compact verified club/age metadata above it.
+- Data rows are calculated from available verified facts and use a distinct
+  high-contrast accent rail, icon, uppercase label and large white value.
 - Row count, height and spacing adapt to supplied fields.
 - Long text is fitted, wrapped or truncated inside its allocated region.
 - No compressed details paragraph.
@@ -40,12 +42,12 @@ The four files under `assets/reference/` are the visual authority:
 Priority:
 
 1. FPL API
-2. Structured official/provider identity
-3. FotMob provider ID
-4. Identity-matched Wikipedia footballer page
+2. Identity-matched Wikipedia footballer page
+3. Reliable structured provider using an exact player ID
+4. Generic team shirt built from the player's verified FPL/current club
 
-No fuzzy image search is used. Missing images degrade to a neutral silhouette and
-verified club crest rather than a guessed face or incorrect shirt.
+No fuzzy image search is used. The final shirt is explicitly labelled as a team
+shirt fallback and never presents a generated face or an unverified club identity.
 
 ## Quality gates
 

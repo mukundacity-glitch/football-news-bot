@@ -41,6 +41,10 @@ CYAN = (35, 225, 239)
 WHITE = (248, 250, 255)
 MUTED = (190, 193, 207)
 BLACK = (0, 0, 0)
+GOLD = (255, 211, 51)
+MAGENTA = (245, 68, 211)
+LIME = (92, 236, 75)
+CORAL = (255, 102, 78)
 
 
 @dataclass(frozen=True)
@@ -181,28 +185,116 @@ class MasterGraphicRenderer:
     # ── Player-centred body ─────────────────────────────────────────────
 
     def _player_body(self, image: Image.Image, decision: VerificationDecision) -> None:
-        facts = decision.verified_facts
         style = STYLES[decision.event_type]
-        panel = (230, 425, 2330, 1850)
-        visual = (2380, 390, 3710, 1885)
-        alpha_panel(image, panel, fill=(0,0,0,244), outline=(*CYAN,255), width=7, radius=36, glow=True)
+        panel = (135, 420, 2390, 1865)
+        visual = (2450, 405, 3715, 1885)
+        alpha_panel(
+            image, panel, fill=(1, 3, 10, 246), outline=(*style.banner, 255),
+            width=8, radius=38, glow=True,
+        )
+        draw = ImageDraw.Draw(image)
+        draw.line((185, 455, 2340, 455), fill=CYAN, width=3)
+        draw.line((185, 1830, 2340, 1830), fill=(*style.banner,), width=3)
+
+        heading = (200, 485, 2325, 750)
+        details = (200, 790, 2325, 1810)
+        self._player_heading(image, heading, decision, style)
         self._visual_stage(image, visual, decision, style)
 
         if decision.event_type == EventType.TRANSFER:
-            self._transfer_panel(image, panel, decision)
+            self._transfer_panel(image, details, decision)
         else:
             rows = self._fields(decision)
-            self._draw_rows(image, panel, rows)
+            self._draw_rows(image, details, rows, style)
+
+    def _player_heading(
+        self,
+        image: Image.Image,
+        box: tuple[int, int, int, int],
+        decision: VerificationDecision,
+        style: Style,
+    ) -> None:
+        """Shared CSS-like hero strip: large name, colored surname and metadata."""
+        facts = decision.verified_facts
+        draw = ImageDraw.Draw(image)
+        x1, y1, x2, y2 = box
+        tint = tuple(max(5, round(channel * 0.13)) for channel in style.banner)
+        draw.rounded_rectangle(box, radius=30, fill=tint, outline=style.banner, width=5)
+        draw.rounded_rectangle((x1+18, y1+18, x1+34, y2-18), radius=8, fill=CYAN)
+        draw.line((x1+55, y2-18, x2-40, y2-18), fill=(*style.banner,), width=3)
+
+        subject = clean_text(facts.get("subject_name"), "PLAYER")
+        metadata = resolve_player_metadata(subject, fpl_data=self.fpl_data)
+        club = clean_text(
+            facts.get("club_name") or facts.get("club_from_name")
+            or facts.get("club_to_name") or metadata.get("club_name"),
+            "",
+        )
+        age = clean_text(facts.get("age") or metadata.get("age"), "")
+        kicker = [style.heading]
+        if club:
+            kicker.append(club.upper())
+        if age:
+            kicker.append(f"AGE {age}")
+        kicker_text = "   •   ".join(kicker)
+        kicker_font = fit_font(
+            draw, kicker_text, x2-x1-130, max_size=48, min_size=34,
+            role="condensed",
+        )
+        draw.text((x1+70, y1+46), kicker_text, font=kicker_font, fill=GOLD)
+
+        name_font = fit_font(
+            draw, subject, x2-x1-130, max_size=154, min_size=84,
+            role="condensed",
+        )
+        words = subject.split()
+        first = (" ".join(words[:-1]) + " ") if len(words) > 1 else ""
+        last = words[-1] if words else subject
+        name_y = y1 + 174
+        name_x = x1 + 70
+        if first:
+            draw.text(
+                (name_x, name_y), first, anchor="lm", font=name_font, fill=WHITE,
+                stroke_width=2, stroke_fill=(0, 0, 0),
+            )
+            name_x += text_width(draw, first, name_font)
+        draw.text(
+            (name_x, name_y), last, anchor="lm", font=name_font,
+            fill=style.banner, stroke_width=2, stroke_fill=(0, 0, 0),
+        )
 
     def _visual_stage(self, image: Image.Image, box, decision: VerificationDecision, style: Style) -> None:
         facts = decision.verified_facts
         draw = ImageDraw.Draw(image)
         x1, y1, x2, y2 = box
-        # Dark stage remains behind the player and preserves atmosphere.
-        alpha_panel(image, box, fill=(0,0,0,135), outline=(*style.banner,210), width=4, radius=20, glow=True)
+        # Layered neon geometry gives the player stage depth without changing the
+        # verified image. This is the bitmap renderer's equivalent of a modern
+        # HTML/CSS glass card.
+        alpha_panel(image, box, fill=(0, 0, 0, 168), outline=(*style.banner, 235), width=6, radius=28, glow=True)
+        glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gd.ellipse((x1+85, y1+150, x2+170, y2+180), outline=(*style.banner, 80), width=45)
+        gd.ellipse((x1+170, y1+260, x2+70, y2+90), outline=(*CYAN, 48), width=22)
+        for offset in range(-160, 520, 120):
+            gd.line((x1+offset, y2-40, x1+offset+510, y1+40), fill=(*style.banner, 28), width=12)
+        image.paste(glow, (0, 0), glow)
+
         subject = clean_text(facts.get("subject_name"), "PLAYER")
+        club = facts.get("club_name") or facts.get("club_from_name") or facts.get("club_to_name")
+        provider_id = (
+            facts.get("provider_club_id") or facts.get("provider_from_club_id")
+            or facts.get("provider_to_club_id")
+        )
+        crest = resolve_club_logo(str(club or ""), provider_id=provider_id, fpl_data=self.fpl_data)
+        if crest:
+            watermark = crest.convert("RGBA").copy()
+            alpha = watermark.getchannel("A")
+            alpha = alpha.point(lambda value: round(value * 0.16))
+            watermark.putalpha(alpha)
+            paste_contain(image, watermark, (x1+155, y1+245, x2-85, y2-185))
+
         player, image_source = resolve_player_image(subject, facts, fpl_data=self.fpl_data)
-        inner = (x1+25, y1+25, x2-25, y2-65)
+        inner = (x1+25, y1+30, x2-25, y2-70)
         if player:
             if decision.event_type == EventType.TRANSFER and image_source == "FPL API":
                 # FPL identity photos can lag a transfer and still show an old
@@ -213,8 +305,9 @@ class MasterGraphicRenderer:
             alpha = player.getchannel("A") if player.mode == "RGBA" else None
             transparent = bool(alpha and alpha.getextrema()[0] < 10)
             if transparent:
-                max_w = int((inner[2]-inner[0]) * 0.88)
-                max_h = int((inner[3]-inner[1]) * 0.88)
+                shirt_fallback = image_source == "Team shirt fallback"
+                max_w = int((inner[2]-inner[0]) * (0.76 if shirt_fallback else 0.96))
+                max_h = int((inner[3]-inner[1]) * (0.76 if shirt_fallback else 0.94))
                 scale = min(max_w / max(1, player.width), max_h / max(1, player.height))
                 # Official/FotMob headshots are often only 250px. They are still
                 # the highest-priority verified identity image, so upscale with
@@ -224,7 +317,9 @@ class MasterGraphicRenderer:
                     Image.Resampling.LANCZOS,
                 )
                 px = inner[0] + (inner[2]-inner[0]-resized.width)//2
-                if resized.height <= resized.width * 1.15:
+                if shirt_fallback:
+                    py = inner[1] + (inner[3]-inner[1]-resized.height)//2 + 35
+                elif resized.height <= resized.width * 1.15:
                     py = inner[1] + (inner[3]-inner[1]-resized.height)//2
                 else:
                     py = inner[3] - resized.height
@@ -232,64 +327,80 @@ class MasterGraphicRenderer:
             else:
                 paste_cover(image, player, inner, rounded=18)
         else:
-            club = facts.get("club_to_name") or facts.get("club_name") or facts.get("club_from_name")
-            provider_id = facts.get("provider_to_club_id") or facts.get("provider_from_club_id")
-            crest = resolve_club_logo(str(club or ""), provider_id=provider_id, fpl_data=self.fpl_data)
             cx = (x1+x2)//2
             draw.ellipse((cx-170, y1+300, cx+170, y1+640), outline=(180,180,195), width=12)
             draw.rounded_rectangle((cx-330, y1+620, cx+330, y2-210), radius=170, outline=(180,180,195), width=12)
             if crest:
                 paste_contain(image, crest, (cx-160, y1+760, cx+160, y1+1080))
-            draw.text((cx, y2-165), "REAL IMAGE UNAVAILABLE", anchor="mm", font=font(42, "condensed"), fill=MUTED)
+            draw.text((cx, y2-165), "IMAGE UNAVAILABLE", anchor="mm", font=font(58, "condensed"), fill=MUTED)
+
+        if image_source:
+            source_labels = {
+                "FPL API": ("VERIFIED FPL IMAGE", LIME),
+                "Wikipedia": ("WIKIPEDIA IMAGE", CYAN),
+                "Reliable provider": ("RELIABLE PROVIDER IMAGE", MAGENTA),
+                "Team shirt fallback": ("VERIFIED TEAM SHIRT", GOLD),
+            }
+            source_label, source_color = source_labels.get(image_source, (image_source.upper(), CYAN))
+            sf = font(38, "condensed")
+            chip_w = text_width(draw, source_label, sf) + 72
+            chip = (x1+30, y1+28, min(x2-30, x1+30+chip_w), y1+98)
+            draw.rounded_rectangle(chip, radius=18, fill=(0, 0, 0, 226), outline=source_color, width=4)
+            draw.ellipse((chip[0]+18, chip[1]+22, chip[0]+42, chip[1]+46), fill=source_color)
+            draw.text((chip[0]+54, (chip[1]+chip[3])//2), source_label, anchor="lm", font=sf, fill=source_color)
 
         metadata = resolve_player_metadata(subject, fpl_data=self.fpl_data)
         position = self._full_position(
             clean_text(facts.get("position") or metadata.get("position"), "")
         )
         if position:
-            strip = (x1+40, y2-185, x2-40, y2-45)
-            draw.rounded_rectangle(strip, radius=20, fill=(0,0,0,235), outline=CYAN, width=6)
-            pfont = fit_font(draw, position, strip[2]-strip[0]-50, max_size=92, min_size=54, role="condensed")
-            draw.text(((strip[0]+strip[2])//2, (strip[1]+strip[3])//2), position, anchor="mm", font=pfont, fill=CYAN)
+            strip = (x1+38, y2-190, x2-38, y2-38)
+            draw.rounded_rectangle(strip, radius=22, fill=(0,0,0,238), outline=style.banner, width=7)
+            pfont = fit_font(draw, position, strip[2]-strip[0]-55, max_size=110, min_size=68, role="condensed")
+            draw.text(((strip[0]+strip[2])//2, (strip[1]+strip[3])//2), position, anchor="mm", font=pfont, fill=WHITE)
 
         if style.stamp:
-            stamp_font = font(92, "condensed")
+            stamp_font = font(82, "condensed")
             stamp = style.stamp
-            sw = text_width(draw, stamp, stamp_font) + 110
-            stamp_box = (x2-sw-20, y2-270, x2-10, y2-115)
+            sw = text_width(draw, stamp, stamp_font) + 90
+            stamp_box = (x2-sw-18, y1+122, x2-18, y1+258)
             draw.rounded_rectangle(stamp_box, radius=14, fill=(35,0,0,230), outline=style.banner, width=9)
             draw.text(((stamp_box[0]+stamp_box[2])//2, (stamp_box[1]+stamp_box[3])//2), stamp, anchor="mm", font=stamp_font, fill=style.banner)
 
-    def _draw_rows(self, image: Image.Image, panel, rows: Sequence[Field]) -> None:
+    def _draw_rows(self, image: Image.Image, panel, rows: Sequence[Field], style: Style) -> None:
         if not rows:
             rows = [Field("STATUS", "VERIFIED UPDATE", "status")]
         draw = ImageDraw.Draw(image)
         x1, y1, x2, y2 = panel
-        inner_x1, inner_x2 = x1+55, x2-55
-        available = y2-y1-90
-        gap = 22
+        inner_x1, inner_x2 = x1, x2
+        available = y2-y1
+        gap = 16
         n = max(1, len(rows))
-        row_h = min(215, max(150, int((available-gap*(n-1))/n)))
+        row_h = min(224, max(170, int((available-gap*(n-1))/n)))
         total = row_h*n + gap*(n-1)
         y = y1 + (y2-y1-total)//2
-        icon_w = 190
-        label_w = 620
-        for field in rows:
+        icon_w = 155
+        label_w = 540
+        accents = (style.banner, CYAN, GOLD, MAGENTA, LIME, CORAL)
+        for index, field in enumerate(rows):
+            accent = accents[index % len(accents)]
             row_box = (inner_x1, y, inner_x2, y+row_h)
-            draw.rounded_rectangle(row_box, radius=22, fill=(1,2,6), outline=(22,115,126), width=2)
-            icon_box = (inner_x1+20, y+25, inner_x1+icon_w-15, y+row_h-25)
+            row_fill = tuple(max(3, round(channel * 0.075)) for channel in accent)
+            draw.rounded_rectangle(row_box, radius=25, fill=row_fill, outline=accent, width=3)
+            draw.rounded_rectangle((row_box[0]+12, row_box[1]+18, row_box[0]+22, row_box[3]-18), radius=5, fill=accent)
+            icon_box = (inner_x1+35, y+28, inner_x1+icon_w-5, y+row_h-28)
             if field.logo:
                 paste_contain(image, field.logo, icon_box)
             else:
-                draw_icon(draw, field.icon, icon_box, CYAN)
+                draw_icon(draw, field.icon, icon_box, accent)
             label_x = inner_x1+icon_w+15
             divider_x = label_x+label_w
-            draw.line((divider_x, y+32, divider_x, y+row_h-32), fill=CYAN, width=6)
-            label_font = fit_font(draw, field.label.upper(), label_w-45, max_size=70, min_size=45, role="condensed")
-            draw.text((label_x+20, y+row_h//2), field.label.upper(), anchor="lm", font=label_font, fill=CYAN)
-            value_x = divider_x+55
+            draw.line((divider_x, y+30, divider_x, y+row_h-30), fill=accent, width=6)
+            label_font = fit_font(draw, field.label.upper(), label_w-50, max_size=82, min_size=52, role="condensed")
+            draw.text((label_x+20, y+row_h//2), field.label.upper(), anchor="lm", font=label_font, fill=accent)
+            value_x = divider_x+48
             value_w = inner_x2-value_x-30
-            value_font = fit_font(draw, field.value, value_w, max_size=82, min_size=42, role="bold")
+            value_font = fit_font(draw, field.value, value_w, max_size=104, min_size=58, role="bold")
             draw.text((value_x, y+row_h//2), truncate(draw, field.value, value_font, value_w), anchor="lm", font=value_font, fill=WHITE)
             y += row_h+gap
 
@@ -297,48 +408,36 @@ class MasterGraphicRenderer:
         facts = decision.verified_facts
         draw = ImageDraw.Draw(image)
         x1, y1, x2, y2 = panel
-        name = clean_text(facts.get("subject_name"))
-        metadata = resolve_player_metadata(name, fpl_data=self.fpl_data)
-        age = clean_text(facts.get("age") or metadata.get("age"), "")
         origin = clean_text(facts.get("club_from_name"))
         destination = clean_text(facts.get("club_to_name"))
         from_logo = resolve_club_logo(origin, provider_id=facts.get("provider_from_club_id"), fpl_data=self.fpl_data)
         to_logo = resolve_club_logo(destination, provider_id=facts.get("provider_to_club_id"), fpl_data=self.fpl_data)
 
-        top_rows = [Field("NAME", name, "player")]
-        if age:
-            top_rows.append(Field("AGE", age, "calendar"))
-        else:
-            current_club = clean_text(facts.get("club_from_name"), "")
-            if current_club:
-                top_rows.append(Field("CURRENT CLUB", current_club, "club", from_logo))
-
-        inner_x1, inner_x2 = x1+70, x2-70
-        y = y1+75
-        for field in top_rows:
-            self._draw_single_transfer_row(image, (inner_x1, y, inner_x2, y+185), field)
-            y += 210
-
         # Direction block is a dedicated verified FROM -> TO row.
-        route = (inner_x1, y, inner_x2, y+255)
-        draw.rounded_rectangle(route, radius=22, fill=(1,2,6), outline=(18,115,45), width=3)
-        left_box = (route[0]+25, route[1]+20, route[0]+520, route[3]-20)
-        right_box = (route[2]-520, route[1]+20, route[2]-25, route[3]-20)
-        if from_logo:
-            paste_contain(image, from_logo, (left_box[0], left_box[1], left_box[0]+180, left_box[3]))
-        if to_logo:
-            paste_contain(image, to_logo, (right_box[2]-180, right_box[1], right_box[2], right_box[3]))
-        from_font = fit_font(draw, origin, 290, max_size=50, min_size=28, role="bold")
-        to_font = fit_font(draw, destination, 290, max_size=50, min_size=28, role="bold")
-        draw.text((left_box[0]+200, (left_box[1]+left_box[3])//2), truncate(draw, origin, from_font, 290), anchor="lm", font=from_font, fill=WHITE)
-        draw.text((right_box[2]-200, (right_box[1]+right_box[3])//2), truncate(draw, destination, to_font, 290), anchor="rm", font=to_font, fill=WHITE)
+        inner_x1, inner_x2 = x1, x2
+        route = (inner_x1, y1, inner_x2, y1+326)
         cx, cy = (route[0]+route[2])//2, (route[1]+route[3])//2
-        for offset in (-90, -25, 40):
-            pts = [(cx+offset, cy-55), (cx+offset+60, cy), (cx+offset, cy+55), (cx+offset+26, cy)]
-            draw.polygon(pts, fill=(80, 245, 25))
-        draw.text((route[0]+30, route[1]+18), "FROM", font=font(34, "condensed"), fill=(80,245,25))
-        draw.text((route[2]-30, route[1]+18), "TO", anchor="ra", font=font(34, "condensed"), fill=(80,245,25))
-        y += 280
+        left_box = (route[0], route[1], cx-125, route[3])
+        right_box = (cx+125, route[1], route[2], route[3])
+        draw.rounded_rectangle(left_box, radius=26, fill=(3, 10, 15), outline=CYAN, width=4)
+        draw.rounded_rectangle(right_box, radius=26, fill=(4, 14, 6), outline=LIME, width=4)
+        if from_logo:
+            paste_contain(image, from_logo, (left_box[0]+24, left_box[1]+65, left_box[0]+215, left_box[3]-24))
+        if to_logo:
+            paste_contain(image, to_logo, (right_box[0]+24, right_box[1]+65, right_box[0]+215, right_box[3]-24))
+        from_w = left_box[2]-left_box[0]-270
+        to_w = right_box[2]-right_box[0]-270
+        from_font = fit_font(draw, origin, from_w, max_size=76, min_size=46, role="bold")
+        to_font = fit_font(draw, destination, to_w, max_size=76, min_size=46, role="bold")
+        draw.text((left_box[0]+250, left_box[1]+62), "FROM", font=font(48, "condensed"), fill=CYAN)
+        draw.text((right_box[0]+250, right_box[1]+62), "TO", font=font(48, "condensed"), fill=LIME)
+        draw.text((left_box[0]+250, cy+42), truncate(draw, origin, from_font, from_w), anchor="lm", font=from_font, fill=WHITE)
+        draw.text((right_box[0]+250, cy+42), truncate(draw, destination, to_font, to_w), anchor="lm", font=to_font, fill=WHITE)
+        draw.ellipse((cx-90, cy-90, cx+90, cy+90), fill=(0, 0, 0), outline=GOLD, width=7)
+        for offset in (-42, 8):
+            pts = [(cx+offset, cy-48), (cx+offset+50, cy), (cx+offset, cy+48), (cx+offset+20, cy)]
+            draw.polygon(pts, fill=GOLD)
+        y = route[3] + 24
 
         values: list[Field] = []
         if facts.get("fee"):
@@ -351,28 +450,38 @@ class MasterGraphicRenderer:
             values.append(Field("MARKET VALUE", clean_text(facts.get("market_value")), "money"))
         if is_reported_transfer(decision) and len(values) < 3:
             values.append(Field("STATUS", reported_status_label(decision.status, facts), "status"))
-        for field in values[:3]:
-            if y+180 > y2-45:
+        visible_values = values[:3]
+        row_gap = 16
+        available = y2-y-row_gap*max(0, len(visible_values)-1)
+        row_h = min(214, max(178, available//max(1, len(visible_values))))
+        accents = (GOLD, MAGENTA, CYAN)
+        for index, field in enumerate(visible_values):
+            if y+row_h > y2+1:
                 break
-            self._draw_single_transfer_row(image, (inner_x1, y, inner_x2, y+180), field)
-            y += 202
+            self._draw_single_transfer_row(
+                image, (inner_x1, y, inner_x2, y+row_h), field,
+                accent=accents[index % len(accents)],
+            )
+            y += row_h+row_gap
 
-    def _draw_single_transfer_row(self, image: Image.Image, box, field: Field) -> None:
+    def _draw_single_transfer_row(self, image: Image.Image, box, field: Field, *, accent=CYAN) -> None:
         draw = ImageDraw.Draw(image)
         x1, y1, x2, y2 = box
-        icon_w, label_w = 205, 580
-        draw.rounded_rectangle(box, radius=20, fill=(1,2,6), outline=CYAN, width=3)
+        icon_w, label_w = 165, 535
+        row_fill = tuple(max(3, round(channel * 0.075)) for channel in accent)
+        draw.rounded_rectangle(box, radius=24, fill=row_fill, outline=accent, width=4)
+        draw.rounded_rectangle((x1+12, y1+18, x1+22, y2-18), radius=5, fill=accent)
         if field.logo:
-            paste_contain(image, field.logo, (x1+25, y1+20, x1+icon_w-20, y2-20))
+            paste_contain(image, field.logo, (x1+34, y1+24, x1+icon_w-12, y2-24))
         else:
-            draw_icon(draw, field.icon, (x1+40, y1+28, x1+icon_w-35, y2-28), WHITE)
-        draw.line((x1+icon_w, y1+8, x1+icon_w, y2-8), fill=CYAN, width=5)
-        draw.line((x1+icon_w+label_w, y1+25, x1+icon_w+label_w, y2-25), fill=CYAN, width=4)
-        lf = fit_font(draw, field.label.upper(), label_w-50, max_size=62, min_size=38, role="condensed")
-        draw.text((x1+icon_w+35, (y1+y2)//2), field.label.upper(), anchor="lm", font=lf, fill=CYAN)
+            draw_icon(draw, field.icon, (x1+42, y1+30, x1+icon_w-30, y2-30), accent)
+        draw.line((x1+icon_w, y1+18, x1+icon_w, y2-18), fill=accent, width=5)
+        draw.line((x1+icon_w+label_w, y1+30, x1+icon_w+label_w, y2-30), fill=accent, width=5)
+        lf = fit_font(draw, field.label.upper(), label_w-50, max_size=78, min_size=50, role="condensed")
+        draw.text((x1+icon_w+34, (y1+y2)//2), field.label.upper(), anchor="lm", font=lf, fill=accent)
         value_x = x1+icon_w+label_w+50
         max_w = x2-value_x-35
-        vf = fit_font(draw, field.value, max_w, max_size=78, min_size=40, role="bold")
+        vf = fit_font(draw, field.value, max_w, max_size=104, min_size=58, role="bold")
         draw.text((value_x, (y1+y2)//2), truncate(draw, field.value, vf, max_w), anchor="lm", font=vf, fill=WHITE)
 
     # ── Press-conference body ───────────────────────────────────────────
@@ -474,7 +583,7 @@ class MasterGraphicRenderer:
     def _fields(self, decision: VerificationDecision) -> list[Field]:
         facts = decision.verified_facts
         event = decision.event_type
-        rows: list[Field] = [Field("PLAYER", clean_text(facts.get("subject_name")), "player")]
+        rows: list[Field] = []
         if event == EventType.INJURY:
             if facts.get("injury_status"):
                 rows.append(Field("INJURY", clean_text(facts.get("injury_status")), "injury"))
