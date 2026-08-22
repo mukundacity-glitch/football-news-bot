@@ -466,9 +466,10 @@ class VerificationEngine:
     ) -> tuple[List[Claim], str]:
         """Optional, tightly scoped non-official evidence lanes.
 
-        PRESS_CONFERENCE remains first-party-only. TRANSFER has one separate
-        *reported* lane: a narrow hard-coded source allowlist, one source for
-        TALKS/NEGOTIATION/BID, and two independent sources for
+        PRESS_CONFERENCE is handled by the single-source PremierLeague.com
+        lane and never asks media/journalist claims to confirm it. TRANSFER has
+        one separate *reported* lane: a narrow hard-coded source allowlist,
+        one source for TALKS/NEGOTIATION/BID, and two independent sources for
         AGREEMENT/MEDICAL/HERE_WE_GO. It never authorizes CONFIRMED wording;
         that remains exclusive to first-party OFFICIAL/COMPLETED claims.
         """

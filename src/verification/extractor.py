@@ -313,8 +313,33 @@ class LegacyClaimAdapter:
         classification = self.classifier.classify(
             document, _safe_string(legacy_story.get("event"))
         )
-        event = classification.event_type
         profile = self.sources.get(document.source.profile_id)
+        # Official PremierLeague.com roundup headlines often contain both
+        # "manager" and "press conference". Do not let that wording create an
+        # event ambiguity: the dedicated feed/source marker already identifies
+        # this as the press-roundup lane, and the article body still has to
+        # provide the grounded speaker, quote and roundup fields below.
+        if (
+            document.source.profile_id == "official.premier_league"
+            and document.metadata.get("premier_league_press_roundup") is True
+            and _safe_string(legacy_story.get("event")) == "press_conference"
+        ):
+            classification = Classification(
+                event_type=EventType.PRESS_CONFERENCE,
+                article_category=EventType.PRESS_CONFERENCE,
+                status=EventStatus.OFFICIAL,
+                event_certainty=1.0,
+                status_evidence="official PremierLeague.com press-conference roundup",
+                warnings=tuple(
+                    warning for warning in classification.warnings
+                    if not any(
+                        token in warning
+                        for token in ("ambiguous_event_type", "legacy_event_conflicts_with_headline")
+                    )
+                ),
+            )
+        event = classification.event_type
+
         warnings = list(classification.warnings)
         facts: Dict[str, Any] = {}
         support: Dict[str, List[Dict[str, str]]] = {}
@@ -476,6 +501,23 @@ class LegacyClaimAdapter:
                 warnings.append("subject_recovered_from_official_title")
             elif len(candidates) > 1:
                 warnings.append("multiple_person_candidates_in_official_title")
+
+        if (
+            subject_name
+            and subject is None
+            and event == EventType.PRESS_CONFERENCE
+            and document.source.profile_id == "official.premier_league"
+            and document.metadata.get("premier_league_press_roundup") is True
+            and subject_type in {EntityType.MANAGER, EntityType.COACH}
+        ):
+            # The roundup parser obtained this exact speaker heading from the
+            # official article (for example, "Mikel Arteta (Arsenal)"). The
+            # provider snapshot does not always contain current managers, so
+            # establish this one official speaker without asking for a second
+            # source. Club, quote and roundup facts remain mandatory below.
+            subject = self.entities.officially_established_person(subject_name, subject_type)
+            if subject:
+                warnings.append("entity_established_by_official_press_roundup")
 
         if subject_name and subject is None and self._may_establish_from_official(
             profile, event, classification.status, from_club, to_club, subject_name,
@@ -639,6 +681,30 @@ class LegacyClaimAdapter:
             self._add_optional_grounded(
                 "quote_topic", legacy_story.get("quote_topic"), document, add_fact
             )
+            # A PremierLeague.com roundup is one authoritative document that
+            # contains many manager sections. These extra lists are parsed from
+            # that same official article body and are consumed by the already
+            # approved three-column press graphic. They do not create a second
+            # source requirement and are never accepted from media/journalist
+            # documents.
+            if (
+                document.source.profile_id == "official.premier_league"
+                and document.metadata.get("premier_league_press_roundup") is True
+            ):
+                for field in ("latest_news", "key_quotes", "manager_notes", "roundup"):
+                    values = legacy_story.get(field)
+                    if isinstance(values, (list, tuple)):
+                        clean_values = [
+                            _safe_string(value) for value in values
+                            if _safe_string(value)
+                        ]
+                        if clean_values:
+                            add_fact(
+                                field,
+                                clean_values,
+                                EvidenceSupport.STRUCTURED_DATA,
+                                "official PremierLeague.com press-conference roundup",
+                            )
 
         event_time = legacy_story.get("event_time") or document.metadata.get("event_time")
         if event_time:

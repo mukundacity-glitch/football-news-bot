@@ -38,6 +38,12 @@ from src.verification.card import create_verified_card
 from src.verification.config import VerificationConfig as V2VerificationConfig
 from src.verification.ingestion import fetch_configured_news
 from src.verification.enrichment import enrich_official_item
+from src.verification.press_roundup import (
+    PRESS_FEED_ID,
+    is_premier_league_press_item,
+    press_deadline_target,
+    project_roundup_story,
+)
 from src.verification.reported_transfer_gate import is_reported_transfer
 from src.verification.source_registry import SourceRegistry as V2SourceRegistry
 from src.constants import (
@@ -2152,6 +2158,40 @@ def _v2_document_item(item: dict) -> dict:
     return {key: item.get(key) for key in keys if key in item}
 
 
+def _official_premier_league_press_source(source_item: dict, runtime) -> bool:
+    """Recognize only the PremierLeague.com press-roundup source lane."""
+    if not is_premier_league_press_item(source_item):
+        return False
+    try:
+        document = runtime.documents.from_item(_v2_document_item(source_item))
+    except Exception:
+        return False
+    return (
+        document.source.verified
+        and document.source.profile_id == "official.premier_league"
+    )
+
+
+def _prepare_premier_league_press_roundup(
+    story: dict, source_item: dict, runtime
+) -> bool:
+    """Enrich and project one official PremierLeague.com roundup.
+
+    This is the only press-conference-specific preparation path. It never
+    changes the renderer: the approved renderer already consumes the four
+    roundup lists once they are carried as verified facts.
+    """
+    if not _official_premier_league_press_source(source_item, runtime):
+        return False
+    source_item.setdefault("metadata", {})["premier_league_press_roundup"] = True
+    return project_roundup_story(
+        story,
+        source_item,
+        resolve_staff=runtime.entities.resolve_staff,
+        resolve_club_key=resolve_club_key,
+    )
+
+
 def _v2_project_verified_facts(item: dict, decision: V2VerificationDecision) -> None:
     """Project only verified facts back onto the legacy card/post envelope."""
     facts = decision.verified_facts
@@ -2184,6 +2224,10 @@ def _v2_project_verified_facts(item: dict, decision: V2VerificationDecision) -> 
     item["staff_action"] = facts.get("manager_action")
     item["quote_summary"] = facts.get("quote_summary")
     item["quote_topic"] = facts.get("quote_topic")
+    if decision.event_type.value == "PRESS_CONFERENCE":
+        for field in ("latest_news", "key_quotes", "manager_notes", "roundup"):
+            if facts.get(field):
+                item[field] = facts[field]
     is_reported = is_reported_transfer(decision)
     item["stage"] = (
         {"TALKS": 1, "NEGOTIATION": 1, "BID": 1,
@@ -2301,16 +2345,45 @@ async def scrape(data, fpl=None, verification_runtime=None):
             story = dict(source_item["_legacy_story"])
         else:
             story = build_story(source_item.get("text", ""), fpl)
-            if official_enrichment_budget > 0:
+            # The dedicated PremierLeague.com press feed is always enriched;
+            # it must carry the full article body so the combined roundup can
+            # include every manager section instead of only the RSS headline.
+            is_press_feed = str(source_item.get("feed_id") or "") == PRESS_FEED_ID
+            if is_press_feed or official_enrichment_budget > 0:
                 try:
                     probe = runtime.documents.from_item(_v2_document_item(source_item))
                     profile = runtime.sources.get(probe.source.profile_id)
                     if profile and profile.is_official and probe.source.verified:
                         source_item = enrich_official_item(source_item, runtime)
-                        official_enrichment_budget -= 1
+                        if not is_press_feed:
+                            official_enrichment_budget -= 1
                 except Exception:
                     pass
+        is_press_feed = str(source_item.get("feed_id") or "") == PRESS_FEED_ID
+        if is_press_feed:
+            # The feed itself is scoped to the official press-roundup query;
+            # the full article body below still has to supply the speaker and
+            # quoted facts before the claim can publish.
+            story["event"] = "press_conference"
         _v2_refine_candidate_hint(story, source_item, runtime)
+
+        # Press roundups use one PremierLeague.com article as the sole source.
+        # If the normal enrichment budget was used by earlier items, force this
+        # official press article to fetch its body before parsing the roundup.
+        if (
+            story.get("event") == "press_conference"
+            and _official_premier_league_press_source(source_item, runtime)
+            and not source_item.get("full_text")
+        ):
+            source_item = enrich_official_item(source_item, runtime)
+            _v2_refine_candidate_hint(story, source_item, runtime)
+        if (
+            story.get("event") == "press_conference"
+            and _official_premier_league_press_source(source_item, runtime)
+        ):
+            if not _prepare_premier_league_press_roundup(story, source_item, runtime):
+                print("  [PRESS] official PremierLeague.com article had no parseable roundup — fail closed")
+                continue
         story["media_url"] = source_item.get("media_url")
         story["created_at"] = source_item.get("created_at")
         story["source_url"] = source_item.get("source_url")
@@ -2363,6 +2436,18 @@ async def scrape(data, fpl=None, verification_runtime=None):
             ).strip(". ")
             evidence_story = build_story(evidence_text, fpl)
             _v2_refine_candidate_hint(evidence_story, evidence_item, runtime)
+            if (
+                evidence_story.get("event") == "press_conference"
+                and _official_premier_league_press_source(evidence_item, runtime)
+                and not evidence_item.get("full_text")
+            ):
+                evidence_item = enrich_official_item(evidence_item, runtime)
+                _v2_refine_candidate_hint(evidence_story, evidence_item, runtime)
+            if (
+                evidence_story.get("event") == "press_conference"
+                and _official_premier_league_press_source(evidence_item, runtime)
+            ):
+                _prepare_premier_league_press_roundup(evidence_story, evidence_item, runtime)
             evidence_story["created_at"] = evidence_item.get("created_at")
             evidence_story["source_url"] = evidence_item.get("source_url")
             group["observations"].append({
@@ -2969,11 +3054,11 @@ async def main(post: bool = True):
                   f"75-89) — held, will re-verify automatically on the next run.")
         if non_target:
             print(f"[BOT] {len(non_target)} confirmed non-target story(ies) skipped "
-                  f"(live scope is transfer / injury / suspension only).")
+                  f"(live scope is transfer / injury / suspension / press conference only).")
 
         if not postable:
             status["no_post_reason"] = status["no_post_reason"] or "no_confirmed_target_stories_after_post_filters"
-            print("[BOT] No confirmed/reported transfer, injury, or suspension stories cleared all gates this run.")
+            print("[BOT] No confirmed/reported transfer, injury, suspension, or press-conference stories cleared all gates this run.")
             return
 
         # ROUND-ROBIN CATEGORY SELECTION: a straight priority sort always puts
@@ -2983,9 +3068,12 @@ async def main(post: bool = True):
         # slot even when good transfer stories are ready and waiting. Instead,
         # group by category, rank WITHIN each category by stage/tier as before,
         # then interleave categories round-robin so limited slots get split
-        # fairly across injury / transfer / suspension rather than one category
-        # eating the whole run.
+        # fairly across press-conference / injury / transfer / suspension rather
+        # than one category eating the whole run. Official press roundups are
+        # placed first so an available roundup is posted as early as possible
+        # and is not left behind the next FPL deadline.
         _CATEGORY = {
+            "press_conference": "press_conference",
             "injury": "injury",
             "transfer": "transfer", "loan": "transfer", "loan_option": "transfer",
             "suspension": "suspension",
@@ -3000,7 +3088,16 @@ async def main(post: bool = True):
                 0 if s.get("collapsed") else 1,
                 -int(s.get("stage", 1)),
             ))
-        _order = ["injury", "transfer", "suspension", "manager", "other"]
+        _order = ["press_conference", "injury", "transfer", "suspension", "manager", "other"]
+        press_target = press_deadline_target(fpl)
+        if _buckets.get("press_conference"):
+            if press_target:
+                print(
+                    f"[PRESS] official roundup prioritized; next FPL deadline target "
+                    f"(30 minutes before lock) is {press_target.isoformat()}"
+                )
+            else:
+                print("[PRESS] official roundup prioritized; no future FPL deadline was returned")
         _round_robin = []
         _idx = 0
         while any(_buckets.get(c) for c in _order):

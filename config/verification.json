@@ -190,7 +190,7 @@
       ]
     },
     "PRESS_CONFERENCE": {
-      "_note": "Official-only, same bar as TRANSFER: only a first-party club/league source publishing or hosting the press conference (own site/video/transcript, or a verified official club account explicitly quoting it) may become authoritative. A journalist quoting the same presser is NOT sufficient -- see engine.py._configured_nonofficial_confirmation, which refuses non-official sources for this category exactly like TRANSFER.",
+      "_note": "PremierLeague.com-only combined roundup: one verified first-party Premier League article is sufficient; no second-source confirmation is required. The article must still contain a grounded speaker, club, quote summary and extracted roundup fields for the approved press-conference graphic.",
       "required_facts": [
         "subject_id",
         "subject_name",
