@@ -9,7 +9,7 @@ import pytest
 
 from src.verification import DecisionType, VerificationRuntime
 from src.verification.ingestion import _fotmob_legacy_story, _fotmob_transfer_text
-from src.verification.models import EventType
+from src.verification.models import EventType, GateState
 from src.verification.source_registry import SourceRegistry
 
 
@@ -409,6 +409,47 @@ def test_official_structured_fpl_injury_publishes(runtime):
     assert "#FPL #FPLNews #Brighton #Injury" in decision.rendered_text
     assert "http" not in decision.rendered_text
     assert "Source:" not in decision.rendered_text
+
+
+def test_official_match_reaction_cannot_be_misread_as_completed_transfer(runtime):
+    """Regression for an official match interview parsed as a player move.
+
+    Noun "signs", a team's on-pitch "move", and "complete a late turnaround"
+    must never combine into a transfer confirmation, even on an official club
+    domain and even when the noisy legacy parser supplies a transfer hint.
+    """
+    text = (
+        "Danny Welbeck: We can take positives from the City performance. "
+        "Danny Welbeck believes Brighton showed encouraging signs of the work "
+        "being done against Manchester City. City then struck in stoppage time "
+        "to complete a late turnaround. Welbeck said the move demonstrated the "
+        "style Brighton have developed."
+    )
+    obs = observation(
+        title="Welbeck: We can take positives from City performance",
+        source_id="club.brighton-and-hove-albion",
+        url="https://www.brightonandhovealbion.com/pages/en/media-article/welbeck-reacts-city-defeat",
+        story={
+            "player": "Danny Welbeck",
+            "event": "transfer",
+            "from_club": "Brighton",
+            "from_key": "Brighton",
+            "to_club": "Man City",
+            "to_key": "Man_City",
+            "stage": 4,
+            "raw_text": text,
+        },
+    )
+    obs["document"]["summary"] = text
+    decision = runtime.verify_observations([obs])
+
+    assert decision.decision != DecisionType.PUBLISH
+    category = decision.gate("article_category")
+    assert category is not None
+    assert category.state == GateState.FAIL
+    safety = decision.gate("transfer_publication_safety")
+    assert safety is not None
+    assert safety.state == GateState.FAIL
 
 
 def test_new_official_injury_status_is_material_progression(runtime):

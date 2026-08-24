@@ -17,18 +17,19 @@ separate posts rather than a UI re-render of one post.
 The fix, `resync_dedup_state_from_origin()` in main.py, is called
 immediately before the duplicate check inside `post_item()` -- not
 once at job start -- so the dedup check always runs against state as
-fresh as a `git pull` can make it, regardless of how long the run has
+fresh as a read-only `git fetch` can make it, regardless of how long the run has
 been alive or how many other runs have completed since this job's own
 checkout.
 
-These tests build `data` state entirely in memory and mock both
-`subprocess.run` (the git pull) and `main.load_data` -- they must
-NEVER touch the real data/posted_news.json or make a real git/network
-call, matching the discipline already established in test_dedup.py.
+These tests build `data` state entirely in memory and mock
+`subprocess.run` (the fetch and git-show) -- they must NEVER touch the
+real data/posted_news.json or make a real git/network call, matching
+the discipline already established in test_dedup.py.
 
 Run with pytest OR standalone:  python tests/test_cross_run_dedup_resync.py
 """
 
+import json
 import os
 import sys
 import types
@@ -46,14 +47,20 @@ main.init_club_data()
 def _fresh_data():
     return {"daily": {"date": "", "count": 0, "limit": 30}, "stories": {},
             "posted_ids": [], "pending": {}, "extracted": {},
-            "posted_hashes": [], "posted_headlines": []}
+            "posted_hashes": [], "posted_headlines": [],
+            "posted_v2_fingerprints": [], "posted_v2_fact_signatures": []}
 
 
-def _ok_pull_result():
+def _result(returncode=0, *, stdout="", stderr=""):
     r = MagicMock()
-    r.returncode = 0
-    r.stderr = ""
+    r.returncode = returncode
+    r.stdout = stdout
+    r.stderr = stderr
     return r
+
+
+def _remote_results(origin_data):
+    return [_result(), _result(stdout=json.dumps(origin_data))]
 
 
 def test_resync_pulls_and_merges_a_story_another_run_already_posted():
@@ -82,11 +89,18 @@ def test_resync_pulls_and_merges_a_story_another_run_already_posted():
         "last_updated": "2026-08-11T12:00:00+00:00",
     }
 
-    with patch.object(main.subprocess, "run", return_value=_ok_pull_result()) as mock_run, \
-         patch.object(main, "load_data", return_value=origin_data) as mock_load:
+    with patch.object(
+        main.subprocess, "run", side_effect=_remote_results(origin_data)
+    ) as mock_run, patch.object(main, "load_data") as mock_load:
         resynced = main.resync_dedup_state_from_origin(local_data)
-        mock_run.assert_called_once()
-        mock_load.assert_called_once()
+        assert mock_run.call_count == 2
+        assert mock_run.call_args_list[0].args[0] == [
+            "git", "fetch", "--quiet", "origin", "main"
+        ]
+        assert mock_run.call_args_list[1].args[0] == [
+            "git", "show", "FETCH_HEAD:data/posted_news.json"
+        ]
+        mock_load.assert_not_called()
 
     dup, dreason = main.is_duplicate_content(story, resynced)
     assert dup is True, (
@@ -110,8 +124,9 @@ def test_resync_preserves_this_runs_own_in_memory_progress():
     origin_data = _fresh_data()
     main.record_content_dedup(story_b, origin_data)  # a different run's push
 
-    with patch.object(main.subprocess, "run", return_value=_ok_pull_result()), \
-         patch.object(main, "load_data", return_value=origin_data):
+    with patch.object(
+        main.subprocess, "run", side_effect=_remote_results(origin_data)
+    ):
         resynced = main.resync_dedup_state_from_origin(local_data)
 
     dup_a, _ = main.is_duplicate_content(story_a, resynced)
@@ -120,8 +135,29 @@ def test_resync_preserves_this_runs_own_in_memory_progress():
     assert dup_b is True, "the other run's pushed dedup entry was not merged in"
 
 
+def test_resync_merges_source_independent_v2_duplicate_memory():
+    local_data = _fresh_data()
+    local_data["posted_v2_fingerprints"] = ["local-fingerprint"]
+    local_data["posted_v2_fact_signatures"] = ["local-facts"]
+    origin_data = _fresh_data()
+    origin_data["posted_v2_fingerprints"] = ["remote-fingerprint"]
+    origin_data["posted_v2_fact_signatures"] = ["remote-facts"]
+
+    with patch.object(
+        main.subprocess, "run", side_effect=_remote_results(origin_data)
+    ):
+        resynced = main.resync_dedup_state_from_origin(local_data)
+
+    assert set(resynced["posted_v2_fingerprints"]) == {
+        "local-fingerprint", "remote-fingerprint"
+    }
+    assert set(resynced["posted_v2_fact_signatures"]) == {
+        "local-facts", "remote-facts"
+    }
+
+
 def test_resync_is_best_effort_and_never_blocks_posting_on_git_failure():
-    """No network / git unavailable / pull rejected -- posting must
+    """No network / git unavailable / fetch rejected -- posting must
     proceed on whatever was already loaded, not raise or block. This
     must degrade gracefully, e.g. for local/manual runs outside the
     workflow with no upstream configured."""
@@ -130,21 +166,39 @@ def test_resync_is_best_effort_and_never_blocks_posting_on_git_failure():
         "Newcastle sign Johan Manzambi from Freiburg.", None)
     main.record_content_dedup(story, local_data)
 
-    failed_result = MagicMock()
-    failed_result.returncode = 1
-    failed_result.stderr = "fatal: could not read from remote repository"
+    failed_result = _result(
+        returncode=1, stderr="fatal: could not read from remote repository"
+    )
 
     with patch.object(main.subprocess, "run", return_value=failed_result):
         resynced = main.resync_dedup_state_from_origin(local_data)
 
     # Falls back to the data it was given -- unchanged, not wiped.
     dup, _ = main.is_duplicate_content(story, resynced)
-    assert dup is True, "a failed pull must fall back to existing in-memory state, not discard it"
+    assert dup is True, "a failed fetch must fall back to existing in-memory state, not discard it"
 
     with patch.object(main.subprocess, "run", side_effect=OSError("git not found")):
         resynced2 = main.resync_dedup_state_from_origin(local_data)
     dup2, _ = main.is_duplicate_content(story, resynced2)
     assert dup2 is True, "a missing git binary must not raise or block posting"
+
+
+def test_resync_does_not_mutate_worktree_and_rejects_bad_remote_json():
+    local_data = _fresh_data()
+    local_data["posted_ids"] = ["keep-me"]
+
+    with patch.object(
+        main.subprocess,
+        "run",
+        side_effect=[_result(), _result(stdout="<<<<<<< malformed json")],
+    ) as mock_run:
+        resynced = main.resync_dedup_state_from_origin(local_data)
+
+    assert resynced["posted_ids"] == ["keep-me"]
+    commands = [call.args[0] for call in mock_run.call_args_list]
+    assert all("pull" not in command for command in commands)
+    assert all("rebase" not in command for command in commands)
+    assert all("autostash" not in command for command in commands)
 
 
 if __name__ == "__main__":

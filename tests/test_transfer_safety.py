@@ -16,12 +16,37 @@ def claim(text, source_id="club.inter", kind="OFFICIAL_CLUB", status=EventStatus
 
 
 def story(to="Inter Milan", from_="Manchester City"):
-    return {"event": "transfer", "to_club": to, "from_club": from_}
+    return {
+        "event": "transfer",
+        "subject_name": "John Stones",
+        "to_club": to,
+        "from_club": from_,
+    }
 
 
 def test_official_completed_transfer_allowed():
     verdict, _ = validate_before_publish(story(), [claim("John Stones has joined Inter Milan")])
     assert verdict == "ALLOW"
+
+
+def test_official_club_first_completed_transfer_allowed():
+    verdict, _ = validate_before_publish(
+        story(), [claim("Inter Milan have signed John Stones from Manchester City")]
+    )
+    assert verdict == "ALLOW"
+
+
+def test_match_reaction_words_cannot_invent_a_completed_transfer():
+    article = (
+        "John Stones: We can take positives from the City performance. "
+        "John Stones believes Manchester City showed encouraging signs of the "
+        "work being done before the opponents completed a late turnaround."
+    )
+    verdict, reason = validate_before_publish(
+        story(), [claim(article, source_id="club.manchester-city")]
+    )
+    assert verdict == "REJECT"
+    assert reason == "no_subject_bound_completed_route"
 
 
 def test_expected_transfer_rejected():

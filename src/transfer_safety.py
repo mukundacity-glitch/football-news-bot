@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Iterable, Mapping
+
+from src.constants import CLUB_ALIASES
 
 _POLICY_PATH = Path("config/transfer_confirmation.json")
 _POLICY = json.loads(_POLICY_PATH.read_text(encoding="utf-8"))
@@ -79,6 +82,153 @@ def _has_speculation(text: str) -> str | None:
 
 def _has_completion(text: str) -> bool:
     return any(pattern.search(text) for pattern in _DONE_RE)
+
+
+def _normalize_phrase(value: object) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _phrase_regex(values: Iterable[str]) -> str:
+    clean = sorted(
+        {_normalize_phrase(value) for value in values if _normalize_phrase(value)},
+        key=len,
+        reverse=True,
+    )
+    return "(?:" + "|".join(
+        re.escape(value).replace(r"\ ", r"\s+") for value in clean
+    ) + ")" if clean else ""
+
+
+def _subject_aliases(story: Mapping) -> set[str]:
+    aliases: set[str] = set()
+    for value in (story.get("subject_name"), story.get("player")):
+        normalized = _normalize_phrase(value)
+        if not normalized:
+            continue
+        aliases.add(normalized)
+        tokens = normalized.split()
+        if len(tokens) >= 2 and len(tokens[-1]) >= 4:
+            aliases.add(tokens[-1])
+    return aliases
+
+
+def _club_aliases(story: Mapping, prefix: str) -> set[str]:
+    aliases: set[str] = set()
+    raw_values = (
+        story.get(f"club_{prefix}_name"),
+        story.get(f"club_{prefix}_id"),
+        story.get("to_club" if prefix == "to" else "from_club"),
+        story.get("to_key" if prefix == "to" else "from_key"),
+    )
+    target_keys: set[str] = set()
+    for value in raw_values:
+        normalized = _normalize_phrase(value)
+        if not normalized:
+            continue
+        aliases.add(normalized)
+        target_keys.add(normalized.removeprefix("club "))
+
+    # Reuse the central club registry so "Man City" and "Manchester City"
+    # are the same destination. This is data-driven and applies to every club;
+    # no player/incident exception is introduced here.
+    for alias, key in CLUB_ALIASES.items():
+        normalized_key = _normalize_phrase(key)
+        if normalized_key in target_keys:
+            aliases.add(_normalize_phrase(alias))
+
+    # The confirmation-policy aliases cover common non-Premier-League clubs.
+    resolved_names = {
+        _normalize_phrase(_canonical_club(value))
+        for value in aliases
+        if _canonical_club(value) not in {"UNKNOWN", "AMBIGUOUS"}
+    }
+    for alias, canonical in _POLICY["canonical_clubs"].items():
+        if _normalize_phrase(canonical) in resolved_names:
+            aliases.add(_normalize_phrase(alias))
+    return {value for value in aliases if value}
+
+
+def _source_is_destination(claim: object, destination_aliases: set[str]) -> bool:
+    source_id = _normalize_phrase(_source_id(claim)).removeprefix("club ")
+    if not source_id:
+        return False
+    normalized_aliases = {
+        alias.removeprefix("club ") for alias in destination_aliases
+    }
+    return source_id in normalized_aliases
+
+
+def _has_subject_bound_completed_route(story: Mapping, claim: object) -> bool:
+    """Require one grammatical, player-bound completed route.
+
+    An official publisher proves who published an article, not what every verb
+    in that article means. Match reports contain words such as "signs" (noun),
+    "move" (passage of play), and "complete" (a comeback). None can authorize
+    a transfer unless the same claim explicitly binds the named player to a
+    completed movement predicate and the extracted destination.
+    """
+    subjects = _subject_aliases(story)
+    destinations = _club_aliases(story, "to")
+    subject_re = _phrase_regex(subjects)
+    destination_re = _phrase_regex(destinations)
+    if not subject_re or not destination_re:
+        return False
+
+    text = _normalize_phrase(_blob(claim))
+    if not text:
+        return False
+    # Contract renewals use the same verb but are not transfers.
+    if re.search(r"\b(?:new|extended?|renewed?)\s+(?:contract|deal)\b", text):
+        return False
+
+    player_to_club = re.compile(
+        rf"\b{subject_re}\b.{{0,100}}\b(?:"
+        rf"(?:has|have|had)\s+(?:signed(?:\s+(?:for|with))?|joined|moved\s+to|"
+        rf"transferred\s+to|been\s+loaned\s+to|completed\s+(?:a|the)?\s*"
+        rf"(?:signing|move|transfer|loan)(?:\s+to)?)|"
+        rf"signs\s+for|signed\s+for|joins|joined|moves\s+to|moved\s+to|"
+        rf"transfers\s+to|transferred\s+to|loaned\s+to|"
+        rf"completes?\s+(?:a|the)?\s*(?:signing|move|transfer|loan)(?:\s+to)?"
+        rf")\b.{{0,100}}\b{destination_re}\b",
+        re.IGNORECASE,
+    )
+    club_signs_player = re.compile(
+        rf"\b{destination_re}\b.{{0,100}}\b(?:"
+        rf"(?:has|have)\s+signed|signs?|signed|"
+        rf"(?:has|have)\s+completed\s+(?:the\s+)?signing\s+of|"
+        rf"completes?\s+(?:the\s+)?signing\s+of|"
+        rf"announces?\s+(?:the\s+)?signing\s+of|"
+        rf"confirms?\s+(?:the\s+)?signing\s+of"
+        rf")\b.{{0,120}}\b{subject_re}\b",
+        re.IGNORECASE,
+    )
+    club_confirms_player = re.compile(
+        rf"\b{destination_re}\b.{{0,80}}\b(?:officially\s+)?(?:confirms?|announces?)\b"
+        rf".{{0,100}}\b{subject_re}\b.{{0,60}}\b(?:signing|signed|joined|"
+        rf"transfer|move|loan)\b",
+        re.IGNORECASE,
+    )
+    if (
+        player_to_club.search(text)
+        or club_signs_player.search(text)
+        or club_confirms_player.search(text)
+    ):
+        return True
+
+    if _source_is_destination(claim, destinations):
+        # First-person official-club wording may omit its own club name.
+        source_destination = re.compile(
+            rf"(?:\bwe\b.{{0,50}}\b(?:have\s+signed|announce\s+(?:the\s+)?"
+            rf"signing\s+of|completed\s+(?:the\s+)?signing\s+of)\b.{{0,100}}"
+            rf"\b{subject_re}\b|\b{subject_re}\b.{{0,80}}\b(?:joins|joined)\s+us\b)",
+            re.IGNORECASE,
+        )
+        if source_destination.search(text):
+            return True
+    return False
 
 
 def _movement_destination(text: str) -> set[str]:
@@ -151,5 +301,16 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
     }
     if not statuses.intersection(set(_POLICY["required_statuses"])):
         return "REJECT", f"status_not_completed:{sorted(statuses)}"
+
+    completed_authority = [
+        claim for claim in authoritative
+        if str(getattr(claim, "status", "")).split(".")[-1].upper()
+        in set(_POLICY["required_statuses"])
+    ]
+    if not any(
+        _has_subject_bound_completed_route(story, claim)
+        for claim in completed_authority
+    ):
+        return "REJECT", "no_subject_bound_completed_route"
 
     return "ALLOW", f"completed_transfer:{canonical}"

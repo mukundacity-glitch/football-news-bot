@@ -327,7 +327,7 @@ def save_data(data: dict):
 
 
 def resync_dedup_state_from_origin(data: dict) -> dict:
-    """Pull the latest committed dedup state immediately before posting.
+    """Read the latest committed dedup state immediately before posting.
 
     A run is checked out once at job start (see .github/workflows/bot.yml)
     but the posting loop can run long after that — long enough for a
@@ -351,22 +351,39 @@ def resync_dedup_state_from_origin(data: dict) -> dict:
     long the run has been alive or how many other runs have completed
     since this job's own checkout.
 
-    Best-effort: if git isn't available (e.g. local/manual runs outside
-    the workflow, or no upstream configured) or the pull fails for any
-    reason, the in-memory `data` already loaded at job start is kept as-is
-    and posting proceeds on that — this must never block a post outright,
-    only make its dedup check as fresh as possible when a refresh is
-    actually available.
+    The refresh deliberately never pulls, rebases, stashes, or checks out
+    anything. `scrape()` has already written this run's pending state to the
+    working tree by the time posting begins; a pull/autostash at this point
+    can merge two independently-written JSON documents and leave conflict
+    markers or malformed JSON. Instead, fetch main into FETCH_HEAD and read
+    that committed file directly with `git show`, leaving both the worktree
+    and this run's file untouched.
+
+    Best-effort: if git isn't available (e.g. local/manual runs outside the
+    workflow, or no upstream configured), the fetch/show fails, or the
+    remote JSON is invalid, the in-memory `data` already loaded at job start
+    is kept as-is and posting proceeds on that — this must never block a post
+    outright, only make its dedup check as fresh as possible when a refresh
+    is actually available.
     """
     try:
-        result = subprocess.run(
-            ["git", "pull", "--rebase", "--autostash", "origin", "main"],
+        fetch = subprocess.run(
+            ["git", "fetch", "--quiet", "origin", "main"],
             cwd=str(Path(__file__).resolve().parent),
             capture_output=True, text=True, timeout=30, check=False,
         )
-        if result.returncode != 0:
-            print(f"  [RESYNC] git pull before posting failed (continuing with "
-                  f"in-memory state): {result.stderr.strip()[:200]}")
+        if fetch.returncode != 0:
+            print(f"  [RESYNC] git fetch before posting failed (continuing with "
+                  f"in-memory state): {fetch.stderr.strip()[:200]}")
+            return data
+        shown = subprocess.run(
+            ["git", "show", f"FETCH_HEAD:{POSTED_FILE.as_posix()}"],
+            cwd=str(Path(__file__).resolve().parent),
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        if shown.returncode != 0:
+            print(f"  [RESYNC] could not read remote dedup state (continuing "
+                  f"with in-memory state): {shown.stderr.strip()[:200]}")
             return data
     except Exception as exc:
         print(f"  [RESYNC] could not resync before posting (continuing with "
@@ -374,9 +391,11 @@ def resync_dedup_state_from_origin(data: dict) -> dict:
         return data
 
     try:
-        fresh = load_data()
+        fresh = json.loads(shown.stdout)
+        if not isinstance(fresh, dict):
+            raise ValueError("remote dedup state is not a JSON object")
     except Exception as exc:
-        print(f"  [RESYNC] pulled latest state but could not reload it "
+        print(f"  [RESYNC] remote dedup state is unreadable "
               f"(continuing with in-memory state): {exc}")
         return data
 
