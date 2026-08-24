@@ -27,7 +27,11 @@ def decision(event, facts, *, status=EventStatus.OFFICIAL,
 def render(value):
     text = VerifiedPostRenderer(SourceRegistry.load()).render(value)
     assert twitter_weight(text) <= 280
-    assert "Source:" not in text and "http" not in text
+    assert "http" not in text
+    lines = text.splitlines()
+    assert len(lines) == 6
+    assert all(lines[index].startswith("#") for index in (4, 5))
+    assert all(not lines[index].startswith("#") for index in range(4))
     return text
 
 
@@ -40,10 +44,12 @@ def test_reported_transfer_template_exact():
         authority_kind="structured_fotmob_reported_transfer",
     ))
     assert text == (
-        "🚨 REPORTED TRANSFER: Gerónimo Rulli\n\n"
-        "Marseille → Man City\n\n"
-        "STATUS: COMPLETED\n\n"
-        "#TransferNews #ManCity #GeronimoRulli #fpl"
+        "🚨 REPORTED TRANSFER — Gerónimo Rulli\n"
+        "Marseille → Man City\n"
+        "Verified by — FotMob\n"
+        "STATUS — COMPLETED\n"
+        "#TransferNews #PremierLeague #FPL\n"
+        "#ManCity #GeronimoRulli #FPLNews #FPLVortex"
     )
 
 
@@ -54,7 +60,7 @@ def test_official_transfer_uses_official_status():
          "club_to_name": "Chelsea"},
         status=EventStatus.COMPLETED, source_ids=["club.chelsea"],
     ))
-    assert "STATUS: OFFICIAL" in text
+    assert "STATUS — OFFICIAL" in text
     assert "Arsenal → Chelsea" in text
 
 
@@ -65,10 +71,12 @@ def test_suspension_template_exact():
          "suspension_status": "Red card"},
     ))
     assert text == (
-        "⛔ SUSPENSION: Dynamic Player\n\n"
-        "Arsenal | Red card\n\n"
-        "STATUS: SUSPENDED\n\n"
-        "#FPL #FPLNews #Arsenal #suspension"
+        "⛔ SUSPENSION UPDATE — Dynamic Player\n"
+        "Arsenal — Red card\n"
+        "Verified by — Official FPL\n"
+        "STATUS — SUSPENDED\n"
+        "#SuspensionNews #PremierLeague #FPL\n"
+        "#Arsenal #DynamicPlayer #FPLNews #FPLVortex"
     )
 
 
@@ -79,11 +87,12 @@ def test_injury_template_exact():
          "injury_status": "Hamstring injury", "availability_status": "OUT"},
     ))
     assert text == (
-        "🚑 INJURY UPDATE: Dynamic Player\n\n"
-        "Arsenal\n\n"
-        "INJURY: Hamstring injury\n\n"
-        "STATUS: OUT\n\n"
-        "#FPL #FPLNews #Arsenal #Injury"
+        "🚑 INJURY UPDATE — Dynamic Player\n"
+        "Arsenal — Hamstring injury\n"
+        "Verified by — Official FPL\n"
+        "STATUS — OUT\n"
+        "#InjuryNews #PremierLeague #FPL\n"
+        "#Arsenal #DynamicPlayer #FPLNews #FPLVortex"
     )
 
 
@@ -94,11 +103,12 @@ def test_press_template_exact():
          "quote_summary": "The squad is ready for the season"},
     ))
     assert text == (
-        "🎙️ PRESS CONFERENCE\n\n"
-        "Mikel Arteta\n\n"
-        "Arsenal | UPDATE: The squad is ready for the season\n\n"
-        "STATUS: CONFIRMED\n\n"
-        "#FPL #FPLNews #Arsenal"
+        "🎙️ PREMIER LEAGUE PRESS UPDATE\n"
+        "Mikel Arteta — Arsenal\n"
+        "Key update — The squad is ready for the season\n"
+        "STATUS — CONFIRMED\n"
+        "#PressConference #PremierLeague #FPL\n"
+        "#Arsenal #MikelArteta #FPLNews #FPLVortex"
     )
 
 
@@ -108,3 +118,22 @@ def test_position_abbreviations_expand_to_bright_display_categories():
     assert MasterGraphicRenderer._full_position("CB") == "DEFENDER"
     assert MasterGraphicRenderer._full_position("GK") == "GOALKEEPER"
     assert MasterGraphicRenderer._full_position("ST") == "FORWARD"
+
+
+def test_extreme_verified_values_keep_six_lines_inside_normal_x_limit():
+    text = render(decision(
+        EventType.PRESS_CONFERENCE,
+        {
+            "subject_name": "A Manager With An Extremely Long Multi-Part Football Name",
+            "club_name": "A Very Long Premier League Football Club Association Name",
+            "quote_summary": (
+                "The medical team will make a final decision after training because "
+                "several players are progressing well but still require careful "
+                "assessment before the next Premier League fixture."
+            ),
+        },
+    ))
+    assert len(text.splitlines()) == 6
+    assert twitter_weight(text) <= 280
+    assert text.splitlines()[3] == "STATUS — CONFIRMED"
+    assert text.splitlines()[4].startswith("#PressConference")

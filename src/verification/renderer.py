@@ -1,9 +1,9 @@
-"""Deterministic concise X post templates using verified facts only.
+"""Deterministic, mobile-readable X post templates using verified facts only.
 
-Production captions follow the owner's event-specific master templates with
-blank-line separation between headline, facts, status and hashtags. The image
-card carries the visual detail; caption text never includes a URL or a
-"Source:" line. Every template is deterministically fitted to the X limit.
+Every production caption has four concise information lines followed by two
+SEO hashtag lines.  There are no blank spacer lines, URLs, rumours disguised as
+facts, or premium-account assumptions.  The fitter preserves that six-line
+shape while enforcing X's normal 280-character limit.
 """
 
 from __future__ import annotations
@@ -73,33 +73,45 @@ class VerifiedPostRenderer:
             person = str(required(facts, "subject_name"))
             club = str(required(facts, "club_name"))
             action = str(required(facts, "manager_action"))
-            line1 = "✅ Official manager update"
-            line2 = f"{club}: {person} — {action}."
+            description = [
+                "✅ OFFICIAL MANAGER UPDATE",
+                f"{self._cap(person, 42)} — {self._cap(club, 38)}",
+                f"Decision — {self._cap(action, 80)}",
+                "STATUS — OFFICIAL",
+            ]
+            event_tag = "#ManagerNews"
 
         elif event == EventType.CONTRACT:
             person = str(required(facts, "subject_name"))
             club = str(required(facts, "club_name"))
-            required(facts, "contract_status")
-            line1 = "✅ Official contract update"
-            line2 = f"{person} — {club}."
-            if facts.get("contract_length"):
-                line2 += f" Contract: {facts['contract_length']}"
+            contract_status = str(required(facts, "contract_status"))
+            detail = facts.get("contract_length") or contract_status
+            description = [
+                "✍️ OFFICIAL CONTRACT UPDATE",
+                f"{self._cap(person, 42)} — {self._cap(club, 38)}",
+                f"Contract — {self._cap(detail, 80)}",
+                f"STATUS — {self._cap(contract_status.upper(), 32)}",
+            ]
+            event_tag = "#ContractNews"
 
         elif event == EventType.OFFICIAL_STATEMENT:
             club = str(required(facts, "club_name"))
             topic = str(required(facts, "statement_topic"))
-            line1 = "📣 Official club statement"
-            line2 = f"{club}: {topic}"
+            person = club
+            description = [
+                "📣 OFFICIAL CLUB STATEMENT",
+                self._cap(club, 48),
+                f"Update — {self._cap(topic, 88)}",
+                "STATUS — OFFICIAL",
+            ]
+            event_tag = "#ClubStatement"
         else:
             raise RenderingError(f"unsupported verified event: {event.value}")
 
-        # Source citation lives on the card image footer only -- the caption
-        # text never carries a URL or a "Source:" line. Keep it human, concise,
-        # and non-premium-safe: news + SEO hashtags.
-        hashtag_line = self._hashtags(decision)
-        result = self._fit_four_lines([line1, line2, hashtag_line])
-        decision.rendered_text = result
-        return result
+        return self._finish_elite_template(
+            decision, description,
+            self._seo_hashtags(decision, event_tag, person),
+        )
 
     def _render_transfer_template(self, decision: VerificationDecision) -> str:
         facts = decision.verified_facts
@@ -122,15 +134,28 @@ class VerifiedPostRenderer:
         else:
             status = "PENDING"
 
-        blocks = [
-            f"🚨 REPORTED TRANSFER: {self._cap(player, 64)}",
-            f"{self._cap(origin, 48)} → {self._cap(destination, 48)}",
-            f"STATUS: {status}",
-            " ".join((
-                "#TransferNews", self._tag(destination), self._tag(player), "#fpl"
-            )),
+        prefix = "🚨 REPORTED TRANSFER" if is_reported_transfer(decision) else "✅ OFFICIAL TRANSFER"
+        details = []
+        if facts.get("transfer_kind"):
+            details.append(str(facts["transfer_kind"]).replace("_", " ").title())
+        if facts.get("fee"):
+            details.append(f"Fee {facts['fee']}")
+        if facts.get("contract_length"):
+            details.append(f"Contract {facts['contract_length']}")
+        detail_line = (
+            "Deal — " + " | ".join(details[:2])
+            if details else f"Verified by — {self._authority_label(decision)}"
+        )
+        description = [
+            f"{prefix} — {self._cap(player, 42)}",
+            f"{self._cap(origin, 40)} → {self._cap(destination, 40)}",
+            detail_line,
+            f"STATUS — {status}",
         ]
-        return self._finish_template(decision, blocks)
+        return self._finish_elite_template(
+            decision, description,
+            self._seo_hashtags(decision, "#TransferNews", player),
+        )
 
     def _render_suspension_template(self, decision: VerificationDecision) -> str:
         facts = decision.verified_facts
@@ -146,13 +171,24 @@ class VerifiedPostRenderer:
             status = "RETURNING"
         else:
             status = "SUSPENDED"
-        blocks = [
-            f"⛔ SUSPENSION: {self._cap(player, 64)}",
-            f"{self._cap(club, 55)} | {self._cap(reason, 85)}",
-            f"STATUS: {status}",
-            " ".join(("#FPL", "#FPLNews", self._tag(club), "#suspension")),
+        if facts.get("return_date"):
+            detail = f"Return — {facts['return_date']}"
+        elif facts.get("matches_to_miss"):
+            detail = f"Matches — {facts['matches_to_miss']}"
+        elif facts.get("suspension_length"):
+            detail = f"Length — {facts['suspension_length']}"
+        else:
+            detail = f"Verified by — {self._authority_label(decision)}"
+        description = [
+            f"⛔ SUSPENSION UPDATE — {self._cap(player, 42)}",
+            f"{self._cap(club, 38)} — {self._cap(reason, 72)}",
+            detail,
+            f"STATUS — {status}",
         ]
-        return self._finish_template(decision, blocks)
+        return self._finish_elite_template(
+            decision, description,
+            self._seo_hashtags(decision, "#SuspensionNews", player),
+        )
 
     def _render_injury_template(self, decision: VerificationDecision) -> str:
         facts = decision.verified_facts
@@ -181,14 +217,21 @@ class VerifiedPostRenderer:
                 raise RenderingError(
                     "verified injury is missing an OUT/DOUBTFUL/RETURNING/FIT availability cue"
                 )
-        blocks = [
-            f"🚑 INJURY UPDATE: {self._cap(player, 64)}",
-            self._cap(club, 60),
-            f"INJURY: {self._cap(injury, 95)}",
-            f"STATUS: {status}",
-            " ".join(("#FPL", "#FPLNews", self._tag(club), "#Injury")),
+        detail = (
+            f"Return — {facts['return_date']}"
+            if facts.get("return_date")
+            else f"Verified by — {self._authority_label(decision)}"
+        )
+        description = [
+            f"🚑 INJURY UPDATE — {self._cap(player, 42)}",
+            f"{self._cap(club, 38)} — {self._cap(injury, 76)}",
+            detail,
+            f"STATUS — {status}",
         ]
-        return self._finish_template(decision, blocks)
+        return self._finish_elite_template(
+            decision, description,
+            self._seo_hashtags(decision, "#InjuryNews", player),
+        )
 
     def _render_press_template(self, decision: VerificationDecision) -> str:
         facts = decision.verified_facts
@@ -201,14 +244,16 @@ class VerifiedPostRenderer:
             status = "EXPECTED"
         else:
             status = "REPORTED"
-        blocks = [
-            "🎙️ PRESS CONFERENCE",
-            self._cap(speaker, 64),
-            f"{self._cap(club, 55)} | UPDATE: {self._cap(update, 105)}",
-            f"STATUS: {status}",
-            " ".join(("#FPL", "#FPLNews", self._tag(club))),
+        description = [
+            "🎙️ PREMIER LEAGUE PRESS UPDATE",
+            f"{self._cap(speaker, 42)} — {self._cap(club, 38)}",
+            f"Key update — {self._cap(update, 86)}",
+            f"STATUS — {status}",
         ]
-        return self._finish_template(decision, blocks)
+        return self._finish_elite_template(
+            decision, description,
+            self._seo_hashtags(decision, "#PressConference", speaker),
+        )
 
     @staticmethod
     def _cap(value: object, maximum: int) -> str:
@@ -224,108 +269,88 @@ class VerifiedPostRenderer:
         text = re.sub(r"[^A-Za-z0-9]", "", text)
         return "#" + (text or "FPL")
 
-    def _finish_template(self, decision: VerificationDecision, blocks: List[str]) -> str:
-        clean = [" ".join(str(block or "").split()) for block in blocks if str(block or "").strip()]
-        text = "\n\n".join(clean)
-        # Preserve the user's blank-line master layout. If an unusual long
-        # verified value exceeds the X limit, shorten the longest non-hashtag
-        # body block without removing status or hashtags.
-        while twitter_weight(text) > self.limit:
+    def _authority_label(self, decision: VerificationDecision) -> str:
+        """Return a concise, truthful display name for the authority source."""
+        source_ids = decision.authority_source_ids or decision.source_ids
+        source_id = source_ids[0] if source_ids else ""
+        if source_id == "official.fpl":
+            return "Official FPL"
+        profile = self.sources.get(source_id) if source_id else None
+        return self._cap(profile.display_name if profile else source_id or "verified source", 36)
+
+    def _seo_hashtags(
+        self,
+        decision: VerificationDecision,
+        event_tag: str,
+        person: object,
+    ) -> list[str]:
+        """Build two intentional search lines: broad discovery, then entities."""
+        facts = decision.verified_facts
+        club = facts.get("club_to_name") or facts.get("club_name") or facts.get("club_from_name")
+        broad = [event_tag, "#PremierLeague", "#FPL"]
+        specific = [self._tag(club), self._tag(person), "#FPLNews", "#FPLVortex"]
+
+        def unique(tags: list[str]) -> list[str]:
+            result: list[str] = []
+            seen: set[str] = set()
+            for tag in tags:
+                key = tag.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    result.append(tag)
+            return result
+
+        return [" ".join(unique(broad)), " ".join(unique(specific))]
+
+    def _finish_elite_template(
+        self,
+        decision: VerificationDecision,
+        description: List[str],
+        hashtag_lines: List[str],
+    ) -> str:
+        """Preserve four information + two hashtag lines inside 280 chars."""
+        body = [" ".join(str(line or "").split()) for line in description]
+        tags = [" ".join(str(line or "").split()) for line in hashtag_lines]
+        if len(body) != 4 or not all(body):
+            raise RenderingError("caption requires exactly four information lines")
+        if len(tags) != 2 or not all(line.startswith("#") for line in tags):
+            raise RenderingError("caption requires exactly two hashtag lines")
+
+        def rendered() -> str:
+            return "\n".join([*body, *tags])
+
+        # Drop only low-priority discovery/brand tags first. Event, club and
+        # person tags remain, so a normal-account caption keeps useful SEO.
+        removable = ("#FPLVortex", "#FPLNews", "#PremierLeague")
+        for unwanted in removable:
+            if twitter_weight(rendered()) <= self.limit:
+                break
+            for index in range(len(tags)-1, -1, -1):
+                parts = tags[index].split()
+                if unwanted in parts and len(parts) > 1:
+                    parts.remove(unwanted)
+                    tags[index] = " ".join(parts)
+                    break
+
+        # Then shorten prose, never status or hashtags. The detail line is the
+        # most elastic; headline and route/entity lines retain useful context.
+        minima = {2: 34, 1: 32, 0: 34}
+        while twitter_weight(rendered()) > self.limit:
             candidates = [
-                (len(block), index) for index, block in enumerate(clean[:-1])
-                if len(block) > 36 and not block.startswith("STATUS:")
+                (len(body[index]) - minimum, index, minimum)
+                for index, minimum in minima.items()
+                if len(body[index]) > minimum
             ]
             if not candidates:
-                raise RenderingError("master caption does not fit X character limit")
-            _, index = max(candidates)
-            clean[index] = self._cap(clean[index], len(clean[index]) - 8)
-            text = "\n\n".join(clean)
-        decision.rendered_text = text
-        return text
+                raise RenderingError("six-line verified caption does not fit X limit")
+            _room, index, minimum = max(candidates)
+            body[index] = self._cap(body[index], max(minimum, len(body[index])-8))
 
-    def _source_line(self, decision: VerificationDecision) -> str:
-        authority_ids = decision.authority_source_ids or decision.source_ids
-        source_id = authority_ids[0] if authority_ids else ""
-        profile = self.sources.get(source_id)
-        if profile and profile.handles:
-            handle = str(profile.handles[0]).strip()
-            return "Source: @" + handle.lstrip("@")
-        label = profile.display_name if profile else source_id
-        return f"Source: {label}"
-
-    def _hashtags(self, decision: VerificationDecision) -> str:
-        club = (
-            decision.verified_facts.get("club_to_name")
-            or decision.verified_facts.get("club_name")
-            or decision.verified_facts.get("club_from_name")
-            or ""
-        )
-        club_tag = "#" + re.sub(r"[^A-Za-z0-9]", "", str(club)) if club else ""
-        event_tag = {
-            EventType.TRANSFER: "#TransferNews",
-            EventType.INJURY: "#InjuryNews",
-            EventType.SUSPENSION: "#SuspensionNews",
-            EventType.PRESS_CONFERENCE: "#PressConference",
-            EventType.MANAGER: "#PremierLeague",
-            EventType.CONTRACT: "#PremierLeague",
-            EventType.OFFICIAL_STATEMENT: "#PremierLeague",
-        }[decision.event_type]
-        tags = [club_tag, event_tag, "#PremierLeague", "#FPL"]
-        return " ".join(t for t in tags if t)
-
-    def _fit_four_lines(self, lines: List[str], *, protect_first_n: int = 1) -> str:
-        """Fit a caption within four visible lines and the X character limit.
-
-        ``protect_first_n`` marks the leading lines that must never be
-        dropped (the confirmation sentence, and for TRANSFER/PRESS_CONFERENCE
-        the fee/quote line) -- only the optional meta line and the hashtag
-        line may be trimmed or dropped to fit.
-        """
-        clean = [" ".join(str(line or "").split()) for line in lines if str(line or "").strip()]
-        if len(clean) > 4:
-            # Drop from the middle (optional meta line) first, keeping the
-            # protected head and the hashtag tail.
-            while len(clean) > 4:
-                drop_at = protect_first_n if protect_first_n < len(clean) - 1 else len(clean) - 2
-                clean.pop(max(protect_first_n, min(drop_at, len(clean) - 2)))
-        while True:
-            text = "\n".join(clean).strip()
-            if twitter_weight(text) <= self.limit and len(clean) <= 4:
-                return text
-            if clean and clean[-1].startswith("#"):
-                tags = clean[-1].split()
-                if len(tags) > 3:
-                    clean[-1] = " ".join(tags[1:])
-                    continue
-                if len(tags) > 2:
-                    clean[-1] = " ".join(tags[:-1])
-                    continue
-            if len(clean) > protect_first_n + 1 and len(clean[-1]) == 0:
-                clean.pop()
-                continue
-            if len(clean) >= 2 and len(clean[min(protect_first_n, len(clean) - 1)]) > 96:
-                idx = min(protect_first_n, len(clean) - 1)
-                clean[idx] = clean[idx][:93].rstrip(" .;,") + "…"
-                continue
-            if clean and len(clean[0]) > 120:
-                clean[0] = clean[0][:117].rstrip(" .;,") + "…"
-                continue
-            if len(clean) > protect_first_n + 1:
-                clean.pop(protect_first_n)
-                continue
-            raise RenderingError("verified required facts do not fit within X limit")
-
-
-
-def _title_move_kind(kind: str) -> str:
-    mapping = {
-        "loan": "Loan",
-        "permanent": "Permanent transfer",
-        "free": "Free transfer",
-        "loan_option": "Loan with option",
-    }
-    return mapping.get(kind.lower(), kind.replace("_", " ").title())
-
+        result = rendered()
+        if len(result.splitlines()) != 6:
+            raise RenderingError("caption line count changed during fitting")
+        decision.rendered_text = result
+        return result
 
 def required(facts: Dict[str, object], key: str) -> object:
     value = facts.get(key)
