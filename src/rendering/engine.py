@@ -16,7 +16,12 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 from src.verification.models import EventType, VerificationDecision
 from src.verification.reported_transfer_gate import is_reported_transfer, reported_status_label
 from src.verification.source_registry import SourceRegistry
-from .assets import resolve_club_logo, resolve_player_image, resolve_player_metadata
+from .assets import (
+    identity_safe_portrait,
+    resolve_club_logo,
+    resolve_player_image,
+    resolve_player_metadata,
+)
 from .layout import (
     BODY_BOTTOM,
     BODY_TOP,
@@ -296,12 +301,7 @@ class MasterGraphicRenderer:
         player, image_source = resolve_player_image(subject, facts, fpl_data=self.fpl_data)
         inner = (x1+25, y1+30, x2-25, y2-70)
         if player:
-            if decision.event_type == EventType.TRANSFER and image_source == "FPL API":
-                # FPL identity photos can lag a transfer and still show an old
-                # club kit. Keep the verified face/head-and-shoulders while
-                # removing the shirt area that could misstate club identity.
-                crop_h = max(1, round(player.height * 0.66))
-                player = player.crop((0, 0, player.width, crop_h))
+            player = identity_safe_portrait(player, image_source)
             alpha = player.getchannel("A") if player.mode == "RGBA" else None
             transparent = bool(alpha and alpha.getextrema()[0] < 10)
             if transparent:
@@ -336,9 +336,9 @@ class MasterGraphicRenderer:
 
         if image_source:
             source_labels = {
-                "FPL API": ("VERIFIED FPL IMAGE", LIME),
+                "FPL API": ("VERIFIED FPL HEADSHOT", LIME),
                 "Wikipedia": ("WIKIPEDIA IMAGE", CYAN),
-                "Reliable provider": ("RELIABLE PROVIDER IMAGE", MAGENTA),
+                "Reliable provider": ("PROVIDER HEADSHOT", MAGENTA),
                 "Team shirt fallback": ("VERIFIED TEAM SHIRT", GOLD),
             }
             source_label, source_color = source_labels.get(image_source, (image_source.upper(), CYAN))

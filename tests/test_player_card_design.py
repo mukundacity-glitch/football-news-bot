@@ -108,6 +108,26 @@ def test_verified_team_shirt_is_the_final_image_fallback(monkeypatch):
     )[0] == "Arsenal"
 
 
+def test_fpl_portrait_removes_unverified_old_kit_for_every_card_type():
+    portrait = Image.new("RGBA", (500, 500), (0, 0, 0, 0))
+    # Face/head area and an intentionally unmistakable former-club shirt area.
+    portrait.paste((20, 180, 240, 255), (0, 0, 500, 220))
+    portrait.paste((255, 210, 0, 255), (0, 220, 500, 500))
+
+    safe = assets.identity_safe_portrait(portrait, "FPL API")
+
+    assert safe.size == (500, 220)
+    assert (255, 210, 0, 255) not in {
+        color for _count, color in (safe.getcolors(maxcolors=1_000_000) or [])
+    }
+
+
+def test_verified_team_shirt_is_never_cropped_as_a_stale_portrait():
+    shirt = Image.new("RGBA", (900, 1120), (80, 20, 120, 255))
+    safe = assets.identity_safe_portrait(shirt, "Team shirt fallback")
+    assert safe.size == shirt.size
+
+
 def test_player_name_and_values_use_large_responsive_font_ranges(monkeypatch):
     calls: list[tuple[str, int, int]] = []
     original_fit_font = engine.fit_font
