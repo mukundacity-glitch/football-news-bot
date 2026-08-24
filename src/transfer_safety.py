@@ -19,6 +19,7 @@ _POLICY = json.loads(_POLICY_PATH.read_text(encoding="utf-8"))
 
 _SPEC_RE = [re.compile(p, re.I) for p in _POLICY["speculation_patterns"]]
 _DONE_RE = [re.compile(p, re.I) for p in _POLICY["completion_patterns"]]
+_ROUTE_RE = [re.compile(p, re.I) for p in _POLICY["route_evidence_patterns"]]
 _OFFICIAL_KINDS = set(_POLICY["official_source_kinds"])
 
 
@@ -81,7 +82,7 @@ def _has_speculation(text: str) -> str | None:
 
 
 def _has_completion(text: str) -> bool:
-    return any(pattern.search(text) for pattern in _DONE_RE)
+    return any(pattern.search(text) for pattern in (*_DONE_RE, *_ROUTE_RE))
 
 
 def _normalize_phrase(value: object) -> str:
@@ -100,6 +101,72 @@ def _phrase_regex(values: Iterable[str]) -> str:
     return "(?:" + "|".join(
         re.escape(value).replace(r"\ ", r"\s+") for value in clean
     ) + ")" if clean else ""
+
+
+def _claim_segments(claim: object) -> list[str]:
+    """Return normalized title/body sentences without joining their grammar.
+
+    A title, one body sentence, and a later match sentence are separate pieces
+    of evidence. Keeping them separate prevents unrelated words across an
+    article from being assembled into a transfer claim.
+    """
+    document = getattr(claim, "document", None)
+    raw_parts = (
+        getattr(document, "title", "") or "",
+        getattr(document, "body", "") or "",
+    )
+    segments: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_parts:
+        for part in re.split(r"(?:[\r\n]+|(?<=[.!?;])\s+|\s+[|•]\s+)", raw):
+            normalized = _normalize_phrase(part)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                segments.append(normalized)
+    return segments
+
+
+def _has_bounded_route_evidence(
+    text: str,
+    subject_re: str,
+    destination_re: str,
+    *,
+    source_is_destination: bool,
+) -> bool:
+    """Match entities plus a configurable completed-transfer signal nearby.
+
+    This is deliberately independent of sentence word order. The vocabulary
+    lives in config/transfer_confirmation.json, while the code only enforces
+    that the player, destination (or destination publisher), and completed
+    transfer evidence belong to one short statement.
+    """
+    subject_matches = list(re.finditer(rf"\b{subject_re}\b", text, re.I))
+    if not subject_matches:
+        return False
+    destination_matches = list(
+        re.finditer(rf"\b{destination_re}\b", text, re.I)
+    )
+    if not source_is_destination and not destination_matches:
+        return False
+
+    marker_matches = [
+        match
+        for pattern in _ROUTE_RE
+        for match in pattern.finditer(text)
+    ]
+    for subject in subject_matches:
+        for marker in marker_matches:
+            if source_is_destination:
+                left = min(subject.start(), marker.start())
+                right = max(subject.end(), marker.end())
+                if right - left <= 180:
+                    return True
+            for destination in destination_matches:
+                left = min(subject.start(), marker.start(), destination.start())
+                right = max(subject.end(), marker.end(), destination.end())
+                if right - left <= 220:
+                    return True
+    return False
 
 
 def _subject_aliases(story: Mapping) -> set[str]:
@@ -177,11 +244,8 @@ def _has_subject_bound_completed_route(story: Mapping, claim: object) -> bool:
     if not subject_re or not destination_re:
         return False
 
-    text = _normalize_phrase(_blob(claim))
-    if not text:
-        return False
-    # Contract renewals use the same verb but are not transfers.
-    if re.search(r"\b(?:new|extended?|renewed?)\s+(?:contract|deal)\b", text):
+    segments = _claim_segments(claim)
+    if not segments:
         return False
 
     player_to_club = re.compile(
@@ -195,9 +259,14 @@ def _has_subject_bound_completed_route(story: Mapping, claim: object) -> bool:
         rf")\b.{{0,100}}\b{destination_re}\b",
         re.IGNORECASE,
     )
-    club_signs_player = re.compile(
+    club_directly_signs_player = re.compile(
+        rf"\b{destination_re}\b(?:\s+(?:fc|football\s+club))?\s+"
+        rf"(?:(?:has|have)\s+(?:now\s+)?)?(?:sign|signs|signed)\b"
+        rf".{{0,120}}\b{subject_re}\b",
+        re.IGNORECASE,
+    )
+    club_announces_player = re.compile(
         rf"\b{destination_re}\b.{{0,100}}\b(?:"
-        rf"(?:has|have)\s+signed|signs?|signed|"
         rf"(?:has|have)\s+completed\s+(?:the\s+)?signing\s+of|"
         rf"completes?\s+(?:the\s+)?signing\s+of|"
         rf"announces?\s+(?:the\s+)?signing\s+of|"
@@ -211,22 +280,37 @@ def _has_subject_bound_completed_route(story: Mapping, claim: object) -> bool:
         rf"transfer|move|loan)\b",
         re.IGNORECASE,
     )
-    if (
-        player_to_club.search(text)
-        or club_signs_player.search(text)
-        or club_confirms_player.search(text)
-    ):
-        return True
+    source_is_destination = _source_is_destination(claim, destinations)
+    source_destination = re.compile(
+        rf"(?:\bwe\b.{{0,50}}\b(?:have\s+signed|announce\s+(?:the\s+)?"
+        rf"signing\s+of|completed\s+(?:the\s+)?signing\s+of)\b.{{0,100}}"
+        rf"\b{subject_re}\b|\b{subject_re}\b.{{0,80}}\b(?:joins|joined)\s+us\b)",
+        re.IGNORECASE,
+    )
 
-    if _source_is_destination(claim, destinations):
-        # First-person official-club wording may omit its own club name.
-        source_destination = re.compile(
-            rf"(?:\bwe\b.{{0,50}}\b(?:have\s+signed|announce\s+(?:the\s+)?"
-            rf"signing\s+of|completed\s+(?:the\s+)?signing\s+of)\b.{{0,100}}"
-            rf"\b{subject_re}\b|\b{subject_re}\b.{{0,80}}\b(?:joins|joined)\s+us\b)",
-            re.IGNORECASE,
-        )
-        if source_destination.search(text):
+    for text in segments:
+        # A speculative sentence can never be the completed route. Historical
+        # speculation in a different sentence does not taint a later explicit
+        # first-party announcement.
+        if _has_speculation(text):
+            continue
+        # A renewal sentence is not evidence of movement. A separate, explicit
+        # transfer sentence in the same official article may still qualify.
+        if re.search(r"\b(?:new|extended?|renewed?)\s+(?:contract|deal)\b", text):
+            continue
+        if (
+            player_to_club.search(text)
+            or club_directly_signs_player.search(text)
+            or club_announces_player.search(text)
+            or club_confirms_player.search(text)
+            or (source_is_destination and source_destination.search(text))
+            or _has_bounded_route_evidence(
+                text,
+                subject_re,
+                destination_re,
+                source_is_destination=source_is_destination,
+            )
+        ):
             return True
     return False
 
@@ -277,7 +361,7 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
 
     text = " ".join(_blob(c) for c in claims).strip()
     speculation = _has_speculation(text)
-    if speculation:
+    if speculation and not _has_completion(text):
         return "REJECT", f"speculation_language:{speculation}"
     if not _has_completion(text):
         return "REJECT", "no_explicit_completion_evidence"
@@ -311,6 +395,8 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
         _has_subject_bound_completed_route(story, claim)
         for claim in completed_authority
     ):
+        if speculation:
+            return "REJECT", f"speculation_language:{speculation}"
         return "REJECT", "no_subject_bound_completed_route"
 
     return "ALLOW", f"completed_transfer:{canonical}"

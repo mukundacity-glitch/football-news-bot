@@ -34,6 +34,21 @@
     "\\bannounces? (?:the )?(?:signing|arrival|transfer|loan)\\b",
     "\\bunveil(?:s|ed)?\\b"
   ],
+  "route_evidence_patterns": [
+    "\\bsign(?:s|ed) (?:for|with)\\b",
+    "\\bsign(?:s|ed)\\b.{0,40}\\b(?:contract|deal)\\b",
+    "\\b(?:moves?|moved|transfers?|transferred|loaned) to\\b",
+    "\\bcomplet(?:e|es|ed)\\b.{0,40}\\b(?:signing|move|transfer|loan|acquisition)\\b",
+    "\\b(?:announce|announces|announced|confirm|confirms|confirmed|unveil|unveils|unveiled)\\b.{0,45}\\b(?:signing|arrival|transfer|loan|acquisition)\\b",
+    "\\b(?:signing|arrival|acquisition) of\\b",
+    "\\b(?:acquire|acquires|acquired|recruit|recruits|recruited)\\b",
+    "\\bsecure(?:s|d)? (?:the )?services of\\b",
+    "\\b(?:latest|new) (?:signing|arrival|recruit)\\b",
+    "\\bput(?:s)? pen to paper\\b",
+    "\\bis now\\b.{0,35}\\bplayer\\b",
+    "\\bhas become\\b.{0,35}\\bplayer\\b",
+    "\\b(?:will|is to) spend\\b.{0,50}\\bon loan\\b"
+  ],
   "speculation_patterns": [
     "\\bexpected to\\b",
     "\\bset to\\b",

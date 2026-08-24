@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from src.transfer_safety import resolve_destination, validate_before_publish
 from src.verification.models import EventStatus
 
@@ -36,6 +38,37 @@ def test_official_club_first_completed_transfer_allowed():
     assert verdict == "ALLOW"
 
 
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "John Stones signs a four-year contract with Inter Milan.",
+        "Inter Milan are delighted to announce the arrival of John Stones from Manchester City.",
+        "Inter Milan have acquired John Stones from Manchester City.",
+        "Inter Milan secure the services of John Stones.",
+        "John Stones puts pen to paper on a four-year deal with Inter Milan.",
+        "John Stones is now an Inter Milan player.",
+        "John Stones becomes Inter Milan's latest signing.",
+        "John Stones has completed his permanent transfer to Inter Milan.",
+        "John Stones has been loaned to Inter Milan for the season.",
+        "John Stones will spend the season on loan with Inter Milan.",
+        "Inter Milan unveil John Stones as their latest recruit.",
+        "New signing: John Stones",
+    ],
+)
+def test_varied_official_completion_wording_is_not_blocked(wording):
+    verdict, reason = validate_before_publish(story(), [claim(wording)])
+    assert verdict == "ALLOW", reason
+
+
+def test_historical_speculation_does_not_block_a_later_official_confirmation():
+    article = (
+        "John Stones had been expected to join Inter Milan. "
+        "Inter Milan have now signed John Stones from Manchester City."
+    )
+    verdict, reason = validate_before_publish(story(), [claim(article)])
+    assert verdict == "ALLOW", reason
+
+
 def test_match_reaction_words_cannot_invent_a_completed_transfer():
     article = (
         "John Stones: We can take positives from the City performance. "
@@ -45,6 +78,25 @@ def test_match_reaction_words_cannot_invent_a_completed_transfer():
     verdict, reason = validate_before_publish(
         story(), [claim(article, source_id="club.manchester-city")]
     )
+    assert verdict == "REJECT"
+    assert reason == "no_subject_bound_completed_route"
+
+
+def test_unrelated_sentences_cannot_be_combined_into_a_transfer_route():
+    article = (
+        "John Stones discusses encouraging signs against Inter Milan. "
+        "The move was completed late in the match."
+    )
+    verdict, reason = validate_before_publish(story(), [claim(article)])
+    assert verdict == "REJECT"
+    assert reason == "no_subject_bound_completed_route"
+
+
+def test_club_name_plus_noun_signs_is_not_a_signing_verb():
+    article = (
+        "Inter Milan showed encouraging signs in a performance led by John Stones."
+    )
+    verdict, reason = validate_before_publish(story(), [claim(article)])
     assert verdict == "REJECT"
     assert reason == "no_subject_bound_completed_route"
 
@@ -60,6 +112,14 @@ def test_expected_transfer_rejected():
 def test_set_to_join_rejected_even_if_source_is_official():
     verdict, _ = validate_before_publish(story(), [claim("John Stones is set to join Inter Milan")])
     assert verdict == "REJECT"
+
+
+def test_set_to_sign_with_is_not_promoted_by_flexible_wording_support():
+    verdict, reason = validate_before_publish(
+        story(), [claim("John Stones is set to sign with Inter Milan")]
+    )
+    assert verdict == "REJECT"
+    assert "speculation_language" in reason
 
 
 def test_agreement_reached_rejected():
