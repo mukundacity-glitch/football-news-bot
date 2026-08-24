@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlparse
 
 from src.verification.models import (
     DecisionType,
@@ -37,9 +38,28 @@ On the team: “We will focus on our identity.”
 def test_official_premier_league_press_feed_is_configured():
     feeds = FeedRegistry.load("config/feeds.json")
     press = next(feed for feed in feeds.feeds if feed.id == "google.premier_league.press_conference")
-    assert "site%3Apremierleague.com" in press.url
-    assert "press+conference" in press.url
+    query = parse_qs(urlparse(press.url).query)["q"][0]
+    assert query.startswith("site:premierleague.com/en/news (")
+    assert '"press conference"' in query
+    assert query.endswith(") when:2d")
     assert press.source_hint == PREMIER_LEAGUE_SOURCE_ID
+
+
+def test_all_official_premier_league_searches_group_terms_and_limit_lookback():
+    feeds = FeedRegistry.load("config/feeds.json")
+    official = {
+        feed.id: parse_qs(urlparse(feed.url).query)["q"][0]
+        for feed in feeds.feeds
+        if feed.id.startswith("google.premier_league.")
+    }
+    assert set(official) == {
+        "google.premier_league.transfers",
+        "google.premier_league.availability",
+        "google.premier_league.press_conference",
+    }
+    for query in official.values():
+        assert query.startswith("site:premierleague.com/en/news (")
+        assert query.endswith(") when:2d")
 
 
 def test_official_roundup_extracts_all_sections_for_existing_graphic_fields():

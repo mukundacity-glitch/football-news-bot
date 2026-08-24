@@ -46,6 +46,7 @@ from src.verification.press_roundup import (
 )
 from src.verification.reported_transfer_gate import is_reported_transfer
 from src.verification.source_registry import SourceRegistry as V2SourceRegistry
+from src.verification.consensus import normalize_fact as _normalize_verified_fact
 from src.constants import (
     POSTED_FILE,
     PENDING_DIR,
@@ -313,6 +314,8 @@ def load_data() -> dict:
         d["_logic_ver"] = _LOGIC_VER
     d.setdefault("posted_hashes", [])
     d.setdefault("posted_headlines", [])
+    d.setdefault("posted_v2_fingerprints", [])
+    d.setdefault("posted_v2_fact_signatures", [])
     d["posted_hashes"] = [h for h in d["posted_hashes"] if "|" not in h]
 
     return d
@@ -383,7 +386,10 @@ def resync_dedup_state_from_origin(data: dict) -> dict:
     # everything else (daily counters, pending/extracted caches) stays
     # whatever this run already has, since those are this run's own
     # bookkeeping, not cross-run dedup memory.
-    for key in ("posted_ids", "posted_hashes", "posted_headlines"):
+    for key in (
+        "posted_ids", "posted_hashes", "posted_headlines",
+        "posted_v2_fingerprints", "posted_v2_fact_signatures",
+    ):
         existing = set(data.get(key, []))
         existing.update(fresh.get(key, []))
         data[key] = list(existing)
@@ -624,8 +630,30 @@ def _same_person(a: str, b: str) -> bool:
     return ta <= tb or tb <= ta or len(ta & tb) >= 2
 
 def is_duplicate_content(story: dict, data: dict, threshold: float = 0.90):
+    v2_fingerprint, v2_fact_signature = _v2_dedup_signatures(story)
+    if (
+        v2_fingerprint
+        and v2_fingerprint in data.get("posted_v2_fingerprints", [])
+    ):
+        return True, "v2_fingerprint"
+    if (
+        v2_fact_signature
+        and v2_fact_signature in data.get("posted_v2_fact_signatures", [])
+    ):
+        return True, "v2_verified_facts"
+
     h = content_hash(story)
     if h in data.get("posted_hashes", []): return True, "content_hash"
+
+    # V2 has already compared this decision with the publication ledger and
+    # authorizes PUBLISH only for new material facts/progression. The legacy
+    # stage/name guards below pre-date that ledger and are deliberately broad;
+    # applying them to a signed V2 decision suppresses genuine same-player
+    # updates (for example OUT -> RETURNING) merely because both render at
+    # legacy stage 4. Exact verified facts remain protected above, including
+    # across scheduled runs via the committed signatures resynced before post.
+    if v2_fingerprint or v2_fact_signature:
+        return False, ""
 
     # CROSS-STORY GUARDS against already-POSTED stories. Two failure modes the
     # plain hash can't see, both real incidents:
@@ -689,23 +717,78 @@ def record_content_dedup(story: dict, data: dict):
     head = _dedup_headline_key(story)
     if head and head not in data.setdefault("posted_headlines", []):
         data["posted_headlines"].append(head)
+    v2_fingerprint, v2_fact_signature = _v2_dedup_signatures(story)
+    if (
+        v2_fingerprint
+        and v2_fingerprint not in data.setdefault("posted_v2_fingerprints", [])
+    ):
+        data["posted_v2_fingerprints"].append(v2_fingerprint)
+    if (
+        v2_fact_signature
+        and v2_fact_signature not in data.setdefault("posted_v2_fact_signatures", [])
+    ):
+        data["posted_v2_fact_signatures"].append(v2_fact_signature)
     if len(data["posted_hashes"]) > 2000: data["posted_hashes"] = data["posted_hashes"][-2000:]
     if len(data["posted_headlines"]) > 2000: data["posted_headlines"] = data["posted_headlines"][-2000:]
+    if len(data.get("posted_v2_fingerprints", [])) > 2000:
+        data["posted_v2_fingerprints"] = data["posted_v2_fingerprints"][-2000:]
+    if len(data.get("posted_v2_fact_signatures", [])) > 2000:
+        data["posted_v2_fact_signatures"] = data["posted_v2_fact_signatures"][-2000:]
+
+
+def _v2_dedup_signatures(story: dict) -> tuple[str, str]:
+    """Return authority-bound and source-independent V2 duplicate keys.
+
+    The engine fingerprint proves the exact signed decision was already used.
+    The fact signature intentionally omits authority/source IDs, so the same
+    verified news discovered through another official feed is still one post.
+    A material fact change produces a new signature and may be published after
+    the V2 progression gate authorizes it.
+    """
+    decision = story.get("_v2_decision")
+    if not story.get("_v2_verified") or not isinstance(decision, dict):
+        return "", ""
+    fingerprint = str(decision.get("fingerprint") or "").strip()
+    facts = decision.get("verified_facts")
+    if not isinstance(facts, dict):
+        return fingerprint, ""
+    payload = {
+        "family_id": str(decision.get("family_id") or ""),
+        "event_type": str(decision.get("event_type") or ""),
+        "status": str(decision.get("status") or ""),
+        "facts": {
+            str(field): _normalize_verified_fact(value)
+            for field, value in sorted(facts.items())
+        },
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return fingerprint, hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 def build_story_key(player, club_key, event) -> str:
     p = (player or "unknown").lower().replace(" ", "_")
     c = (club_key or "unknown").lower()
-    fam = "injury" if event == "injury" else "manager" if event == "manager" else "transfer"
+    fam = _event_family(event)
     return f"{p}_{c}_{fam}"
 
 def _event_family(event):
-    return "injury" if event == "injury" else "manager" if event == "manager" else "transfer"
+    normalized = _norm_text(str(event or "")).replace(" ", "_")
+    if normalized in {"transfer", "loan", "loan_option"}:
+        return "transfer"
+    if normalized in {
+        "injury", "suspension", "press_conference", "manager",
+        "renewal", "stay", "collapse", "official_statement",
+    }:
+        return normalized
+    # Unknown categories must never collapse into TRANSFER. Keeping their
+    # normalized name prevents unrelated news about the same person/club from
+    # being silently treated as the same transfer story.
+    return normalized or "other"
 
 def story_anchor(story: dict) -> str:
     """Identity anchor used to key a story. Transfer/loan events use the
     UNORDERED club-pair signature (see _story_club_signature) so a direction
     mix-up between two reports of the same move can't create two separate,
-    contradictory story keys. Injury/manager events keep the single-club
+    contradictory story keys. Other event families keep the single-club
     anchor, since those don't carry a from/to pair to get reversed."""
     if _event_family(story.get("event")) == "transfer":
         return _story_club_signature(story)
