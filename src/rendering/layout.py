@@ -1,6 +1,8 @@
 """Reusable 4K layout primitives for the FPL VORTEX broadcast renderer."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -10,6 +12,93 @@ HEADER_H = 365
 FOOTER_H = 260
 BODY_TOP = HEADER_H
 BODY_BOTTOM = CANVAS[1] - FOOTER_H
+
+# X normally shows a 16:9 card at roughly 600-680 CSS pixels wide on a phone.
+# Designing only for the 3840px source canvas made technically large fonts look
+# tiny after that downscale.  These values make the mobile target explicit:
+#   13px core facts, 11px labels, 9px supporting metadata at a 640px preview.
+MOBILE_PREVIEW_W = 640
+
+
+def preview_safe_font(target_preview_px: int) -> int:
+    """Return the 4K font size needed at the target mobile preview size."""
+    return ceil(int(target_preview_px) * CANVAS[0] / MOBILE_PREVIEW_W)
+
+
+CORE_TEXT_MIN = preview_safe_font(13)   # 78px on the 4K source canvas
+LABEL_TEXT_MIN = preview_safe_font(11)  # 66px
+META_TEXT_MIN = preview_safe_font(9)    # 54px
+
+
+@dataclass(frozen=True)
+class Rect:
+    """Integer layout rectangle with validation-friendly geometry helpers."""
+
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+
+    @property
+    def width(self) -> int:
+        return self.x2 - self.x1
+
+    @property
+    def height(self) -> int:
+        return self.y2 - self.y1
+
+    def tuple(self) -> tuple[int, int, int, int]:
+        return (self.x1, self.y1, self.x2, self.y2)
+
+    def contains(self, other: "Rect") -> bool:
+        return (
+            self.x1 <= other.x1 <= other.x2 <= self.x2
+            and self.y1 <= other.y1 <= other.y2 <= self.y2
+        )
+
+    def overlaps(self, other: "Rect") -> bool:
+        return not (
+            self.x2 <= other.x1 or other.x2 <= self.x1
+            or self.y2 <= other.y1 or other.y2 <= self.y1
+        )
+
+
+def stacked_rects(
+    box: tuple[int, int, int, int],
+    count: int,
+    *,
+    gap: int = 18,
+    max_height: int | None = None,
+) -> list[tuple[int, int, int, int]]:
+    """Divide ``box`` into non-overlapping rows using integer-safe math.
+
+    Any remainder is distributed one pixel at a time so the last row never
+    crosses the supplied bottom edge.  A max height keeps one sparse field from
+    becoming comically tall while retaining centered balance.
+    """
+    if count <= 0:
+        return []
+    outer = Rect(*box)
+    if outer.width <= 0 or outer.height <= 0:
+        raise ValueError(f"invalid stack box: {box}")
+    usable = outer.height - gap * (count - 1)
+    if usable < count:
+        raise ValueError(f"{count} rows do not fit in {box} with gap={gap}")
+    row_h = usable // count
+    if max_height is not None:
+        row_h = min(row_h, int(max_height))
+    total = row_h * count + gap * (count - 1)
+    y = outer.y1 + (outer.height - total) // 2
+    rows: list[tuple[int, int, int, int]] = []
+    for _ in range(count):
+        row = Rect(outer.x1, y, outer.x2, y + row_h)
+        if not outer.contains(row):
+            raise RuntimeError(f"calculated row escaped its panel: {row} not in {outer}")
+        if rows and Rect(*rows[-1]).overlaps(row):
+            raise RuntimeError("calculated rows overlap")
+        rows.append(row.tuple())
+        y += row_h + gap
+    return rows
 
 FONT_DIR = Path("assets/fonts")
 FONT_CANDIDATES = {
@@ -116,6 +205,67 @@ def wrap_text(
     if lines and len(lines) == max_lines and sum(len(x.split()) for x in lines) < len(words):
         lines[-1] = truncate(draw, lines[-1] + " " + " ".join(words[sum(len(x.split()) for x in lines):]), fnt, max_width)
     return lines
+
+
+def fit_wrapped_text(
+    draw: ImageDraw.ImageDraw,
+    value: object,
+    max_width: int,
+    max_height: int,
+    max_lines: int,
+    *,
+    max_size: int,
+    min_size: int,
+    role: str = "bold",
+    line_spacing: float = 1.12,
+) -> tuple[ImageFont.ImageFont, list[str], int]:
+    """Fit complete text into a bounded multiline region, then truncate safely.
+
+    The font search measures both width and total line height.  If even the
+    minimum size cannot contain every word, only the final line is ellipsized;
+    text is never allowed to cross the box or collide with the next region.
+    """
+    text = clean_text(value)
+
+    def all_lines(fnt: ImageFont.ImageFont) -> list[str]:
+        result: list[str] = []
+        current: list[str] = []
+        for word in text.split():
+            trial = " ".join([*current, word])
+            if current and text_width(draw, trial, fnt) > max_width:
+                result.append(" ".join(current))
+                current = [word]
+            else:
+                current.append(word)
+        if current:
+            result.append(" ".join(current))
+        return result
+
+    chosen = font(min_size, role)
+    chosen_lines = all_lines(chosen)
+    chosen_step = max(1, round(chosen.size * line_spacing))
+    for size in range(int(max_size), int(min_size) - 1, -2):
+        candidate = font(size, role)
+        lines = all_lines(candidate)
+        step = max(1, round(size * line_spacing))
+        if len(lines) <= max_lines and step * len(lines) <= max_height:
+            chosen, chosen_lines, chosen_step = candidate, lines, step
+            break
+
+    if len(chosen_lines) > max_lines:
+        visible = chosen_lines[:max_lines]
+        remainder = " ".join(chosen_lines[max_lines-1:])
+        visible[-1] = truncate(draw, remainder, chosen, max_width)
+        chosen_lines = visible
+    while chosen_lines and chosen_step * len(chosen_lines) > max_height:
+        if len(chosen_lines) == 1:
+            chosen_lines[0] = truncate(draw, chosen_lines[0], chosen, max_width)
+            break
+        removed = chosen_lines.pop()
+        chosen_lines[-1] = truncate(
+            draw, chosen_lines[-1] + " " + removed, chosen, max_width,
+        )
+    return chosen, chosen_lines, chosen_step
 
 
 def alpha_panel(

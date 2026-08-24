@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageOps
 
 from src.verification.models import EventType, VerificationDecision
 from src.verification.reported_transfer_gate import is_reported_transfer, reported_status_label
@@ -26,19 +26,23 @@ from .layout import (
     BODY_BOTTOM,
     BODY_TOP,
     CANVAS,
+    CORE_TEXT_MIN,
     FOOTER_H,
     HEADER_H,
+    LABEL_TEXT_MIN,
+    META_TEXT_MIN,
     alpha_panel,
     clean_text,
     draw_angled_banner,
     draw_icon,
     fit_font,
+    fit_wrapped_text,
     font,
     paste_contain,
     paste_cover,
+    stacked_rects,
     text_width,
     truncate,
-    wrap_text,
 )
 
 W, H = CANVAS
@@ -163,29 +167,44 @@ class MasterGraphicRenderer:
     def _footer(self, image: Image.Image, decision: VerificationDecision) -> None:
         draw = ImageDraw.Draw(image)
         top = H - FOOTER_H
-        zones = [0, 900, 1570, 2130, 3260, W]
-        colors = [(246, 213, 33), (228, 40, 210), (247, 211, 35), (62, 225, 59), (248, 45, 39)]
-        for index in range(5):
+        # Three large information zones replace the old five-column marketing
+        # strip.  At phone size the previous 22px minimum became ~4px and was
+        # unreadable.  Every footer value now stays at the 9px mobile target.
+        zones = [0, 1260, 2320, W]
+        colors = [(246, 213, 33), (35, 225, 239), (92, 236, 75)]
+        for index in range(3):
             x1, x2 = zones[index], zones[index+1]
             draw.polygon([(x1, top), (x2+45, top), (x2, H), (x1, H)], fill=(4, 5, 12), outline=colors[index])
             draw.line((x1, top, x2+45, top), fill=colors[index], width=6)
 
         source = self._visible_footer_source(decision)
         updated = self._updated_date(decision)
-        self._footer_item(draw, (40, top+28, 870, H-20), "source", "SOURCE:", source, colors[0])
-        self._footer_item(draw, (935, top+28, 1540, H-20), "x", "FOLLOW ON X", "@FPLVORTEXM", colors[1])
-        self._footer_item(draw, (1615, top+28, 2095, H-20), "calendar", "UPDATED:", updated, colors[2])
-        self._footer_item(draw, (2180, top+28, 3225, H-20), "target", "DATA-DRIVEN DECISIONS", "ANALYTICS · INSIGHTS · TRENDS · WINNING STRATEGY", colors[3])
-        self._footer_item(draw, (3310, top+28, 3805, H-20), "youtube", "YOUTUBE", "@FPLVORTEX", colors[4])
+        self._footer_item(draw, (45, top+25, 1215, H-18), "source", "VERIFIED SOURCE", source, colors[0])
+        self._footer_item(draw, (1315, top+25, 2270, H-18), "calendar", "UPDATED", updated, colors[1])
+        self._footer_item(
+            draw, (2385, top+25, 3795, H-18), "x", "FOLLOW FPL VORTEX",
+            "@FPLVORTEXM  •  VERIFIED UPDATES", colors[2],
+        )
 
     def _footer_item(self, draw, box, icon_kind, label, value, color) -> None:
         x1, y1, x2, y2 = box
-        icon_w = 125
-        draw_icon(draw, icon_kind, (x1, y1+18, x1+icon_w, y2-18), WHITE)
-        label_font = fit_font(draw, label, x2-x1-icon_w-25, max_size=48, min_size=30, role="condensed")
-        draw.text((x1+icon_w+18, y1+18), label, font=label_font, fill=color)
-        value_font = fit_font(draw, value, x2-x1-icon_w-25, max_size=35, min_size=22, role="bold")
-        draw.text((x1+icon_w+18, y1+92), truncate(draw, value, value_font, x2-x1-icon_w-25), font=value_font, fill=WHITE)
+        icon_w = 155
+        text_x = x1 + icon_w + 24
+        text_w = x2 - text_x - 20
+        draw_icon(draw, icon_kind, (x1, y1+13, x1+icon_w, y2-13), WHITE)
+        label_font = fit_font(
+            draw, label, text_w, max_size=68, min_size=META_TEXT_MIN,
+            role="condensed",
+        )
+        draw.text((text_x, y1+12), label, font=label_font, fill=color)
+        value_font = fit_font(
+            draw, value, text_w, max_size=62, min_size=META_TEXT_MIN,
+            role="bold",
+        )
+        draw.text(
+            (text_x, y1+112), truncate(draw, value, value_font, text_w),
+            font=value_font, fill=WHITE,
+        )
 
     # ── Player-centred body ─────────────────────────────────────────────
 
@@ -243,19 +262,24 @@ class MasterGraphicRenderer:
             kicker.append(f"AGE {age}")
         kicker_text = "   •   ".join(kicker)
         kicker_font = fit_font(
-            draw, kicker_text, x2-x1-130, max_size=48, min_size=34,
+            draw, kicker_text, x2-x1-130, max_size=66, min_size=META_TEXT_MIN,
             role="condensed",
         )
-        draw.text((x1+70, y1+46), kicker_text, font=kicker_font, fill=GOLD)
+        kicker_text = truncate(draw, kicker_text, kicker_font, x2-x1-130)
+        draw.text(
+            (x1+70, y1+34), kicker_text, font=kicker_font, fill=GOLD,
+            stroke_width=1, stroke_fill=(0, 0, 0),
+        )
 
         name_font = fit_font(
-            draw, subject, x2-x1-130, max_size=154, min_size=84,
+            draw, subject, x2-x1-130, max_size=180, min_size=96,
             role="condensed",
         )
-        words = subject.split()
+        display_subject = truncate(draw, subject, name_font, x2-x1-130)
+        words = display_subject.split()
         first = (" ".join(words[:-1]) + " ") if len(words) > 1 else ""
-        last = words[-1] if words else subject
-        name_y = y1 + 174
+        last = words[-1] if words else display_subject
+        name_y = y1 + 190
         name_x = x1 + 70
         if first:
             draw.text(
@@ -304,7 +328,34 @@ class MasterGraphicRenderer:
             player = identity_safe_portrait(player, image_source)
             alpha = player.getchannel("A") if player.mode == "RGBA" else None
             transparent = bool(alpha and alpha.getextrema()[0] < 10)
-            if transparent:
+            standardized_headshot = image_source in {"FPL API", "Reliable provider"}
+            if standardized_headshot:
+                # Standard provider portraits are cropped to identity-only pixels
+                # by identity_safe_portrait(). Present the result inside a large
+                # circular frame so the safety crop never looks like a floating
+                # rectangular strip and remains prominent in the X phone preview.
+                photo_top = y1 + 275
+                photo_bottom = y2 - 235
+                diameter = min(inner[2]-inner[0]-130, photo_bottom-photo_top)
+                diameter = max(620, diameter)
+                hx = (inner[0]+inner[2])//2
+                hy = (photo_top+photo_bottom)//2
+                head_box = (hx-diameter//2, hy-diameter//2, hx+diameter//2, hy+diameter//2)
+                draw.ellipse(
+                    (head_box[0]-22, head_box[1]-22, head_box[2]+22, head_box[3]+22),
+                    fill=(0, 0, 0), outline=style.banner, width=18,
+                )
+                fitted = ImageOps.fit(
+                    player.convert("RGBA"), (diameter, diameter),
+                    method=Image.Resampling.LANCZOS, centering=(0.5, 0.5),
+                )
+                circle = Image.new("L", (diameter, diameter), 0)
+                ImageDraw.Draw(circle).ellipse((0, 0, diameter-1, diameter-1), fill=255)
+                if fitted.getchannel("A").getextrema()[0] < 255:
+                    circle = ImageChops.multiply(circle, fitted.getchannel("A"))
+                image.paste(fitted, (head_box[0], head_box[1]), circle)
+                draw.ellipse(head_box, outline=CYAN, width=8)
+            elif transparent:
                 shirt_fallback = image_source == "Team shirt fallback"
                 max_w = int((inner[2]-inner[0]) * (0.76 if shirt_fallback else 0.96))
                 max_h = int((inner[3]-inner[1]) * (0.76 if shirt_fallback else 0.94))
@@ -342,11 +393,11 @@ class MasterGraphicRenderer:
                 "Team shirt fallback": ("VERIFIED TEAM SHIRT", GOLD),
             }
             source_label, source_color = source_labels.get(image_source, (image_source.upper(), CYAN))
-            sf = font(38, "condensed")
+            sf = font(META_TEXT_MIN, "condensed")
             chip_w = text_width(draw, source_label, sf) + 72
-            chip = (x1+30, y1+28, min(x2-30, x1+30+chip_w), y1+98)
+            chip = (x1+30, y1+28, min(x2-30, x1+30+chip_w), y1+116)
             draw.rounded_rectangle(chip, radius=18, fill=(0, 0, 0, 226), outline=source_color, width=4)
-            draw.ellipse((chip[0]+18, chip[1]+22, chip[0]+42, chip[1]+46), fill=source_color)
+            draw.ellipse((chip[0]+18, chip[1]+31, chip[0]+44, chip[1]+57), fill=source_color)
             draw.text((chip[0]+54, (chip[1]+chip[3])//2), source_label, anchor="lm", font=sf, fill=source_color)
 
         metadata = resolve_player_metadata(subject, fpl_data=self.fpl_data)
@@ -356,7 +407,10 @@ class MasterGraphicRenderer:
         if position:
             strip = (x1+38, y2-190, x2-38, y2-38)
             draw.rounded_rectangle(strip, radius=22, fill=(0,0,0,238), outline=style.banner, width=7)
-            pfont = fit_font(draw, position, strip[2]-strip[0]-55, max_size=110, min_size=68, role="condensed")
+            pfont = fit_font(
+                draw, position, strip[2]-strip[0]-55,
+                max_size=124, min_size=CORE_TEXT_MIN, role="condensed",
+            )
             draw.text(((strip[0]+strip[2])//2, (strip[1]+strip[3])//2), position, anchor="mm", font=pfont, fill=WHITE)
 
         if style.stamp:
@@ -371,38 +425,48 @@ class MasterGraphicRenderer:
         if not rows:
             rows = [Field("STATUS", "VERIFIED UPDATE", "status")]
         draw = ImageDraw.Draw(image)
-        x1, y1, x2, y2 = panel
-        inner_x1, inner_x2 = x1, x2
-        available = y2-y1
-        gap = 16
-        n = max(1, len(rows))
-        row_h = min(224, max(170, int((available-gap*(n-1))/n)))
-        total = row_h*n + gap*(n-1)
-        y = y1 + (y2-y1-total)//2
-        icon_w = 155
-        label_w = 540
+        row_boxes = stacked_rects(panel, len(rows), gap=22, max_height=500)
+        icon_w = 190
+        label_w = 545
         accents = (style.banner, CYAN, GOLD, MAGENTA, LIME, CORAL)
-        for index, field in enumerate(rows):
+        for index, (field, row_box) in enumerate(zip(rows, row_boxes, strict=True)):
             accent = accents[index % len(accents)]
-            row_box = (inner_x1, y, inner_x2, y+row_h)
+            x1, y1, x2, y2 = row_box
+            row_h = y2-y1
             row_fill = tuple(max(3, round(channel * 0.075)) for channel in accent)
             draw.rounded_rectangle(row_box, radius=25, fill=row_fill, outline=accent, width=3)
             draw.rounded_rectangle((row_box[0]+12, row_box[1]+18, row_box[0]+22, row_box[3]-18), radius=5, fill=accent)
-            icon_box = (inner_x1+35, y+28, inner_x1+icon_w-5, y+row_h-28)
+            icon_margin_y = max(28, (row_h-150)//2)
+            icon_box = (x1+35, y1+icon_margin_y, x1+icon_w-5, y2-icon_margin_y)
             if field.logo:
                 paste_contain(image, field.logo, icon_box)
             else:
                 draw_icon(draw, field.icon, icon_box, accent)
-            label_x = inner_x1+icon_w+15
+            label_x = x1+icon_w+15
             divider_x = label_x+label_w
-            draw.line((divider_x, y+30, divider_x, y+row_h-30), fill=accent, width=6)
-            label_font = fit_font(draw, field.label.upper(), label_w-50, max_size=82, min_size=52, role="condensed")
-            draw.text((label_x+20, y+row_h//2), field.label.upper(), anchor="lm", font=label_font, fill=accent)
+            draw.line((divider_x, y1+30, divider_x, y2-30), fill=accent, width=6)
+            label_max = min(112, max(84, int(row_h*0.32)))
+            label_font = fit_font(
+                draw, field.label.upper(), label_w-50,
+                max_size=label_max, min_size=LABEL_TEXT_MIN, role="condensed",
+            )
+            label = truncate(draw, field.label.upper(), label_font, label_w-50)
+            draw.text((label_x+20, (y1+y2)//2), label, anchor="lm", font=label_font, fill=accent)
             value_x = divider_x+48
-            value_w = inner_x2-value_x-30
-            value_font = fit_font(draw, field.value, value_w, max_size=104, min_size=58, role="bold")
-            draw.text((value_x, y+row_h//2), truncate(draw, field.value, value_font, value_w), anchor="lm", font=value_font, fill=WHITE)
-            y += row_h+gap
+            value_w = x2-value_x-30
+            value_max = min(158, max(108, int(row_h*0.38)))
+            value_font, value_lines, value_step = fit_wrapped_text(
+                draw, field.value, value_w, row_h-50, 2,
+                max_size=value_max, min_size=CORE_TEXT_MIN, role="bold",
+            )
+            value_y = (y1+y2-value_step*len(value_lines))//2
+            for value_line in value_lines:
+                draw.text(
+                    (value_x, value_y), value_line,
+                    font=value_font, fill=WHITE,
+                    stroke_width=2, stroke_fill=(0, 0, 0),
+                )
+                value_y += value_step
 
     def _transfer_panel(self, image: Image.Image, panel, decision: VerificationDecision) -> None:
         facts = decision.verified_facts
@@ -427,10 +491,16 @@ class MasterGraphicRenderer:
             paste_contain(image, to_logo, (right_box[0]+24, right_box[1]+65, right_box[0]+215, right_box[3]-24))
         from_w = left_box[2]-left_box[0]-270
         to_w = right_box[2]-right_box[0]-270
-        from_font = fit_font(draw, origin, from_w, max_size=76, min_size=46, role="bold")
-        to_font = fit_font(draw, destination, to_w, max_size=76, min_size=46, role="bold")
-        draw.text((left_box[0]+250, left_box[1]+62), "FROM", font=font(48, "condensed"), fill=CYAN)
-        draw.text((right_box[0]+250, right_box[1]+62), "TO", font=font(48, "condensed"), fill=LIME)
+        from_font = fit_font(
+            draw, origin, from_w, max_size=102, min_size=CORE_TEXT_MIN,
+            role="bold",
+        )
+        to_font = fit_font(
+            draw, destination, to_w, max_size=102, min_size=CORE_TEXT_MIN,
+            role="bold",
+        )
+        draw.text((left_box[0]+250, left_box[1]+52), "FROM", font=font(META_TEXT_MIN, "condensed"), fill=CYAN)
+        draw.text((right_box[0]+250, right_box[1]+52), "TO", font=font(META_TEXT_MIN, "condensed"), fill=LIME)
         draw.text((left_box[0]+250, cy+42), truncate(draw, origin, from_font, from_w), anchor="lm", font=from_font, fill=WHITE)
         draw.text((right_box[0]+250, cy+42), truncate(draw, destination, to_font, to_w), anchor="lm", font=to_font, fill=WHITE)
         draw.ellipse((cx-90, cy-90, cx+90, cy+90), fill=(0, 0, 0), outline=GOLD, width=7)
@@ -441,7 +511,7 @@ class MasterGraphicRenderer:
 
         values: list[Field] = []
         if facts.get("fee"):
-            values.append(Field("CONTRACT PRICE", clean_text(facts.get("fee")), "money"))
+            values.append(Field("TRANSFER FEE", clean_text(facts.get("fee")), "money"))
         if facts.get("contract_length"):
             values.append(Field("CONTRACT TERM", clean_text(facts.get("contract_length")), "calendar"))
         if facts.get("transfer_kind"):
@@ -450,19 +520,17 @@ class MasterGraphicRenderer:
             values.append(Field("MARKET VALUE", clean_text(facts.get("market_value")), "money"))
         if is_reported_transfer(decision) and len(values) < 3:
             values.append(Field("STATUS", reported_status_label(decision.status, facts), "status"))
+        elif len(values) < 3:
+            status = str(getattr(decision.status, "value", decision.status) or "OFFICIAL").upper()
+            values.append(Field("STATUS", "OFFICIAL" if status in {"OFFICIAL", "COMPLETED"} else status, "status"))
         visible_values = values[:3]
-        row_gap = 16
-        available = y2-y-row_gap*max(0, len(visible_values)-1)
-        row_h = min(214, max(178, available//max(1, len(visible_values))))
+        row_boxes = stacked_rects((inner_x1, y, inner_x2, y2), len(visible_values), gap=20)
         accents = (GOLD, MAGENTA, CYAN)
-        for index, field in enumerate(visible_values):
-            if y+row_h > y2+1:
-                break
+        for index, (field, row_box) in enumerate(zip(visible_values, row_boxes, strict=True)):
             self._draw_single_transfer_row(
-                image, (inner_x1, y, inner_x2, y+row_h), field,
+                image, row_box, field,
                 accent=accents[index % len(accents)],
             )
-            y += row_h+row_gap
 
     def _draw_single_transfer_row(self, image: Image.Image, box, field: Field, *, accent=CYAN) -> None:
         draw = ImageDraw.Draw(image)
@@ -477,34 +545,42 @@ class MasterGraphicRenderer:
             draw_icon(draw, field.icon, (x1+42, y1+30, x1+icon_w-30, y2-30), accent)
         draw.line((x1+icon_w, y1+18, x1+icon_w, y2-18), fill=accent, width=5)
         draw.line((x1+icon_w+label_w, y1+30, x1+icon_w+label_w, y2-30), fill=accent, width=5)
-        lf = fit_font(draw, field.label.upper(), label_w-50, max_size=78, min_size=50, role="condensed")
-        draw.text((x1+icon_w+34, (y1+y2)//2), field.label.upper(), anchor="lm", font=lf, fill=accent)
+        lf = fit_font(
+            draw, field.label.upper(), label_w-50,
+            max_size=104, min_size=LABEL_TEXT_MIN, role="condensed",
+        )
+        label = truncate(draw, field.label.upper(), lf, label_w-50)
+        draw.text((x1+icon_w+34, (y1+y2)//2), label, anchor="lm", font=lf, fill=accent)
         value_x = x1+icon_w+label_w+50
         max_w = x2-value_x-35
-        vf = fit_font(draw, field.value, max_w, max_size=104, min_size=58, role="bold")
-        draw.text((value_x, (y1+y2)//2), truncate(draw, field.value, vf, max_w), anchor="lm", font=vf, fill=WHITE)
+        vf = fit_font(
+            draw, field.value, max_w,
+            max_size=148, min_size=CORE_TEXT_MIN, role="bold",
+        )
+        draw.text(
+            (value_x, (y1+y2)//2), truncate(draw, field.value, vf, max_w),
+            anchor="lm", font=vf, fill=WHITE,
+            stroke_width=2, stroke_fill=(0, 0, 0),
+        )
 
     # ── Press-conference body ───────────────────────────────────────────
 
     def _press_body(self, image: Image.Image, decision: VerificationDecision) -> None:
         facts = decision.verified_facts
-        top, bottom = 410, 1870
-        gap = 35
-        widths = (1320, 1260, 1050)
-        x = 35
-        panels = []
-        for w in widths:
-            panels.append((x, top, x+w, bottom))
-            x += w+gap
-        for panel in panels:
-            alpha_panel(image, panel, fill=(3,0,20,238), outline=(146,55,255,255), width=6, radius=34, glow=True)
+        draw = ImageDraw.Draw(image)
+        left = (65, 410, 2255, 1870)
+        right = (2300, 410, 3775, 1870)
+        alpha_panel(
+            image, left, fill=(3, 0, 20, 244), outline=(146, 55, 255, 255),
+            width=7, radius=34, glow=True,
+        )
+        alpha_panel(
+            image, right, fill=(3, 0, 20, 244), outline=(35, 225, 239, 255),
+            width=7, radius=34, glow=True,
+        )
 
-        latest = self._list_value(facts.get("latest_news"))
-        if not latest:
-            latest = [
-                f"{clean_text(facts.get('subject_name'), 'Speaker')} — {clean_text(facts.get('club_name'), 'Club')}",
-                clean_text(facts.get("quote_topic"), "Press conference update"),
-            ]
+        speaker = clean_text(facts.get("subject_name"), "PRESS CONFERENCE")
+        club = clean_text(facts.get("club_name"), "PREMIER LEAGUE")
         quotes = self._list_value(facts.get("key_quotes"))
         if not quotes:
             quotes = [clean_text(facts.get("quote_summary"), "Verified quote unavailable")]
@@ -512,70 +588,108 @@ class MasterGraphicRenderer:
         roundup = self._list_value(facts.get("roundup"))
         if not roundup:
             roundup = [
-                f"{clean_text(facts.get('club_name'), 'Club')} — {clean_text(facts.get('subject_name'), 'Speaker')}",
+                f"{club} — {speaker}",
                 f"Topic: {clean_text(facts.get('quote_topic'), 'General update')}",
-                f"Source: {self._actual_source(decision)}",
             ]
 
-        self._press_column(image, panels[0], "LATEST NEWS", latest, icon="calendar", accent=(85,89,255))
-        self._press_quotes(image, panels[1], quotes, notes)
-        self._press_column(image, panels[2], "PRESS CONFERENCE ROUND-UP", roundup, icon="press", accent=(165,64,255))
+        # Left hero: one speaker/club and one primary quote at genuinely large
+        # type.  This replaces the old three-column newspaper layout whose
+        # 28-47px text became 5-8px in the phone preview.
+        hero = (left[0]+32, left[1]+28, left[2]-32, left[1]+300)
+        draw.rounded_rectangle(hero, radius=28, fill=(83, 21, 180), outline=(215, 180, 255), width=5)
+        draw_icon(draw, "press", (hero[0]+24, hero[1]+35, hero[0]+205, hero[3]-35), WHITE)
+        speaker_x = hero[0]+235
+        speaker_w = hero[2]-speaker_x-30
+        speaker_font = fit_font(
+            draw, speaker, speaker_w, max_size=154, min_size=CORE_TEXT_MIN,
+            role="condensed",
+        )
+        draw.text(
+            (speaker_x, hero[1]+35), truncate(draw, speaker, speaker_font, speaker_w),
+            font=speaker_font, fill=WHITE, stroke_width=2, stroke_fill=(0, 0, 0),
+        )
+        club_font = fit_font(
+            draw, club.upper(), speaker_w, max_size=78, min_size=META_TEXT_MIN,
+            role="bold",
+        )
+        draw.text(
+            (speaker_x, hero[3]-82), truncate(draw, club.upper(), club_font, speaker_w),
+            font=club_font, fill=GOLD,
+        )
 
-    def _press_column(self, image, box, title, items, *, icon, accent) -> None:
-        draw = ImageDraw.Draw(image)
-        x1, y1, x2, y2 = box
-        header = (x1+35, y1+25, x2-35, y1+150)
-        draw.rounded_rectangle(header, radius=28, fill=accent, outline=(215,180,255), width=4)
-        draw_icon(draw, icon, (header[0]+25, header[1]+20, header[0]+120, header[3]-20), WHITE)
-        hf = fit_font(draw, title, header[2]-header[0]-150, max_size=64, min_size=38, role="condensed")
-        draw.text((header[0]+140, (header[1]+header[3])//2), title, anchor="lm", font=hf, fill=WHITE)
-        count = max(1, len(items))
-        gap = 18
-        row_h = min(145, max(82, int((y2-(y1+190)-45-gap*(count-1))/count)))
-        y = y1+185
-        for idx, item in enumerate(items):
-            if y+row_h > y2-30:
-                break
-            row = (x1+30, y, x2-30, y+row_h)
-            draw.rounded_rectangle(row, radius=22, fill=(13,7,38), outline=accent, width=3)
-            draw.ellipse((row[0]+18, row[1]+20, row[0]+82, row[1]+84), fill=accent)
-            nf = font(38, "bold")
-            draw.text((row[0]+50, row[1]+52), str(idx+1), anchor="mm", font=nf, fill=WHITE)
-            tf = fit_font(draw, item, row[2]-row[0]-125, max_size=43, min_size=28, role="bold")
-            wrapped = wrap_text(draw, item, tf, row[2]-row[0]-125, 2)
-            line_y = row[1]+22
-            for line in wrapped:
-                draw.text((row[0]+105, line_y), line, font=tf, fill=WHITE)
-                line_y += int(tf.size*1.1)
-            y += row_h+gap
+        quote_box = (left[0]+32, left[1]+330, left[2]-32, left[1]+1005)
+        draw.rounded_rectangle(quote_box, radius=30, fill=(12, 6, 38), outline=(154, 70, 246), width=5)
+        draw.text((quote_box[0]+35, quote_box[1]+20), "“", font=font(142, "bold"), fill=GOLD)
+        draw.text((quote_box[0]+170, quote_box[1]+42), "KEY VERIFIED UPDATE", font=font(76, "condensed"), fill=(215, 180, 255))
+        qf, qlines, qstep = fit_wrapped_text(
+            draw, quotes[0], quote_box[2]-quote_box[0]-150, 430, 4,
+            max_size=118, min_size=CORE_TEXT_MIN, role="bold",
+        )
+        qy = quote_box[1]+175
+        for line in qlines:
+            draw.text(
+                (quote_box[0]+75, qy), line, font=qf, fill=WHITE,
+                stroke_width=2, stroke_fill=(0, 0, 0),
+            )
+            qy += qstep
 
-    def _press_quotes(self, image, box, quotes, notes) -> None:
-        draw = ImageDraw.Draw(image)
-        x1, y1, x2, y2 = box
-        header = (x1+35, y1+25, x2-35, y1+150)
-        draw.rounded_rectangle(header, radius=28, fill=(117,32,224), outline=(215,180,255), width=4)
-        draw_icon(draw, "quote", (header[0]+25, header[1]+15, header[0]+120, header[3]-15), WHITE)
-        draw.text((header[0]+145, (header[1]+header[3])//2), "KEY QUOTES", anchor="lm", font=font(62, "condensed"), fill=WHITE)
-        y = y1+185
-        for quote in quotes[:4]:
-            box_q = (x1+35, y, x2-35, y+220)
-            draw.rounded_rectangle(box_q, radius=24, fill=(13,7,38), outline=(154,70,246), width=3)
-            draw.text((box_q[0]+25, box_q[1]+20), "“", font=font(80, "bold"), fill=(255,233,25))
-            qf = fit_font(draw, quote, box_q[2]-box_q[0]-120, max_size=47, min_size=31, role="regular")
-            lines = wrap_text(draw, quote, qf, box_q[2]-box_q[0]-120, 3)
-            ly = box_q[1]+40
+        note_box = (left[0]+32, left[1]+1035, left[2]-32, left[3]-28)
+        draw.rounded_rectangle(note_box, radius=28, fill=(8, 8, 30), outline=CYAN, width=4)
+        note_title = "MANAGER NOTES" if notes else "UPDATE TOPIC"
+        draw.text((note_box[0]+35, note_box[1]+26), note_title, font=font(72, "condensed"), fill=CYAN)
+        visible_notes = notes[:3] if notes else [clean_text(facts.get("quote_topic"), "Official team update")]
+        note_rows = stacked_rects(
+            (note_box[0]+30, note_box[1]+120, note_box[2]-30, note_box[3]-25),
+            len(visible_notes), gap=12,
+        )
+        for note, row in zip(visible_notes, note_rows, strict=True):
+            draw.ellipse((row[0]+6, (row[1]+row[3])//2-11, row[0]+28, (row[1]+row[3])//2+11), fill=GOLD)
+            nf = fit_font(
+                draw, note, row[2]-row[0]-65,
+                max_size=78, min_size=META_TEXT_MIN, role="bold",
+            )
+            draw.text(
+                (row[0]+50, (row[1]+row[3])//2),
+                truncate(draw, note, nf, row[2]-row[0]-65),
+                anchor="lm", font=nf, fill=WHITE,
+            )
+
+        # Right side: at most five large rows.  When an official PL article
+        # contains more clubs, the final row reports the exact remaining count
+        # instead of squeezing 18 unreadable lines onto one image.
+        header = (right[0]+28, right[1]+28, right[2]-28, right[1]+180)
+        draw.rounded_rectangle(header, radius=28, fill=(18, 117, 137), outline=CYAN, width=5)
+        draw_icon(draw, "calendar", (header[0]+24, header[1]+22, header[0]+145, header[3]-22), WHITE)
+        title = "OFFICIAL ROUND-UP"
+        title_font = fit_font(
+            draw, title, header[2]-header[0]-190,
+            max_size=92, min_size=LABEL_TEXT_MIN, role="condensed",
+        )
+        draw.text((header[0]+170, (header[1]+header[3])//2), title, anchor="lm", font=title_font, fill=WHITE)
+
+        display_items = roundup[:5]
+        if len(roundup) > 5:
+            display_items = roundup[:4] + [f"+{len(roundup)-4} MORE VERIFIED UPDATES"]
+        rows = stacked_rects(
+            (right[0]+28, right[1]+215, right[2]-28, right[3]-28),
+            len(display_items), gap=18,
+        )
+        for index, (item, row) in enumerate(zip(display_items, rows, strict=True), start=1):
+            draw.rounded_rectangle(row, radius=24, fill=(6, 15, 28), outline=CYAN, width=4)
+            badge = (row[0]+20, (row[1]+row[3])//2-48, row[0]+116, (row[1]+row[3])//2+48)
+            draw.ellipse(badge, fill=(83, 21, 180), outline=(215, 180, 255), width=4)
+            draw.text(((badge[0]+badge[2])//2, (badge[1]+badge[3])//2), str(index), anchor="mm", font=font(58, "bold"), fill=WHITE)
+            item_x = row[0]+145
+            item_w = row[2]-item_x-25
+            item_h = row[3]-row[1]-42
+            tf, lines, step = fit_wrapped_text(
+                draw, item, item_w, item_h, 2,
+                max_size=84, min_size=META_TEXT_MIN, role="bold",
+            )
+            ty = (row[1]+row[3]-step*len(lines))//2
             for line in lines:
-                draw.text((box_q[0]+95, ly), line, font=qf, fill=WHITE)
-                ly += int(qf.size*1.2)
-            y += 240
-        if notes and y < y2-230:
-            draw.text((x1+55, y+15), "MANAGER'S NOTES", font=font(52, "condensed"), fill=(255,233,25))
-            y += 85
-            for note in notes[:4]:
-                draw.ellipse((x1+55, y+18, x1+75, y+38), fill=(255,233,25))
-                nf = fit_font(draw, note, x2-x1-150, max_size=39, min_size=28, role="regular")
-                draw.text((x1+95, y), truncate(draw, note, nf, x2-x1-150), font=nf, fill=WHITE)
-                y += 65
+                draw.text((item_x, ty), line, font=tf, fill=WHITE)
+                ty += step
 
     # ── Data projection ─────────────────────────────────────────────────
 
@@ -610,14 +724,6 @@ class MasterGraphicRenderer:
             if facts.get("return_date"):
                 rows.append(Field("RETURN DATE", clean_text(facts.get("return_date")), "clock"))
         return rows
-
-    def _actual_source(self, decision: VerificationDecision) -> str:
-        ids = decision.authority_source_ids or decision.source_ids
-        names = []
-        for source_id in ids[:2]:
-            profile = self.sources.get(source_id)
-            names.append(profile.display_name if profile else str(source_id))
-        return " · ".join(names) or "FPL VORTEX"
 
     def _visible_footer_source(self, decision: VerificationDecision) -> str:
         ids = set(decision.authority_source_ids or decision.source_ids)

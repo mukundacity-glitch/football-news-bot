@@ -8,6 +8,10 @@ from PIL import Image
 import src.rendering.assets as assets
 import src.rendering.engine as engine
 from src.rendering.engine import Field, MasterGraphicRenderer, STYLES
+from src.rendering.layout import (
+    CORE_TEXT_MIN, LABEL_TEXT_MIN, META_TEXT_MIN, Rect, preview_safe_font,
+    stacked_rects,
+)
 from src.verification.models import EventType
 
 
@@ -131,6 +135,7 @@ def test_verified_team_shirt_is_never_cropped_as_a_stale_portrait():
 def test_player_name_and_values_use_large_responsive_font_ranges(monkeypatch):
     calls: list[tuple[str, int, int]] = []
     original_fit_font = engine.fit_font
+    original_fit_wrapped_text = engine.fit_wrapped_text
 
     def capture(draw, value, max_width, *, max_size, min_size, role="bold"):
         calls.append((str(value), max_size, min_size))
@@ -139,6 +144,19 @@ def test_player_name_and_values_use_large_responsive_font_ranges(monkeypatch):
         )
 
     monkeypatch.setattr(engine, "fit_font", capture)
+
+    def capture_wrapped(
+        draw, value, max_width, max_height, max_lines, *, max_size,
+        min_size, role="bold", line_spacing=1.12,
+    ):
+        calls.append((str(value), max_size, min_size))
+        return original_fit_wrapped_text(
+            draw, value, max_width, max_height, max_lines,
+            max_size=max_size, min_size=min_size, role=role,
+            line_spacing=line_spacing,
+        )
+
+    monkeypatch.setattr(engine, "fit_wrapped_text", capture_wrapped)
     monkeypatch.setattr(engine, "resolve_player_metadata", lambda *_args, **_kwargs: {})
     renderer = MasterGraphicRenderer(None, fpl_data=_fpl_data())
     image = Image.new("RGB", (3840, 2160), (0, 0, 0))
@@ -155,5 +173,20 @@ def test_player_name_and_values_use_large_responsive_font_ranges(monkeypatch):
         STYLES[EventType.INJURY],
     )
 
-    assert ("Large Type", 154, 84) in calls
-    assert ("Ready", 104, 58) in calls
+    assert ("Large Type", 180, 96) in calls
+    assert any(value == "Ready" and minimum == CORE_TEXT_MIN for value, _maximum, minimum in calls)
+
+
+def test_phone_preview_font_floors_are_calculated_not_magic_tiny_sizes():
+    assert preview_safe_font(13) == CORE_TEXT_MIN == 78
+    assert preview_safe_font(11) == LABEL_TEXT_MIN == 66
+    assert preview_safe_font(9) == META_TEXT_MIN == 54
+
+
+def test_dynamic_rows_never_overlap_or_escape_their_panel():
+    panel = Rect(200, 790, 2325, 1810)
+    for count in range(1, 6):
+        rows = [Rect(*value) for value in stacked_rects(panel.tuple(), count, gap=22, max_height=500)]
+        assert len(rows) == count
+        assert all(panel.contains(row) for row in rows)
+        assert all(not left.overlaps(right) for left, right in zip(rows, rows[1:]))
