@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 
 from src.verification.models import EventType, VerificationDecision
 from src.verification.reported_transfer_gate import is_reported_transfer, reported_status_label
@@ -326,57 +326,22 @@ class MasterGraphicRenderer:
         inner = (x1+25, y1+30, x2-25, y2-70)
         if player:
             player = identity_safe_portrait(player, image_source)
-            alpha = player.getchannel("A") if player.mode == "RGBA" else None
-            transparent = bool(alpha and alpha.getextrema()[0] < 10)
-            standardized_headshot = image_source in {"FPL API", "Reliable provider"}
-            if standardized_headshot:
-                # Standard provider portraits are cropped to identity-only pixels
-                # by identity_safe_portrait(). Present the result inside a large
-                # circular frame so the safety crop never looks like a floating
-                # rectangular strip and remains prominent in the X phone preview.
-                photo_top = y1 + 275
-                photo_bottom = y2 - 235
-                diameter = min(inner[2]-inner[0]-130, photo_bottom-photo_top)
-                diameter = max(620, diameter)
-                hx = (inner[0]+inner[2])//2
-                hy = (photo_top+photo_bottom)//2
-                head_box = (hx-diameter//2, hy-diameter//2, hx+diameter//2, hy+diameter//2)
-                draw.ellipse(
-                    (head_box[0]-22, head_box[1]-22, head_box[2]+22, head_box[3]+22),
-                    fill=(0, 0, 0), outline=style.banner, width=18,
-                )
-                fitted = ImageOps.fit(
-                    player.convert("RGBA"), (diameter, diameter),
-                    method=Image.Resampling.LANCZOS, centering=(0.5, 0.5),
-                )
-                circle = Image.new("L", (diameter, diameter), 0)
-                ImageDraw.Draw(circle).ellipse((0, 0, diameter-1, diameter-1), fill=255)
-                if fitted.getchannel("A").getextrema()[0] < 255:
-                    circle = ImageChops.multiply(circle, fitted.getchannel("A"))
-                image.paste(fitted, (head_box[0], head_box[1]), circle)
-                draw.ellipse(head_box, outline=CYAN, width=8)
-            elif transparent:
-                shirt_fallback = image_source == "Team shirt fallback"
-                max_w = int((inner[2]-inner[0]) * (0.76 if shirt_fallback else 0.96))
-                max_h = int((inner[3]-inner[1]) * (0.76 if shirt_fallback else 0.94))
+            if image_source == "Team shirt fallback":
+                # Keep the existing team-shirt fallback presentation unchanged.
+                max_w = int((inner[2]-inner[0]) * 0.76)
+                max_h = int((inner[3]-inner[1]) * 0.76)
                 scale = min(max_w / max(1, player.width), max_h / max(1, player.height))
-                # Official/FotMob headshots are often only 250px. They are still
-                # the highest-priority verified identity image, so upscale with
-                # Lanczos and center rather than leaving a tiny head at the foot.
                 resized = player.resize(
                     (max(1, round(player.width*scale)), max(1, round(player.height*scale))),
                     Image.Resampling.LANCZOS,
                 )
                 px = inner[0] + (inner[2]-inner[0]-resized.width)//2
-                if shirt_fallback:
-                    py = inner[1] + (inner[3]-inner[1]-resized.height)//2 + 35
-                elif resized.height <= resized.width * 1.15:
-                    py = inner[1] + (inner[3]-inner[1]-resized.height)//2
-                else:
-                    py = inner[3] - resized.height
+                py = inner[1] + (inner[3]-inner[1]-resized.height)//2 + 35
                 image.paste(resized, (px, py), resized)
             else:
-                paste_cover(image, player, inner, rounded=18)
+                # Real verified player images keep their complete source frame and
+                # natural aspect ratio inside the existing right-hand image area.
+                paste_contain(image, player, inner)
         else:
             cx = (x1+x2)//2
             draw.ellipse((cx-170, y1+300, cx+170, y1+640), outline=(180,180,195), width=12)

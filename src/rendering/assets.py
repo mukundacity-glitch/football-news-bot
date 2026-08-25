@@ -15,8 +15,6 @@ from src.constants import CLUB_ALIASES, CLUB_COLORS, FPL_LOGO_IDS
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl
 
 CACHE = Path(".cache/render_assets")
-_STANDARD_HEADSHOT_SOURCES = {"FPL API", "Reliable provider"}
-_HEADSHOT_HEIGHT_RATIO = 0.44
 
 
 def _norm(value: object) -> str:
@@ -164,19 +162,8 @@ def resolve_player_image(
 
 
 def identity_safe_portrait(image: Image.Image, source: str) -> Image.Image:
-    """Remove unverified kit details from standardized provider portraits.
-
-    FPL and provider identity photos can remain cached in a player's former
-    club shirt after a transfer. Their face is still useful identity evidence,
-    but the shirt, crest and sponsor are not current-team evidence. Crop every
-    standardized portrait to a headshot for every event type; current club
-    identity is rendered separately from the verified live team data.
-    """
-    portrait = image.convert("RGBA")
-    if source not in _STANDARD_HEADSHOT_SOURCES:
-        return portrait
-    crop_h = max(1, min(portrait.height, round(portrait.height * _HEADSHOT_HEIGHT_RATIO)))
-    return portrait.crop((0, 0, portrait.width, crop_h))
+    """Preserve the verified source image without cropping or reshaping it."""
+    return image.convert("RGBA")
 
 
 def _team_from_fpl(club_name: str, data: Optional[dict]) -> Optional[dict]:
