@@ -1,21 +1,16 @@
-name: FPL Deadline Top-5 News
+name: FPL Deadline Press Conference Round-Up
 
-# Extra gameweek-only team-news check.
-#
-# The script itself decides whether this is the correct pre-deadline window:
-#   FPL deadline = first PL kickoff - 90 minutes (official FPL timestamp)
-#   Bot target   = FPL deadline - 30 minutes (kickoff - 2 hours)
-#
-# We poll every 15 minutes but do the expensive install/test/post work only
-# inside that narrow target window. If no Top-5 official FPL availability news
-# exists, the run exits without posting.
+# Publish one combined, officially verified PremierLeague.com press-conference
+# graphic before the FPL deadline. The Python gate reads the official FPL lock
+# time; cron only supplies repeated opportunities because GitHub schedules are
+# best-effort.
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: "Manual test: run even outside the deadline window"
+        description: "Run outside the deadline window (normal verification and dedup still apply)"
         type: boolean
         required: false
         default: false
@@ -24,11 +19,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: fpl-vortex-bot
+  group: fpl-vortex-press-deadline
   cancel-in-progress: false
 
 jobs:
-  fpl-deadline-news:
+  press-conference-roundup:
     if: ${{ vars.BOT_PAUSED != 'true' }}
     runs-on: ubuntu-latest
 
@@ -41,20 +36,26 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deadline window dependency
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
-
-      - name: Check FPL deadline window
+      - name: Check official FPL deadline window
         id: window
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             echo "reason=manual_force" >> "$GITHUB_OUTPUT"
           else
-            python tools/fpl_deadline_news.py --check-window --window-minutes 20 --margin-minutes 30 >> "$GITHUB_OUTPUT"
+            python tools/press_deadline_window.py \
+              --check-window --window-minutes 30 --margin-minutes 30 \
+              >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Restore V2 verification database
+        if: steps.window.outputs.should_run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: data/verification.sqlite3
+          key: verification-v2-${{ github.repository_id }}-${{ github.run_id }}
+          restore-keys: |
+            verification-v2-${{ github.repository_id }}-
 
       - name: Install dependencies
         if: steps.window.outputs.should_run == 'true'
@@ -66,37 +67,68 @@ jobs:
         if: steps.window.outputs.should_run == 'true'
         run: python -m pytest -q
 
-      - name: Run FPL deadline Top-5 news
+      - name: Run verified press-conference roundup
         id: run
         if: steps.window.outputs.should_run == 'true'
         env:
+          X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
+          X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
           X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
-          ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST }}
+          ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST || 'true' }}
+          VERIFICATION_V2_LIVE: ${{ vars.VERIFICATION_V2_LIVE || 'true' }}
+          DRY_RUN: ${{ vars.DRY_RUN || 'false' }}
+          VERIFICATION_V2_ALLOW_DB_REBUILD: ${{ vars.VERIFICATION_V2_ALLOW_DB_REBUILD }}
+          LIVE_EVENT_SCOPE: press_conference
+          SAVE_DRAFTS_TO_DISK: false
+          MAX_POSTS_PER_RUN: 1
+          MAX_POSTS_PER_HOUR: 4
           DAILY_POST_LIMIT: 16
+          POST_JITTER_MIN_S: 15
+          POST_JITTER_MAX_S: 45
           COOLDOWN_FLAGGED_MIN: 180
           COOLDOWN_RATELIMIT_MIN: 30
-          FPL_DEADLINE_TOP_N: 5
-          FPL_DEADLINE_CARD_LIMIT: 3
-          FPL_DEADLINE_MARGIN_MINUTES: 30
-          FPL_DEADLINE_WINDOW_MINUTES: 20
         run: |
-          extra=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
-            extra="--force-window"
+          set +e
+          python main.py
+          code=$?
+          if [ $code -ne 0 ]; then
+            echo "First attempt failed (exit $code) — retrying once after 30s"
+            sleep 30
+            python main.py
+            code=$?
           fi
-          python tools/fpl_deadline_news.py $extra
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
 
-      - name: Persist FPL deadline state
+      - name: Save generated roundup for inspection
+        if: always() && steps.window.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: press-roundup-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: ignore
+          path: queue/pending/*.png
+
+      - name: Save run status for inspection
+        if: always() && steps.window.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: press-status-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: ignore
+          path: data/last_run_status.json
+
+      - name: Persist dedup and publication state
         if: steps.window.outputs.should_run == 'true'
         run: |
           git config user.name "fpl-vortex-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add data/posted_news.json data/fpl_deadline_status.json 2>/dev/null || true
+          git add data/posted_news.json 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "No FPL deadline state changes to commit."
+            echo "No press-roundup state changes to commit."
           else
-            git commit -m "update fpl deadline state [skip ci]"
+            git commit -m "update press-roundup state [skip ci]"
             pushed=""
             for i in 1 2 3 4 5; do
               if git push; then pushed=1; break; fi
@@ -105,6 +137,6 @@ jobs:
               sleep 3
             done
             if [ -z "$pushed" ]; then
-              echo "WARNING: could not push FPL deadline state after retries; will re-attempt next run."
+              echo "WARNING: could not push press-roundup state after retries."
             fi
           fi

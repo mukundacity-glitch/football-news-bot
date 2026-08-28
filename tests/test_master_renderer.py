@@ -92,6 +92,42 @@ def test_transfer_direction_and_dynamic_values_render(tmp_path, sources, no_netw
         assert image.size == (3840, 2160)
 
 
+def test_press_reference_layout_renders_every_roundup_entry(
+    tmp_path, sources, no_network_assets, monkeypatch,
+):
+    roundup = [
+        f"Club {index} — Manager {index}: Verified update {index}"
+        for index in range(1, 21)
+    ]
+    renderer = MasterGraphicRenderer(sources)
+    seen = []
+    original = renderer._draw_press_roundup_row
+
+    def capture(image, draw, row, index, item):
+        seen.append((index, item))
+        return original(image, draw, row, index, item)
+
+    monkeypatch.setattr(renderer, "_draw_press_roundup_row", capture)
+    facts = {
+        "subject_name": "Dynamic Manager",
+        "club_name": "Club 1",
+        "quote_topic": "Squad fitness",
+        "quote_summary": "The squad is ready.",
+        "latest_news": [f"Verified latest update {n}" for n in range(1, 9)],
+        "key_quotes": [f"Verified manager quote {n}" for n in range(1, 5)],
+        "manager_notes": [f"Verified manager note {n}" for n in range(1, 4)],
+        "roundup": roundup,
+    }
+    path = tmp_path / "press-all-managers.png"
+
+    renderer.render(decision(EventType.PRESS_CONFERENCE, facts), path)
+
+    assert seen == list(enumerate(roundup, start=1))
+    with Image.open(path) as image:
+        assert image.size == CANVAS
+        assert image.mode == "RGB"
+
+
 def test_long_values_fit_without_crashing(tmp_path, sources, no_network_assets):
     facts = {
         "subject_name": "A Very Long Dynamically Supplied Football Player Name",
@@ -125,6 +161,17 @@ def test_reference_and_brand_assets_exist():
         Path("assets/branding/stadium_texture.jpg"),
     ):
         assert path.exists()
+
+
+def test_press_roundup_footer_names_the_official_premier_league_source(sources):
+    renderer = MasterGraphicRenderer(sources)
+    press = decision(
+        EventType.PRESS_CONFERENCE,
+        {"subject_name": "Manager", "club_name": "Arsenal"},
+        source_ids=["official.premier_league"],
+    )
+
+    assert renderer._visible_footer_source(press) == "PREMIERLEAGUE.COM"
 
 
 def test_no_reference_player_is_hardcoded_in_renderer():

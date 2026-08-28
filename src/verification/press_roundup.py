@@ -10,14 +10,21 @@ manager updates in one post.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import urlparse
+
+from src.fpl_deadline import (
+    DEFAULT_MARGIN_MINUTES,
+    deadline_target,
+    deadline_window_open,
+    next_fpl_deadline as _shared_next_fpl_deadline,
+)
 
 PREMIER_LEAGUE_SOURCE_ID = "official.premier_league"
 PREMIER_LEAGUE_DOMAIN = "premierleague.com"
 PRESS_FEED_ID = "google.premier_league.press_conference"
-PRESS_DEADLINE_MARGIN_MINUTES = 30
+PRESS_DEADLINE_MARGIN_MINUTES = DEFAULT_MARGIN_MINUTES
+MAX_PREMIER_LEAGUE_ROUNDUP_ENTRIES = 20
 
 # PremierLeague.com roundup pages use headings such as:
 #   Mikel Arteta (Arsenal)
@@ -138,7 +145,7 @@ def parse_premier_league_roundup(text: str) -> dict[str, Any]:
     latest_news: list[str] = []
     key_quotes: list[str] = []
     manager_notes: list[str] = []
-    for entry in entries[:18]:
+    for entry in entries[:MAX_PREMIER_LEAGUE_ROUNDUP_ENTRIES]:
         name = entry["name"]
         club = entry["club"]
         quotes = entry["quotes"]
@@ -158,7 +165,7 @@ def parse_premier_league_roundup(text: str) -> dict[str, Any]:
     first_quote = (primary["quotes"] or [""])[0]
     first_topic = (primary["topics"] or [""])[0]
     return {
-        "entries": entries[:18],
+        "entries": entries[:MAX_PREMIER_LEAGUE_ROUNDUP_ENTRIES],
         "primary": {
             "name": primary["name"],
             "club": primary["club"],
@@ -170,7 +177,7 @@ def parse_premier_league_roundup(text: str) -> dict[str, Any]:
         "latest_news": latest_news[:8],
         "key_quotes": key_quotes[:8],
         "manager_notes": manager_notes[:4],
-        "roundup": roundup[:18],
+        "roundup": roundup[:MAX_PREMIER_LEAGUE_ROUNDUP_ENTRIES],
     }
 
 
@@ -226,50 +233,32 @@ def project_roundup_story(
 def next_fpl_deadline(
     fpl_data: Mapping[str, Any],
     *,
-    now: Optional[datetime] = None,
-) -> Optional[datetime]:
+    now=None,
+):
     """Return the next official FPL deadline from bootstrap-static."""
-    now = now or datetime.now(timezone.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
-    deadlines: list[datetime] = []
-    for event in fpl_data.get("events", []) or []:
-        raw = event.get("deadline_time")
-        if not raw:
-            continue
-        try:
-            value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-            if value.tzinfo is None:
-                value = value.replace(tzinfo=timezone.utc)
-            value = value.astimezone(timezone.utc)
-        except (TypeError, ValueError):
-            continue
-        if value > now:
-            deadlines.append(value)
-    return min(deadlines) if deadlines else None
+    return _shared_next_fpl_deadline(fpl_data, now=now)
 
 
 def press_deadline_target(
     fpl_data: Mapping[str, Any],
     *,
-    now: Optional[datetime] = None,
+    now=None,
     margin_minutes: int = PRESS_DEADLINE_MARGIN_MINUTES,
-) -> Optional[datetime]:
-    deadline = next_fpl_deadline(fpl_data, now=now)
-    return deadline - timedelta(minutes=margin_minutes) if deadline else None
+):
+    return deadline_target(fpl_data, now=now, margin_minutes=margin_minutes)
 
 
 def press_deadline_window_open(
     fpl_data: Mapping[str, Any],
     *,
-    now: Optional[datetime] = None,
+    now=None,
     margin_minutes: int = PRESS_DEADLINE_MARGIN_MINUTES,
-    window_minutes: int = 20,
+    window_minutes: int = 30,
 ) -> bool:
     """Check whether the target pre-deadline posting window is open."""
-    now = now or datetime.now(timezone.utc)
-    target = press_deadline_target(fpl_data, now=now, margin_minutes=margin_minutes)
-    if target is None:
-        return False
-    deadline = target + timedelta(minutes=margin_minutes)
-    return target <= now < min(deadline, target + timedelta(minutes=window_minutes))
+    return deadline_window_open(
+        fpl_data,
+        now=now,
+        margin_minutes=margin_minutes,
+        window_minutes=window_minutes,
+    )

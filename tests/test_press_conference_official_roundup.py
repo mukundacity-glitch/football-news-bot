@@ -34,6 +34,13 @@ Arne Slot (Liverpool)
 On the team: “We will focus on our identity.”
 """
 
+TWENTY_MANAGERS = [
+    "Alex Adams", "Ben Brown", "Carl Clark", "David Davies", "Evan Evans",
+    "Frank Foster", "Gareth Green", "Harry Harris", "Ivan Ingram", "Jack Jones",
+    "Kevin King", "Liam Lewis", "Martin Moore", "Nathan North", "Oscar Owens",
+    "Peter Price", "Quentin Quinn", "Robert Reed", "Samuel Stone", "Thomas Taylor",
+]
+
 
 def test_official_premier_league_press_feed_is_configured():
     feeds = FeedRegistry.load("config/feeds.json")
@@ -78,6 +85,20 @@ def test_official_roundup_extracts_all_sections_for_existing_graphic_fields():
     assert parsed["manager_notes"]
     assert "Pep Guardiola" in " ".join(parsed["roundup"])
     assert "Arne Slot" in " ".join(parsed["roundup"])
+
+
+def test_official_roundup_keeps_all_twenty_manager_sections():
+    text = "\n".join(
+        f"{name} (Club {index})\n"
+        f"On team news: \u201cVerified squad update number {index} for the next match.\u201d"
+        for index, name in enumerate(TWENTY_MANAGERS, start=1)
+    )
+
+    parsed = parse_premier_league_roundup(text)
+
+    assert len(parsed["entries"]) == 20
+    assert len(parsed["roundup"]) == 20
+    assert "Thomas Taylor" in parsed["roundup"][-1]
 
 
 def test_roundup_without_speaker_or_quotes_fails_closed():

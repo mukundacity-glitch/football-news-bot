@@ -63,20 +63,14 @@ data rows, automatic text fitting, verified FROM → TO direction and identity-s
 image resolution. The approved renderer is used by verified production drafts
 for every supported category.
 
-### PRESS_CONFERENCE: official-confirmed-only, same bar as TRANSFER
+### PRESS_CONFERENCE: official Premier League round-up only
 
-A press-conference quote is publishable only when a first-party official
-source (the club's own site/video/transcript, or a verified official club
-account) states it — a reliable media outlet that was physically in the room
-quoting the same press conference is explicitly **not** sufficient. This is
-enforced the same way as TRANSFER:
-
-1. `src/verification/engine.py` — `_configured_nonofficial_confirmation()`
-   unconditionally refuses PRESS_CONFERENCE from any non-official source.
-2. `src/verification/press_conference_gate.py` — a second, independent
-   `validate_official_press_conference()` gate re-checks status, the official
-   source URL/domain/allowlist, and the speaker/club/quote facts before any
-   publication can be authorized.
+The combined press-conference post is publishable only from a verified
+PremierLeague.com round-up. One first-party Premier League article is sufficient
+authority; media and journalist reports cannot enter this route. The article
+must still provide a grounded manager, club, quote summary, key quotes and the
+complete extracted round-up before `src/verification/press_conference_gate.py`
+authorizes the reference-template graphic.
 
 Caption and image generation remain fact-only. Live posting still requires a
 fully publishable V2 decision and all event-specific authorization gates.
@@ -111,6 +105,9 @@ The scheduled GitHub workflow is configured for **set-and-forget live posting**:
   actual posts, not source checks.
 - live posting is enabled automatically on every scheduled run
 - every V2-verified **confirmed transfer, injury, and suspension** story is eligible to post
+- press conferences are collected by the same verification engine but are
+  reserved for the dedicated deadline round-up, preventing a partial article
+  from being posted before all available manager sections are present
 - confirmed manager, contract, and other non-target items are intentionally skipped from live posting
 - safety caps default to **2 posts per run, 4 per hour, 16 per day**. Posts are
   spaced by human-like jitter (90–240s) one at a time — that pacing, not
@@ -126,23 +123,21 @@ The scheduled GitHub workflow is configured for **set-and-forget live posting**:
   pointing at `X_POST_AUTH_TOKEN` / `X_POST_CT0_TOKEN`
 - `BOT_PAUSED=true` remains the single emergency kill switch
 
-### FPL deadline Top-5 team-news run
+### FPL deadline press-conference round-up
 
-A second workflow, `FPL Deadline Top-5 News`, polls every 15 minutes but only runs
-inside the calculated pre-deadline window:
+The `FPL Deadline Press Conference Round-Up` workflow polls every 10 minutes and
+opens a 30-minute posting window before the official FPL deadline:
 
-- official FPL deadline timestamp = first Premier League kickoff minus 90 minutes
-- bot target = deadline minus 30 minutes (effectively kickoff minus 2 hours)
-- teams = current official Premier League table Top 5; if the table is still all
-  played-0 before GW1, it falls back to FPL team strength to avoid alphabetical
-  placeholder standings
-- source = official FPL player availability data only
-- content = at most three concise text cards for critical Top-5 player news:
-  confirmed out/suspended, confirmed fit/available return, or major doubt
-- no lineup guesses, no fake starters, no deadline-only alert, and no post at all
-  if there are zero critical items
-- one post per gameweek deadline; the shared state ledger blocks duplicate
-  deadline posts and counts the tweet toward the daily cap
+- source = the verified PremierLeague.com combined press-conference article only
+- content = one 3840×2160 reference-template graphic with latest news, key
+  quotes, manager notes and **every extracted manager update** (up to all 20
+  Premier League clubs); there is no Top-5 filter or hidden “more updates” row
+- the normal 20-minute news workflow cannot publish press conferences early;
+  this deadline workflow is the sole live owner of the combined round-up
+- normal verification, source-domain checks, duplicate suppression, daily/hourly
+  limits and X cooldowns remain mandatory
+- manual dispatch can bypass the time window with `force=true`, but it cannot
+  bypass verification or duplicate protection
 
 Required GitHub Actions secrets for X posting:
 

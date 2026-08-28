@@ -1493,11 +1493,19 @@ def format_injury_post(story) -> str:
 
 
 def format_press_conference_post(story) -> str:
-    """No direct reference example was given for press conferences either
-    -- built in the same 3-line shape, using the real quote_summary/
-    quote_topic fields (src/verification/extractor.py) rather than
-    inventing new field names.
-    """
+    """Build the approved press caption from verified roundup facts."""
+    roundup = [
+        str(item).strip() for item in (story.get("roundup") or [])
+        if str(item).strip()
+    ]
+    if len(roundup) > 1:
+        lines = [
+            "🎙️ PREMIER LEAGUE PRESS CONFERENCE ROUND-UP",
+            f"{len(roundup)} verified manager updates before the FPL deadline.",
+            "All clubs and key quotes are included in the graphic.",
+        ]
+        return "\n".join(lines) + "\n\n" + build_hashtags(story)
+
     player = tweet_player_name(story)
     club_key = story.get("to_key") or story.get("from_key")
     club_name = club_display(club_key) or _tbd(None)
@@ -2733,9 +2741,30 @@ EVENT_PRIORITY = {
     "injury": 0, "transfer": 1, "loan": 1, "loan_option": 1,
     "suspension": 2, "press_conference": 2, "manager": 3, "renewal": 4, "stay": 4,
 }
-LIVE_POST_EVENT_NAMES = {
+ALL_LIVE_POST_EVENT_NAMES = frozenset({
     "transfer", "loan", "loan_option", "injury", "suspension", "press_conference",
-}
+})
+
+
+def _parse_live_event_scope(raw: str | None) -> frozenset[str]:
+    """Resolve a workflow's live category scope without creating new routes."""
+    if not str(raw or "").strip():
+        return ALL_LIVE_POST_EVENT_NAMES
+    requested = frozenset(
+        token.strip().lower()
+        for token in re.split(r"[,\s]+", str(raw))
+        if token.strip()
+    )
+    unsupported = requested-ALL_LIVE_POST_EVENT_NAMES
+    if unsupported:
+        raise ValueError(
+            "LIVE_EVENT_SCOPE contains unsupported categories: "
+            + ", ".join(sorted(unsupported))
+        )
+    return requested
+
+
+LIVE_POST_EVENT_NAMES = _parse_live_event_scope(os.getenv("LIVE_EVENT_SCOPE"))
 
 def _cap_label(value) -> str:
     try:

@@ -532,20 +532,27 @@ class MasterGraphicRenderer:
 
     def _press_body(self, image: Image.Image, decision: VerificationDecision) -> None:
         facts = decision.verified_facts
-        draw = ImageDraw.Draw(image)
-        left = (65, 410, 2255, 1870)
-        right = (2300, 410, 3775, 1870)
-        alpha_panel(
-            image, left, fill=(3, 0, 20, 244), outline=(146, 55, 255, 255),
-            width=7, radius=34, glow=True,
-        )
-        alpha_panel(
-            image, right, fill=(3, 0, 20, 244), outline=(35, 225, 239, 255),
-            width=7, radius=34, glow=True,
-        )
+        top, bottom = 410, 1870
+        gap = 35
+        widths = (1320, 1260, 1050)
+        x = 35
+        panels: list[tuple[int, int, int, int]] = []
+        for width in widths:
+            panels.append((x, top, x + width, bottom))
+            x += width + gap
+        for panel in panels:
+            alpha_panel(
+                image, panel, fill=(3, 0, 20, 238),
+                outline=(146, 55, 255, 255), width=6, radius=34, glow=True,
+            )
 
-        speaker = clean_text(facts.get("subject_name"), "PRESS CONFERENCE")
-        club = clean_text(facts.get("club_name"), "PREMIER LEAGUE")
+        latest = self._list_value(facts.get("latest_news"))
+        if not latest:
+            latest = [
+                f"{clean_text(facts.get('subject_name'), 'Speaker')} — "
+                f"{clean_text(facts.get('club_name'), 'Club')}",
+                clean_text(facts.get("quote_topic"), "Press conference update"),
+            ]
         quotes = self._list_value(facts.get("key_quotes"))
         if not quotes:
             quotes = [clean_text(facts.get("quote_summary"), "Verified quote unavailable")]
@@ -553,108 +560,225 @@ class MasterGraphicRenderer:
         roundup = self._list_value(facts.get("roundup"))
         if not roundup:
             roundup = [
-                f"{club} — {speaker}",
+                f"{clean_text(facts.get('club_name'), 'Club')} — "
+                f"{clean_text(facts.get('subject_name'), 'Speaker')}",
                 f"Topic: {clean_text(facts.get('quote_topic'), 'General update')}",
             ]
 
-        # Left hero: one speaker/club and one primary quote at genuinely large
-        # type.  This replaces the old three-column newspaper layout whose
-        # 28-47px text became 5-8px in the phone preview.
-        hero = (left[0]+32, left[1]+28, left[2]-32, left[1]+300)
-        draw.rounded_rectangle(hero, radius=28, fill=(83, 21, 180), outline=(215, 180, 255), width=5)
-        draw_icon(draw, "press", (hero[0]+24, hero[1]+35, hero[0]+205, hero[3]-35), WHITE)
-        speaker_x = hero[0]+235
-        speaker_w = hero[2]-speaker_x-30
-        speaker_font = fit_font(
-            draw, speaker, speaker_w, max_size=154, min_size=CORE_TEXT_MIN,
-            role="condensed",
+        # This is the owner's approved press-conference reference structure:
+        # latest news | key quotes/manager notes | the complete official
+        # manager round-up.  The final column intentionally adapts down to the
+        # number of official entries instead of hiding clubs behind a "+ more"
+        # summary row.
+        self._press_column(
+            image, panels[0], "LATEST NEWS", latest,
+            icon="calendar", accent=(85, 89, 255),
         )
-        draw.text(
-            (speaker_x, hero[1]+35), truncate(draw, speaker, speaker_font, speaker_w),
-            font=speaker_font, fill=WHITE, stroke_width=2, stroke_fill=(0, 0, 0),
-        )
-        club_font = fit_font(
-            draw, club.upper(), speaker_w, max_size=78, min_size=META_TEXT_MIN,
-            role="bold",
-        )
-        draw.text(
-            (speaker_x, hero[3]-82), truncate(draw, club.upper(), club_font, speaker_w),
-            font=club_font, fill=GOLD,
-        )
+        self._press_quotes(image, panels[1], quotes, notes)
+        self._press_roundup_column(image, panels[2], roundup)
 
-        quote_box = (left[0]+32, left[1]+330, left[2]-32, left[1]+1005)
-        draw.rounded_rectangle(quote_box, radius=30, fill=(12, 6, 38), outline=(154, 70, 246), width=5)
-        draw.text((quote_box[0]+35, quote_box[1]+20), "“", font=font(142, "bold"), fill=GOLD)
-        draw.text((quote_box[0]+170, quote_box[1]+42), "KEY VERIFIED UPDATE", font=font(76, "condensed"), fill=(215, 180, 255))
-        qf, qlines, qstep = fit_wrapped_text(
-            draw, quotes[0], quote_box[2]-quote_box[0]-150, 430, 4,
-            max_size=118, min_size=CORE_TEXT_MIN, role="bold",
+    @staticmethod
+    def _press_row_gap(count: int) -> int:
+        if count >= 16:
+            return 4
+        if count >= 10:
+            return 7
+        return 14
+
+    def _press_header(self, image, box, title, *, icon, accent) -> int:
+        draw = ImageDraw.Draw(image)
+        x1, y1, x2, _y2 = box
+        header = (x1+30, y1+24, x2-30, y1+158)
+        draw.rounded_rectangle(
+            header, radius=28, fill=accent, outline=(215, 180, 255), width=4,
         )
-        qy = quote_box[1]+175
-        for line in qlines:
-            draw.text(
-                (quote_box[0]+75, qy), line, font=qf, fill=WHITE,
-                stroke_width=2, stroke_fill=(0, 0, 0),
+        draw_icon(
+            draw, icon,
+            (header[0]+22, header[1]+18, header[0]+120, header[3]-18), WHITE,
+        )
+        title_x = header[0]+140
+        title_w = header[2]-title_x-20
+        title_font = fit_font(
+            draw, title, title_w, max_size=64, min_size=38, role="condensed",
+        )
+        draw.text(
+            (title_x, (header[1]+header[3])//2),
+            truncate(draw, title, title_font, title_w),
+            anchor="lm", font=title_font, fill=WHITE,
+        )
+        return y1+185
+
+    def _press_column(self, image, box, title, items, *, icon, accent) -> None:
+        draw = ImageDraw.Draw(image)
+        x1, _y1, x2, y2 = box
+        content_top = self._press_header(
+            image, box, title, icon=icon, accent=accent,
+        )
+        visible_items = list(items) or ["Verified update unavailable"]
+        gap = self._press_row_gap(len(visible_items))
+        rows = stacked_rects(
+            (x1+30, content_top, x2-30, y2-30),
+            len(visible_items), gap=gap,
+            max_height=145 if len(visible_items) <= 8 else None,
+        )
+        for index, (item, row) in enumerate(
+            zip(visible_items, rows, strict=True), start=1,
+        ):
+            draw.rounded_rectangle(
+                row, radius=min(22, max(10, (row[3]-row[1])//4)),
+                fill=(13, 7, 38), outline=accent, width=3,
             )
-            qy += qstep
+            row_h = row[3]-row[1]
+            badge_d = min(64, max(34, row_h-18))
+            badge_x = row[0]+18
+            badge_y = (row[1]+row[3])//2
+            badge = (
+                badge_x, badge_y-badge_d//2,
+                badge_x+badge_d, badge_y+badge_d//2,
+            )
+            draw.ellipse(badge, fill=accent)
+            draw.text(
+                ((badge[0]+badge[2])//2, badge_y), str(index), anchor="mm",
+                font=font(min(38, max(24, badge_d-22)), "bold"), fill=WHITE,
+            )
+            text_x = badge[2]+20
+            text_w = row[2]-text_x-20
+            max_lines = 2 if row_h >= 95 else 1
+            tf, lines, step = fit_wrapped_text(
+                draw, item, text_w, row_h-16, max_lines,
+                max_size=47, min_size=28, role="bold",
+            )
+            text_y = (row[1]+row[3]-step*len(lines))//2
+            for line in lines:
+                draw.text((text_x, text_y), line, font=tf, fill=WHITE)
+                text_y += step
 
-        note_box = (left[0]+32, left[1]+1035, left[2]-32, left[3]-28)
-        draw.rounded_rectangle(note_box, radius=28, fill=(8, 8, 30), outline=CYAN, width=4)
-        note_title = "MANAGER NOTES" if notes else "UPDATE TOPIC"
-        draw.text((note_box[0]+35, note_box[1]+26), note_title, font=font(72, "condensed"), fill=CYAN)
-        visible_notes = notes[:3] if notes else [clean_text(facts.get("quote_topic"), "Official team update")]
+    def _press_quotes(self, image, box, quotes, notes) -> None:
+        draw = ImageDraw.Draw(image)
+        x1, _y1, x2, y2 = box
+        content_top = self._press_header(
+            image, box, "KEY QUOTES", icon="quote", accent=(117, 32, 224),
+        )
+        visible_quotes = list(quotes[:4]) or ["Verified quote unavailable"]
+        visible_notes = list(notes[:3])
+        notes_height = 345 if visible_notes else 0
+        quote_bottom = y2-30-notes_height-(20 if visible_notes else 0)
+        quote_rows = stacked_rects(
+            (x1+30, content_top, x2-30, quote_bottom),
+            len(visible_quotes), gap=14, max_height=245,
+        )
+        for quote, quote_box in zip(visible_quotes, quote_rows, strict=True):
+            draw.rounded_rectangle(
+                quote_box, radius=24, fill=(13, 7, 38),
+                outline=(154, 70, 246), width=3,
+            )
+            draw.text(
+                (quote_box[0]+22, quote_box[1]+12), "“",
+                font=font(min(80, max(48, quote_box[3]-quote_box[1]-35)), "bold"),
+                fill=GOLD,
+            )
+            text_x = quote_box[0]+92
+            text_w = quote_box[2]-text_x-24
+            qf, lines, step = fit_wrapped_text(
+                draw, quote, text_w, quote_box[3]-quote_box[1]-24, 3,
+                max_size=47, min_size=30, role="regular",
+            )
+            text_y = (quote_box[1]+quote_box[3]-step*len(lines))//2
+            for line in lines:
+                draw.text((text_x, text_y), line, font=qf, fill=WHITE)
+                text_y += step
+
+        if not visible_notes:
+            return
+        notes_top = quote_bottom+20
+        draw.text(
+            (x1+45, notes_top+8), "MANAGER'S NOTES",
+            font=font(52, "condensed"), fill=GOLD,
+        )
         note_rows = stacked_rects(
-            (note_box[0]+30, note_box[1]+120, note_box[2]-30, note_box[3]-25),
-            len(visible_notes), gap=12,
+            (x1+45, notes_top+82, x2-35, y2-30),
+            len(visible_notes), gap=8,
         )
         for note, row in zip(visible_notes, note_rows, strict=True):
-            draw.ellipse((row[0]+6, (row[1]+row[3])//2-11, row[0]+28, (row[1]+row[3])//2+11), fill=GOLD)
+            middle = (row[1]+row[3])//2
+            draw.ellipse((row[0], middle-10, row[0]+20, middle+10), fill=GOLD)
+            note_x = row[0]+42
+            note_w = row[2]-note_x
             nf = fit_font(
-                draw, note, row[2]-row[0]-65,
-                max_size=78, min_size=META_TEXT_MIN, role="bold",
+                draw, note, note_w, max_size=39, min_size=28, role="regular",
             )
             draw.text(
-                (row[0]+50, (row[1]+row[3])//2),
-                truncate(draw, note, nf, row[2]-row[0]-65),
+                (note_x, middle), truncate(draw, note, nf, note_w),
                 anchor="lm", font=nf, fill=WHITE,
             )
 
-        # Right side: at most five large rows.  When an official PL article
-        # contains more clubs, the final row reports the exact remaining count
-        # instead of squeezing 18 unreadable lines onto one image.
-        header = (right[0]+28, right[1]+28, right[2]-28, right[1]+180)
-        draw.rounded_rectangle(header, radius=28, fill=(18, 117, 137), outline=CYAN, width=5)
-        draw_icon(draw, "calendar", (header[0]+24, header[1]+22, header[0]+145, header[3]-22), WHITE)
-        title = "OFFICIAL ROUND-UP"
-        title_font = fit_font(
-            draw, title, header[2]-header[0]-190,
-            max_size=92, min_size=LABEL_TEXT_MIN, role="condensed",
-        )
-        draw.text((header[0]+170, (header[1]+header[3])//2), title, anchor="lm", font=title_font, fill=WHITE)
+    @staticmethod
+    def _roundup_club(item: str) -> str:
+        for separator in (" — ", " – ", " - "):
+            if separator in item:
+                return item.split(separator, 1)[0].strip()
+        return ""
 
-        display_items = roundup[:5]
-        if len(roundup) > 5:
-            display_items = roundup[:4] + [f"+{len(roundup)-4} MORE VERIFIED UPDATES"]
-        rows = stacked_rects(
-            (right[0]+28, right[1]+215, right[2]-28, right[3]-28),
-            len(display_items), gap=18,
+    def _press_roundup_column(self, image, box, roundup) -> None:
+        draw = ImageDraw.Draw(image)
+        x1, _y1, x2, y2 = box
+        content_top = self._press_header(
+            image, box, "PRESS CONFERENCE ROUND-UP",
+            icon="press", accent=(165, 64, 255),
         )
-        for index, (item, row) in enumerate(zip(display_items, rows, strict=True), start=1):
-            draw.rounded_rectangle(row, radius=24, fill=(6, 15, 28), outline=CYAN, width=4)
-            badge = (row[0]+20, (row[1]+row[3])//2-48, row[0]+116, (row[1]+row[3])//2+48)
-            draw.ellipse(badge, fill=(83, 21, 180), outline=(215, 180, 255), width=4)
-            draw.text(((badge[0]+badge[2])//2, (badge[1]+badge[3])//2), str(index), anchor="mm", font=font(58, "bold"), fill=WHITE)
-            item_x = row[0]+145
-            item_w = row[2]-item_x-25
-            item_h = row[3]-row[1]-42
-            tf, lines, step = fit_wrapped_text(
-                draw, item, item_w, item_h, 2,
-                max_size=84, min_size=META_TEXT_MIN, role="bold",
+        items = list(roundup) or ["Verified round-up unavailable"]
+        gap = self._press_row_gap(len(items))
+        rows = stacked_rects(
+            (x1+20, content_top, x2-20, y2-24), len(items), gap=gap,
+            max_height=105 if len(items) <= 10 else None,
+        )
+        for index, (item, row) in enumerate(zip(items, rows, strict=True), start=1):
+            self._draw_press_roundup_row(image, draw, row, index, item)
+
+    def _draw_press_roundup_row(self, image, draw, row, index, item) -> None:
+        row_h = row[3]-row[1]
+        radius = min(20, max(8, row_h//4))
+        draw.rounded_rectangle(
+            row, radius=radius, fill=(8, 5, 28),
+            outline=(140, 52, 238), width=2,
+        )
+
+        badge_d = min(58, max(32, row_h-12))
+        middle = (row[1]+row[3])//2
+        badge = (
+            row[0]+8, middle-badge_d//2,
+            row[0]+8+badge_d, middle+badge_d//2,
+        )
+        draw.ellipse(badge, fill=(101, 35, 225), outline=(215, 180, 255), width=2)
+        draw.text(
+            ((badge[0]+badge[2])//2, middle), str(index), anchor="mm",
+            font=font(min(35, max(22, badge_d-20)), "bold"), fill=WHITE,
+        )
+
+        logo_x = badge[2]+8
+        logo_size = min(52, max(30, row_h-12))
+        club = self._roundup_club(item)
+        crest = resolve_club_logo(club, fpl_data=self.fpl_data) if club else None
+        if crest:
+            paste_contain(
+                image, crest,
+                (logo_x, middle-logo_size//2, logo_x+logo_size, middle+logo_size//2),
             )
-            ty = (row[1]+row[3]-step*len(lines))//2
-            for line in lines:
-                draw.text((item_x, ty), line, font=tf, fill=WHITE)
-                ty += step
+        else:
+            draw.ellipse(
+                (logo_x+5, middle-8, logo_x+21, middle+8), fill=CYAN,
+            )
+
+        text_x = logo_x+logo_size+8
+        text_w = row[2]-text_x-10
+        text_size = min(42, max(27, int(row_h*0.52)))
+        tf = fit_font(
+            draw, item, text_w, max_size=text_size, min_size=25, role="bold",
+        )
+        draw.text(
+            (text_x, middle), truncate(draw, item, tf, text_w),
+            anchor="lm", font=tf, fill=WHITE,
+        )
 
     # ── Data projection ─────────────────────────────────────────────────
 
@@ -694,6 +818,8 @@ class MasterGraphicRenderer:
         ids = set(decision.authority_source_ids or decision.source_ids)
         if "official.fpl" in ids:
             return "FPL API"
+        if "official.premier_league" in ids:
+            return "PREMIERLEAGUE.COM"
         # Per master rule, secondary/fallback sources retain FPL VORTEX branding.
         return "FPL VORTEX"
 
