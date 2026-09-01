@@ -232,7 +232,10 @@ def _fetch_fotmob_transfers(
             key=lambda row: str(row.get("transferDate") or row.get("fromDate") or ""),
             reverse=True,
         )
-        for row in ordered[:200]:
+        # Process the complete Premier League transfer table. Freshness,
+        # deduplication and the existing posting caps are enforced downstream;
+        # an arbitrary ingestion slice must not silently omit a valid row.
+        for row in ordered:
             name = str(row.get("name") or "").strip()
             to_club = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
             from_club = str(row.get("fromClubFullName") or row.get("fromClub") or "").strip()
