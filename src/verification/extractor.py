@@ -393,17 +393,20 @@ class LegacyClaimAdapter:
             legacy_story.get("display_name") or legacy_story.get("player")
         )
         subject_type = self._expected_subject_type(event, legacy_story)
-        subject = self._resolve_subject(subject_name, subject_type)
-        if subject is None and structured_fotmob and subject_name:
-            entity_type, reason = classify_entity_detailed(
-                subject_name, document.text, None
+        if structured_fotmob and subject_name:
+            # A FotMob transfer row already carries its own immutable player ID.
+            # Resolve that identity before any FPL-name fallback so a shared
+            # given name (Gabriel Jesus vs Gabriel Magalhaes) cannot substitute
+            # a different player from the live squad registry.
+            subject = self.entities.structured_provider_player(
+                "fotmob", fotmob_row.get("playerId"), subject_name
             )
-            if entity_type == "UNKNOWN" and reason == "not_in_squad_registry":
-                subject = self.entities.structured_provider_player(
-                    "fotmob", fotmob_row.get("playerId"), subject_name
-                )
-                if subject:
-                    warnings.append("entity_established_by_structured_fotmob_id")
+            if subject:
+                warnings.append("entity_established_by_structured_fotmob_id")
+            else:
+                warnings.append("structured_fotmob_player_identity_unresolved")
+        else:
+            subject = self._resolve_subject(subject_name, subject_type)
         subject_positions: Optional[List[int]] = None
         if subject is not None:
             name_mentions = self.entities.find_mentions(
@@ -563,11 +566,16 @@ class LegacyClaimAdapter:
                     reported_detail,
                     EvidenceSupport.TEXT_SPAN,
                     classification.status_evidence,
-                )
+            )
             if structured_fotmob:
+                provider_player_name = str(fotmob_row.get("name") or "").strip()
                 add_fact(
                     "structured_source", "fotmob_transfer_table",
                     EvidenceSupport.STRUCTURED_DATA, "structured_fotmob_transfer=true",
+                )
+                add_fact(
+                    "provider_player_name", provider_player_name,
+                    EvidenceSupport.STRUCTURED_DATA, provider_player_name,
                 )
                 add_fact(
                     "provider_player_id", str(fotmob_row.get("playerId") or ""),

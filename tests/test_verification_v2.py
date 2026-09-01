@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
+from src import squad_registry
 from src.verification import DecisionType, VerificationRuntime
-from src.verification.ingestion import _fotmob_legacy_story, _fotmob_transfer_text
+from src.verification.ingestion import (
+    _fetch_fotmob_transfers,
+    _fotmob_legacy_story,
+    _fotmob_transfer_text,
+)
 from src.verification.models import EventType, GateState
+from src.verification.reported_transfer_gate import validate_reported_transfer
 from src.verification.source_registry import SourceRegistry
 
 
@@ -856,7 +863,7 @@ def test_structured_fotmob_completed_transfer_publishes_as_reported(runtime):
     obs["document"]["source_handle"] = "fotmob"
     obs["document"]["metadata"] = {
         "structured_fotmob_transfer": True,
-        "fotmob_row": {"playerId": 10},
+        "fotmob_row": {"playerId": 10, "name": "Danny Welbeck"},
     }
     decision = runtime.verify_observations([obs])
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
@@ -880,7 +887,7 @@ def test_structured_fotmob_lane_uses_its_configured_prior_not_free_text_history(
     obs["document"]["source_handle"] = "fotmob"
     obs["document"]["metadata"] = {
         "structured_fotmob_transfer": True,
-        "fotmob_row": {"playerId": 10},
+        "fotmob_row": {"playerId": 10, "name": "Danny Welbeck"},
     }
     monkeypatch.setattr(
         runtime.engine.reliability, "evaluate",
@@ -933,6 +940,105 @@ def test_real_fotmob_row_preserves_own_format_and_incoming_player_identity(runti
     assert "CONFIRMED" not in decision.rendered_text
     assert "Source:" not in decision.rendered_text
 
+
+def test_fotmob_player_id_prevents_shared_given_name_substitution(tmp_path):
+    """Regression: Gabriel Jesus must never resolve to Gabriel Magalhaes."""
+    collision_fpl = {
+        "teams": [{"id": 1, "name": "Arsenal", "short_name": "ARS"}],
+        "elements": [
+            {
+                "id": 4, "first_name": "Gabriel",
+                "second_name": "dos Santos Magalhães", "web_name": "Gabriel",
+                "team": 1,
+            },
+            {
+                "id": 27, "first_name": "Gabriel",
+                "second_name": "Fernando de Jesus", "web_name": "G.Jesus",
+                "team": 1,
+            },
+        ],
+    }
+    squad_registry.refresh_registry(collision_fpl)
+    rt = VerificationRuntime(
+        fpl_data=collision_fpl, database_path=tmp_path / "gabriel.sqlite3"
+    )
+    row = {
+        "name": "Gabriel Jesus", "playerId": 576165,
+        "position": {"label": "F"}, "transferDate": now_iso(),
+        "fromClub": "Arsenal", "fromClubFullName": "Arsenal", "fromClubId": 9825,
+        "toClub": "Barcelona", "toClubFullName": "Barcelona", "toClubId": 8634,
+        "fee": {"feeText": "fee", "value": 10_000_000},
+        "transferType": {"text": "contract"}, "onLoan": False,
+    }
+    text = _fotmob_transfer_text(row)
+    obs = observation(
+        title=text,
+        source_id="media.fotmob",
+        url="https://www.fotmob.com/leagues/47/transfers/premier-league?season=2026%2F2027",
+        story=_fotmob_legacy_story(row),
+        transport="FOTMOB",
+        published_at=row["transferDate"],
+    )
+    obs["document"]["source_handle"] = "fotmob"
+    obs["document"]["configured_direct_feed"] = False
+    obs["document"]["metadata"] = {
+        "structured_fotmob_transfer": True, "fotmob_row": row,
+    }
+
+    try:
+        decision = rt.verify_observations([obs])
+        assert decision.decision == DecisionType.PUBLISH, decision.reasons
+        assert decision.verified_facts["subject_id"] == "player:fotmob:576165"
+        assert decision.verified_facts["subject_name"] == "Gabriel Jesus"
+        assert decision.verified_facts["provider_player_name"] == "Gabriel Jesus"
+        assert "🚨 REPORTED TRANSFER — Gabriel Jesus" in decision.rendered_text
+        assert "Arsenal → Barcelona" in decision.rendered_text
+        assert "Deal — Permanent | Fee €10m" in decision.rendered_text
+        assert "Gabriel dos Santos" not in decision.rendered_text
+
+        decision.verified_facts["subject_name"] = "Gabriel dos Santos Magalhães"
+        check = validate_reported_transfer(decision, rt.sources)
+        assert not check.ok
+        assert check.reason == "fotmob_player_name_mismatch"
+    finally:
+        rt.close()
+
+
+def test_fotmob_ingestion_keeps_every_premier_league_transfer(runtime, monkeypatch):
+    rows = [
+        {
+            "name": f"Player {index}", "playerId": 100_000 + index,
+            "transferDate": now_iso(),
+            "fromClub": "Arsenal", "fromClubFullName": "Arsenal",
+            "toClub": "Chelsea", "toClubFullName": "Chelsea",
+            "fee": {"feeText": "fee", "value": 1_000_000},
+        }
+        for index in range(205)
+    ]
+    payload = {"props": {"pageProps": {"transfers": {"data": rows}}}}
+    response = SimpleNamespace(
+        text=(
+            '<script id="__NEXT_DATA__" type="application/json">'
+            + json.dumps(payload)
+            + "</script>"
+        ),
+        raise_for_status=lambda: None,
+    )
+    monkeypatch.setattr(
+        "src.verification.ingestion.requests.get", lambda *args, **kwargs: response
+    )
+
+    items, successes, failures = _fetch_fotmob_transfers(
+        runtime, set(), datetime.now(timezone.utc).isoformat()
+    )
+    assert successes == 1
+    assert failures == []
+    assert len(items) == len(rows)
+    assert {item["_legacy_story"]["player"] for item in items} == {
+        row["name"] for row in rows
+    }
+
+
 def test_current_fotmob_route_ignores_stale_unpublished_destination_claim(runtime):
     stale_claim = observation(
         title="Deal agreed for Danny Welbeck to join Arsenal from Brighton",
@@ -952,7 +1058,7 @@ def test_current_fotmob_route_ignores_stale_unpublished_destination_claim(runtim
     current["document"]["source_handle"] = "fotmob"
     current["document"]["metadata"] = {
         "structured_fotmob_transfer": True,
-        "fotmob_row": {"playerId": 10},
+        "fotmob_row": {"playerId": 10, "name": "Danny Welbeck"},
     }
     decision = runtime.verify_observations([current])
     assert decision.decision == DecisionType.PUBLISH, decision.reasons

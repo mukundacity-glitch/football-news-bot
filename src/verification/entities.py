@@ -351,16 +351,18 @@ class EntityRegistry:
         if provider != "fotmob" or not str(provider_id or "").isdigit():
             return None
         display = re.sub(r"\s+", " ", str(name or "")).strip()
+        if not display or len(display) > 80 or not any(ch.isalpha() for ch in display):
+            return None
         normalized = normalize_entity_name(display)
-        tokens = normalized.split()
-        if len(tokens) < 2 or len(tokens) > 6:
-            return None
-        if any(not token.isalpha() or len(token) < 2 for token in tokens):
-            return None
-        if existing := self.resolve_player(display):
-            return existing
+        provider_record_id = f"player:fotmob:{provider_id}"
+        if existing := self.get(provider_record_id):
+            return (
+                existing
+                if normalize_entity_name(existing.name) == normalized
+                else None
+            )
         record = EntityRecord(
-            id=f"player:fotmob:{provider_id}",
+            id=provider_record_id,
             name=display,
             entity_type=EntityType.PLAYER,
             sport="football",

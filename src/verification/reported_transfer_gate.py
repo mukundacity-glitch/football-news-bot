@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 from urllib.parse import urlparse
 
+from .entities import normalize_entity_name
 from .models import DecisionType, EventStatus, EventType, VerificationDecision
 from .source_registry import SourceRegistry
 
@@ -128,8 +129,18 @@ def validate_reported_transfer(
             return ReportedTransferValidation(False, "fotmob_authority_source_mismatch")
         if facts.get("structured_source") != "fotmob_transfer_table":
             return ReportedTransferValidation(False, "fotmob_structured_marker_missing")
-        if not str(facts.get("provider_player_id") or "").isdigit():
+        provider_player_id = str(facts.get("provider_player_id") or "")
+        if not provider_player_id.isdigit():
             return ReportedTransferValidation(False, "fotmob_player_id_missing")
+        provider_player_name = str(facts.get("provider_player_name") or "").strip()
+        if not provider_player_name:
+            return ReportedTransferValidation(False, "fotmob_player_name_missing")
+        if facts.get("subject_id") != f"player:fotmob:{provider_player_id}":
+            return ReportedTransferValidation(False, "fotmob_player_identity_mismatch")
+        if normalize_entity_name(facts.get("subject_name")) != normalize_entity_name(
+            provider_player_name
+        ):
+            return ReportedTransferValidation(False, "fotmob_player_name_mismatch")
     else:
         if decision.status not in REPORTED_STATUSES:
             return ReportedTransferValidation(
