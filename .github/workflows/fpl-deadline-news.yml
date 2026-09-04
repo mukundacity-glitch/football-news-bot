@@ -1,19 +1,14 @@
 name: FPL Deadline Press Conference Round-Up
 
-# Publish one combined, officially verified PremierLeague.com press-conference
-# graphic before the FPL deadline. The Python gate reads the official FPL lock
-# time; cron only supplies repeated opportunities because GitHub schedules are
-# best-effort.
+# Press conference only:
+# - collect official PremierLeague.com roundup links throughout the gameweek
+# - publish one verified combined graphic between 60 and 30 minutes before
+#   the official FPL deadline
+# The normal transfer/injury/suspension workflow is separate and untouched.
 on:
   schedule:
     - cron: "*/10 * * * *"
-  workflow_dispatch:
-    inputs:
-      force:
-        description: "Run outside the deadline window (normal verification and dedup still apply)"
-        type: boolean
-        required: false
-        default: false
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -36,17 +31,15 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Check official FPL deadline window
+      - name: Collect official press-conference links
+        run: python tools/press_collection.py
+
+      - name: Check press publication window
         id: window
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "reason=manual_force" >> "$GITHUB_OUTPUT"
-          else
-            python tools/press_deadline_window.py \
-              --check-window --window-minutes 30 --margin-minutes 30 \
-              >> "$GITHUB_OUTPUT"
-          fi
+          python tools/press_deadline_window.py \
+            --check-window --start-before-minutes 60 --end-before-minutes 30 \
+            >> "$GITHUB_OUTPUT"
 
       - name: Restore V2 verification database
         if: steps.window.outputs.should_run == 'true'
@@ -63,11 +56,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Mandatory verification test gate
+      - name: Mandatory press verification test gate
         if: steps.window.outputs.should_run == 'true'
-        run: python -m pytest -q
+        run: |
+          python -m py_compile tools/press_collection.py tools/press_deadline_window.py tools/press_publish.py
+          python -m pytest -q
 
-      - name: Run verified press-conference roundup
+      - name: Publish verified press-conference roundup
         id: run
         if: steps.window.outputs.should_run == 'true'
         env:
@@ -88,18 +83,7 @@ jobs:
           POST_JITTER_MAX_S: 45
           COOLDOWN_FLAGGED_MIN: 180
           COOLDOWN_RATELIMIT_MIN: 30
-        run: |
-          set +e
-          python main.py
-          code=$?
-          if [ $code -ne 0 ]; then
-            echo "First attempt failed (exit $code) — retrying once after 30s"
-            sleep 30
-            python main.py
-            code=$?
-          fi
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          exit $code
+        run: python tools/press_publish.py
 
       - name: Save generated roundup for inspection
         if: always() && steps.window.outputs.should_run == 'true'
@@ -110,25 +94,30 @@ jobs:
           if-no-files-found: ignore
           path: queue/pending/*.png
 
-      - name: Save run status for inspection
-        if: always() && steps.window.outputs.should_run == 'true'
+      - name: Save press status for inspection
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: press-status-${{ github.run_id }}
           retention-days: 14
           if-no-files-found: ignore
-          path: data/last_run_status.json
+          path: |
+            data/press_conference_collection.json
+            data/press_conference_status.json
+            data/last_run_status.json
 
-      - name: Persist dedup and publication state
-        if: steps.window.outputs.should_run == 'true'
+      - name: Persist press collection and publication state
+        if: always()
         run: |
           git config user.name "fpl-vortex-bot"
           git config user.email "bot@users.noreply.github.com"
+          git add data/press_conference_collection.json 2>/dev/null || true
+          git add data/press_conference_status.json 2>/dev/null || true
           git add data/posted_news.json 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "No press-roundup state changes to commit."
+            echo "No press-conference state changes to commit."
           else
-            git commit -m "update press-roundup state [skip ci]"
+            git commit -m "update press-conference state [skip ci]"
             pushed=""
             for i in 1 2 3 4 5; do
               if git push; then pushed=1; break; fi
@@ -137,6 +126,6 @@ jobs:
               sleep 3
             done
             if [ -z "$pushed" ]; then
-              echo "WARNING: could not push press-roundup state after retries."
+              echo "WARNING: could not push press-conference state after retries."
             fi
           fi
