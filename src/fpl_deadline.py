@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional
 
-DEFAULT_MARGIN_MINUTES = 120
+DEFAULT_MARGIN_MINUTES = 30
 
 
 def next_fpl_deadline(

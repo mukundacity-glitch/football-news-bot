@@ -253,7 +253,7 @@ def press_deadline_window_open(
     *,
     now=None,
     margin_minutes: int = PRESS_DEADLINE_MARGIN_MINUTES,
-    window_minutes: int = 20,
+    window_minutes: int = 30,
 ) -> bool:
     """Check whether the target pre-deadline posting window is open."""
     return deadline_window_open(
