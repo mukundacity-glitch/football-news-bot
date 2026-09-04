@@ -23,7 +23,9 @@ def test_deadline_workflow_uses_verified_roundup_not_removed_top_five_bot():
     assert "FPL Deadline Press Conference Round-Up" in deadline
     assert "tools/press_deadline_window.py" in deadline
     assert "LIVE_EVENT_SCOPE: press_conference" in deadline
-    assert "python main.py" in deadline
+    assert "python tools/press_collection.py" in deadline
+    assert "python tools/press_publish.py" in deadline
+    assert "python main.py" not in deadline
     assert "Top-5" not in deadline and "fpl_deadline_news.py" not in deadline
     assert "LIVE_EVENT_SCOPE: transfer,loan,loan_option,injury,suspension" in general
 
