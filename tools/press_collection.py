@@ -195,14 +195,26 @@ def merge_collection(
 
 def main() -> int:
     now = utcnow()
-    fpl_data = json.loads(_request_bytes(FPL_BOOTSTRAP_URL).decode("utf-8"))
+    try:
+        fpl_data = json.loads(_request_bytes(FPL_BOOTSTRAP_URL).decode("utf-8"))
+    except Exception as exc:
+        print(f"[PRESS-COLLECT] Official FPL deadline fetch failed: {type(exc).__name__}: {exc}")
+        return 0
+
     cycle = _event_cycle(fpl_data, now)
     if cycle is None:
         print("[PRESS-COLLECT] No future FPL deadline; nothing to collect.")
         return 0
 
     feed = _press_feed()
-    discovered = _rss_items(_request_bytes(str(feed["url"])))
+    try:
+        discovered = _rss_items(_request_bytes(str(feed["url"])))
+    except Exception as exc:
+        discovered = []
+        print(
+            f"[PRESS-COLLECT] Feed refresh failed; preserving collected state: "
+            f"{type(exc).__name__}: {exc}"
+        )
     previous = None
     if STATE_PATH.exists():
         try:
