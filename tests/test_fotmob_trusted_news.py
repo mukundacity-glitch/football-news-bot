@@ -62,27 +62,6 @@ def _obs(title, story, *, hours_old=0):
     }
 
 
-def test_trusted_fotmob_completed_transfer_can_publish_alone(runtime):
-    decision = runtime.verify_observations([_obs(
-        "Danny Welbeck has joined Chelsea from Brighton.",
-        {
-            "player": "Danny Welbeck",
-            "event": "transfer",
-            "from_club": "Brighton",
-            "from_key": "Brighton",
-            "to_club": "Chelsea",
-            "to_key": "Chelsea",
-            "stage": 4,
-        },
-    )])
-
-    assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert decision.authority_kind == "trusted_fotmob_news"
-    assert decision.authority_source_ids == ["media.fotmob"]
-    assert "REPORTED TRANSFER" in decision.rendered_text
-    assert "OFFICIAL TRANSFER" not in decision.rendered_text
-
-
 def test_trusted_fotmob_injury_can_publish_alone(runtime):
     decision = runtime.verify_observations([_obs(
         "Danny Welbeck ruled out with a hamstring injury and will miss the next match.",

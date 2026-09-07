@@ -1083,7 +1083,7 @@ def test_structured_fotmob_row_older_than_48_hours_stays_pending(runtime):
     assert "FotMob listing is" in "; ".join(decision.reasons)
 
 
-def test_fotmob_text_without_structured_table_flag_stays_pending(runtime):
+def test_fotmob_text_without_structured_table_flag_uses_trusted_news_lane(runtime):
     obs = observation(
         title="Danny Welbeck has joined Chelsea from Brighton. FotMob listed the transfer as completed.",
         source_id="media.fotmob",
@@ -1092,8 +1092,12 @@ def test_fotmob_text_without_structured_table_flag_stays_pending(runtime):
     )
     obs["document"]["source_handle"] = "fotmob"
     decision = runtime.verify_observations([obs])
-    assert decision.decision == DecisionType.PENDING
-    assert not decision.may_publish
+    assert decision.decision == DecisionType.PUBLISH, decision.reasons
+    assert decision.may_publish
+    assert decision.authority_kind == "trusted_fotmob_news"
+    assert decision.authority_source_ids == ["media.fotmob"]
+    assert "REPORTED TRANSFER" in decision.rendered_text
+    assert "OFFICIAL TRANSFER" not in decision.rendered_text
 
 
 # -- unrelated unresolved-subject claims must never share a story family ---
