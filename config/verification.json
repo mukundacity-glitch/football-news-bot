@@ -14,8 +14,16 @@
     ],
     "_transfer_policy_note": "TRANSFER keeps separate fail-closed lanes: first-party OFFICIAL/COMPLETED claims render as CONFIRMED; approved tier-one TALKS/NEGOTIATION/BID reports may render as REPORTED from one source, while AGREEMENT/MEDICAL/HERE_WE_GO requires two independent approved publishers; structured FotMob Premier League table rows may render COMPLETED as REPORTED/LISTED within 48 hours. INTEREST/RUMOUR and unstructured third-party completion claims never publish. Source citation appears on the card only.",
     "allow_reported_transfers": true,
-    "reported_transfer_single_source_statuses": ["TALKS", "NEGOTIATION", "BID"],
-    "reported_transfer_two_source_statuses": ["AGREEMENT", "MEDICAL", "HERE_WE_GO"],
+    "reported_transfer_single_source_statuses": [
+      "TALKS",
+      "NEGOTIATION",
+      "BID"
+    ],
+    "reported_transfer_two_source_statuses": [
+      "AGREEMENT",
+      "MEDICAL",
+      "HERE_WE_GO"
+    ],
     "reported_transfer_approved_sources": [
       "journalist.fabrizio_romano",
       "journalist.david_ornstein",
@@ -40,7 +48,8 @@
       "MEDICAL"
     ],
     "minimum_elite_medical_publishers": 2,
-    "allow_structured_fotmob_completed_transfers": true
+    "allow_structured_fotmob_completed_transfers": true,
+    "allow_trusted_fotmob_news": true
   },
   "thresholds": {
     "entity_certainty_min": 0.98,
@@ -49,7 +58,7 @@
     "sport_independent_signals_min": 2,
     "source_reliability_min": 0.86,
     "conflict_source_reliability_min": 0.75,
-    "fact_agreement_min": 1.0,
+    "fact_agreement_min": 1,
     "max_publication_age_hours": 72,
     "max_confirmation_age_hours": 72,
     "max_fotmob_transfer_age_hours": 48,
@@ -57,21 +66,22 @@
     "active_story_window_days": 45,
     "overall_confidence_min": 0.9,
     "progression_same_milestone_window_hours": 6,
-    "max_event_age_hours": 72
+    "max_event_age_hours": 72,
+    "max_fotmob_news_age_hours": 24
   },
   "confidence": {
     "aggregation": "weighted_geometric_mean",
     "weights": {
-      "source_reliability": 1.0,
+      "source_reliability": 1,
       "entity_certainty": 1.4,
       "event_certainty": 1.2,
       "fact_agreement": 1.5,
       "temporal_consistency": 1.2,
-      "cross_source_agreement": 1.0,
-      "official_confirmation": 2.0,
+      "cross_source_agreement": 1,
+      "official_confirmation": 2,
       "league_validation": 1.5,
       "sport_validation": 1.5,
-      "story_freshness": 1.0,
+      "story_freshness": 1,
       "database_consistency": 1.5
     }
   },
@@ -84,13 +94,13 @@
       "verification_history": 0.1
     },
     "outcome_weights": {
-      "officially_confirmed": 1.0,
+      "officially_confirmed": 1,
       "contradicted": -1.5,
       "corrected": -0.75,
-      "unresolved": 0.0
+      "unresolved": 0
     },
     "default_prior_mean": 0.5,
-    "default_prior_strength": 10.0,
+    "default_prior_strength": 10,
     "verification_history_full_count": 50
   },
   "events": {
@@ -304,18 +314,41 @@
     "corroboration_patterns": {
       "INJURY": [
         "\\binjur(?:y|ed|ies)\\b",
-        "\\bhamstring\\b", "\\bknee\\b", "\\bankle\\b", "\\bacl\\b", "\\bmcl\\b",
-        "\\bcalf\\b", "\\bgroin\\b", "\\bhip\\b", "\\bthigh\\b", "\\bshoulder\\b",
-        "\\bconcussion\\b", "\\bscan\\b", "\\bsurgery\\b", "\\bmedical staff\\b",
-        "\\bphysio\\b", "\\brecover(?:y|ing)\\b", "\\brehab(?:ilitation)?\\b",
-        "\\bsidelined\\b", "\\bfitness (?:test|update|concern)\\b",
-        "\\breturn(?:s|ed)? to training\\b", "\\bstrain\\b", "\\btorn\\b",
-        "\\bsprain(?:ed)?\\b", "\\bfracture[ds]?\\b"
+        "\\bhamstring\\b",
+        "\\bknee\\b",
+        "\\bankle\\b",
+        "\\bacl\\b",
+        "\\bmcl\\b",
+        "\\bcalf\\b",
+        "\\bgroin\\b",
+        "\\bhip\\b",
+        "\\bthigh\\b",
+        "\\bshoulder\\b",
+        "\\bconcussion\\b",
+        "\\bscan\\b",
+        "\\bsurgery\\b",
+        "\\bmedical staff\\b",
+        "\\bphysio\\b",
+        "\\brecover(?:y|ing)\\b",
+        "\\brehab(?:ilitation)?\\b",
+        "\\bsidelined\\b",
+        "\\bfitness (?:test|update|concern)\\b",
+        "\\breturn(?:s|ed)? to training\\b",
+        "\\bstrain\\b",
+        "\\btorn\\b",
+        "\\bsprain(?:ed)?\\b",
+        "\\bfracture[ds]?\\b"
       ],
       "SUSPENSION": [
-        "\\bban(?:ned)?\\b", "\\bsuspen(?:d|ded|sion)\\b", "\\bred card\\b",
-        "\\bsent off\\b", "\\bdisciplinary\\b", "\\bmisconduct\\b",
-        "\\bmatches? (?:ban|suspension)\\b", "\\bcharged? by\\b", "\\bappeal\\b"
+        "\\bban(?:ned)?\\b",
+        "\\bsuspen(?:d|ded|sion)\\b",
+        "\\bred card\\b",
+        "\\bsent off\\b",
+        "\\bdisciplinary\\b",
+        "\\bmisconduct\\b",
+        "\\bmatches? (?:ban|suspension)\\b",
+        "\\bcharged? by\\b",
+        "\\bappeal\\b"
       ]
     },
     "event_patterns": {
