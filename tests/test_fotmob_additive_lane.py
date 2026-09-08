@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.verification import DecisionType, VerificationRuntime
+from src.verification.documents import FeedRegistry
 
 
 @pytest.fixture
@@ -71,19 +72,18 @@ def _transfer_story():
     }
 
 
-def test_fotmob_completed_transfer_can_publish_without_second_source(runtime):
-    decision = runtime.verify_observations([_obs(
-        title="Danny Welbeck has joined Chelsea from Brighton.",
-        source_id="media.fotmob",
-        url="https://www.fotmob.com/news/welbeck-joins-chelsea",
-        story=_transfer_story(),
-    )])
+def test_direct_fotmob_feed_replaces_the_duplicate_breaking_query():
+    feeds = FeedRegistry.load().feeds
+    direct = [feed for feed in feeds if feed.id == "fotmob.premier_league.topnews"]
 
-    assert decision.decision == DecisionType.PUBLISH, decision.reasons
-    assert decision.authority_kind == "trusted_fotmob_news"
-    assert decision.authority_source_ids == ["media.fotmob"]
-    assert "REPORTED TRANSFER" in decision.rendered_text
-    assert "OFFICIAL TRANSFER" not in decision.rendered_text
+    assert len(direct) == 1
+    assert direct[0].url == "https://www.fotmob.com/topnews/feed?format=rss"
+    assert direct[0].transport == "DIRECT_RSS"
+    assert direct[0].source_hint == "media.fotmob"
+    assert not any(
+        feed.id == "google.fotmob.premier_league.breaking_topics"
+        for feed in feeds
+    )
 
 
 def test_same_unstructured_completion_from_other_media_stays_pending(runtime):
