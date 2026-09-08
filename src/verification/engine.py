@@ -27,6 +27,11 @@ from .models import (
     VerificationDecision,
 )
 from .reliability import SourceReliabilityModel
+from .fotmob_news_gate import (
+    FOTMOB_NEWS_AUTHORITY_KIND,
+    FOTMOB_NEWS_MAX_AGE_HOURS,
+    select_trusted_fotmob_claim,
+)
 from .reported_transfer_gate import (
     AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
     FOTMOB_AUTHORITY_KIND,
@@ -236,6 +241,10 @@ class VerificationEngine:
                     confirmation_kind == FOTMOB_AUTHORITY_KIND
                     and status == EventStatus.COMPLETED
                 )
+                or (
+                    confirmation_kind == FOTMOB_NEWS_AUTHORITY_KIND
+                    and status in (REPORTED_STATUSES | {EventStatus.COMPLETED})
+                )
             )
         )
         status_is_publishable = (
@@ -259,6 +268,7 @@ class VerificationEngine:
             "configured_elite_medical": "elite source medical/deal-agreed transfer milestone",
             REPORTED_TRANSFER_AUTHORITY: "approved tier-one reported-transfer evidence",
             FOTMOB_AUTHORITY_KIND: "structured FotMob completed-transfer listing",
+            FOTMOB_NEWS_AUTHORITY_KIND: "trusted FotMob Premier League report",
             "none": "media/journalist evidence remains pending",
         }[confirmation_kind]
         if authoritative and not confirmation_ready:
@@ -475,6 +485,14 @@ class VerificationEngine:
         """
         if event == EventType.PRESS_CONFERENCE:
             return [], "none"
+
+        # Additive FotMob-only lane. All normal source rules above/below remain
+        # unchanged; this branch can only authorize a fresh, verified FotMob
+        # Premier League TRANSFER/INJURY/SUSPENSION claim.
+        trusted_fotmob = select_trusted_fotmob_claim(claims, event)
+        if trusted_fotmob is not None:
+            return [trusted_fotmob], FOTMOB_NEWS_AUTHORITY_KIND
+
         if (
             event == EventType.TRANSFER
             and self.config.policy("allow_structured_fotmob_completed_transfers")
@@ -634,6 +652,8 @@ class VerificationEngine:
         max_age = (
             self.config.threshold("max_fotmob_transfer_age_hours")
             if confirmation_kind == FOTMOB_AUTHORITY_KIND
+            else FOTMOB_NEWS_MAX_AGE_HOURS
+            if confirmation_kind == FOTMOB_NEWS_AUTHORITY_KIND
             else self.config.threshold("max_confirmation_age_hours")
         )
         future_skew = timedelta(
@@ -642,6 +662,8 @@ class VerificationEngine:
         age_label = (
             "FotMob listing"
             if confirmation_kind == FOTMOB_AUTHORITY_KIND
+            else "FotMob report"
+            if confirmation_kind == FOTMOB_NEWS_AUTHORITY_KIND
             else "official confirmation"
         )
         ages = []
