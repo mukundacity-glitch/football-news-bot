@@ -101,7 +101,8 @@ jobs:
         env:
           X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
           X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
-          X_API_ACCESS_TOKEN: ${{ secrets.X_API_ACCESS_TOKEN }}
+          X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
+          X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
           ENABLE_AUTOPOST: ${{ vars.ENABLE_AUTOPOST || 'true' }}
           VERIFICATION_V2_LIVE: ${{ vars.VERIFICATION_V2_LIVE || 'true' }}
           DRY_RUN: ${{ vars.DRY_RUN || 'false' }}

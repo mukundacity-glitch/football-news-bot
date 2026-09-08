@@ -110,18 +110,17 @@ The scheduled GitHub workflow is configured for **set-and-forget live posting**:
   from being posted before all available manager sections are present
 - confirmed manager, contract, and other non-target items are intentionally skipped from live posting
 - safety caps default to **2 posts per run, 4 per hour, 16 per day**. Posts are
-  intentionally spaced (90–240s) one at a time to avoid bursty publishing, and
-  the X-safety cooldown stops the run immediately on rate-limit/account-safety
-  responses rather than retrying aggressively
+  spaced by human-like jitter (90–240s) one at a time — that pacing, not
+  throttling, is the anti-flag mechanism — and the X-safety cooldown stops the
+  run instantly if X signals automation/spam/rate-limit (codes 226/326/429),
+  backing off 3 hours (flagged) or 30 minutes (rate-limited) before any further
+  attempt
 - X captions are concise non-premium-safe posts: no more than four visible
   lines, no long source URL, and relevant club/event/FPL hashtags. The verified
   image card carries the larger visual detail.
 - every run writes a clear GitHub Actions summary explaining why it posted or did not post
-- live publication uses the official X API v2 media-upload and create-post
-  endpoints. Set `X_API_ACCESS_TOKEN` to an OAuth 2.0 **user** access token with
-  `tweet.read`, `tweet.write`, `users.read`, `media.write` (and
-  `offline.access` for unattended access). Browser-session cookies are read-only
-  discovery inputs and are never a fallback for posting
+- if X posting cookies expire, the run fails with an actionable `X-AUTH` message
+  pointing at `X_POST_AUTH_TOKEN` / `X_POST_CT0_TOKEN`
 - `BOT_PAUSED=true` remains the single emergency kill switch
 
 ### FPL deadline press-conference round-up

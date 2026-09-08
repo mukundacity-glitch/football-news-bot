@@ -84,10 +84,6 @@ class VerificationConfig:
             fotmob_age = self.threshold("max_fotmob_transfer_age_hours")
             if fotmob_age <= 0 or fotmob_age > 48:
                 raise ConfigurationError("structured FotMob transfer age must be within 48 hours")
-        if self.policy("allow_trusted_fotmob_news") is True:
-            fotmob_news_age = self.threshold("max_fotmob_news_age_hours")
-            if fotmob_news_age <= 0 or fotmob_news_age > 24:
-                raise ConfigurationError("trusted FotMob news age must be within 24 hours")
 
         statuses = self.raw["status_order"]
         if len(statuses) != len(set(statuses)):

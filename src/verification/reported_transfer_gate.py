@@ -27,13 +27,8 @@ from .source_registry import SourceRegistry
 
 AUTHORITY_KIND = "tier_one_reported_transfer"
 FOTMOB_AUTHORITY_KIND = "structured_fotmob_reported_transfer"
-FOTMOB_NEWS_AUTHORITY_KIND = "trusted_fotmob_news"
 FOTMOB_SOURCE_ID = "media.fotmob"
-REPORTED_AUTHORITY_KINDS = frozenset({
-    AUTHORITY_KIND,
-    FOTMOB_AUTHORITY_KIND,
-    FOTMOB_NEWS_AUTHORITY_KIND,
-})
+REPORTED_AUTHORITY_KINDS = frozenset({AUTHORITY_KIND, FOTMOB_AUTHORITY_KIND})
 
 # User-approved, deliberately narrow list.  David Ornstein and The Athletic
 # share one independence group so the same newsroom cannot count twice.
@@ -56,9 +51,6 @@ TWO_SOURCE_STATUSES = frozenset({
     EventStatus.HERE_WE_GO,
 })
 REPORTED_STATUSES = SINGLE_SOURCE_STATUSES | TWO_SOURCE_STATUSES
-FOTMOB_NEWS_TRANSFER_STATUSES = REPORTED_STATUSES | frozenset({
-    EventStatus.COMPLETED,
-})
 
 
 @dataclass(frozen=True)
@@ -149,13 +141,6 @@ def validate_reported_transfer(
             provider_player_name
         ):
             return ReportedTransferValidation(False, "fotmob_player_name_mismatch")
-    elif decision.authority_kind == FOTMOB_NEWS_AUTHORITY_KIND:
-        if authority_ids != [FOTMOB_SOURCE_ID]:
-            return ReportedTransferValidation(False, "fotmob_news_authority_source_mismatch")
-        if decision.status not in FOTMOB_NEWS_TRANSFER_STATUSES:
-            return ReportedTransferValidation(
-                False, f"fotmob_news_status_not_reportable:{decision.status.value}"
-            )
     else:
         if decision.status not in REPORTED_STATUSES:
             return ReportedTransferValidation(
@@ -203,5 +188,4 @@ def reported_status_label(status: EventStatus, facts: Mapping[str, Any]) -> str:
         EventStatus.AGREEMENT: "AGREEMENT REPORTED",
         EventStatus.MEDICAL: "MEDICAL REPORTED",
         EventStatus.HERE_WE_GO: "HERE WE GO REPORTED",
-        EventStatus.COMPLETED: "COMPLETED REPORTED",
     }.get(status, "REPORTED UPDATE")

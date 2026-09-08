@@ -30,7 +30,6 @@ from .reliability import SourceReliabilityModel
 from .reported_transfer_gate import (
     AUTHORITY_KIND as REPORTED_TRANSFER_AUTHORITY,
     FOTMOB_AUTHORITY_KIND,
-    FOTMOB_NEWS_AUTHORITY_KIND,
     FOTMOB_SOURCE_ID,
     REPORTED_STATUSES,
     SINGLE_SOURCE_STATUSES,
@@ -237,10 +236,6 @@ class VerificationEngine:
                     confirmation_kind == FOTMOB_AUTHORITY_KIND
                     and status == EventStatus.COMPLETED
                 )
-                or (
-                    confirmation_kind == FOTMOB_NEWS_AUTHORITY_KIND
-                    and status in (REPORTED_STATUSES | {EventStatus.COMPLETED})
-                )
             )
         )
         status_is_publishable = (
@@ -264,7 +259,6 @@ class VerificationEngine:
             "configured_elite_medical": "elite source medical/deal-agreed transfer milestone",
             REPORTED_TRANSFER_AUTHORITY: "approved tier-one reported-transfer evidence",
             FOTMOB_AUTHORITY_KIND: "structured FotMob completed-transfer listing",
-            FOTMOB_NEWS_AUTHORITY_KIND: "trusted FotMob single-source Premier League report",
             "none": "media/journalist evidence remains pending",
         }[confirmation_kind]
         if authoritative and not confirmation_ready:
@@ -481,37 +475,6 @@ class VerificationEngine:
         """
         if event == EventType.PRESS_CONFERENCE:
             return [], "none"
-
-        # User-approved FotMob fast lane for ordinary Premier League news.
-        # FotMob can authorize a clear transfer/injury/suspension report by
-        # itself, but it still has to pass entity, PL, event, status, URL,
-        # freshness, conflict, confidence and duplicate gates. Rumours,
-        # previews and ambiguous classifications never enter this lane.
-        if self.config.policy("allow_trusted_fotmob_news"):
-            fotmob_allowed_statuses = (
-                REPORTED_STATUSES | {EventStatus.COMPLETED}
-                if event == EventType.TRANSFER
-                else {EventStatus.OFFICIAL, EventStatus.COMPLETED}
-                if event in {EventType.INJURY, EventType.SUSPENSION}
-                else set()
-            )
-            trusted_fotmob = [
-                claim for claim in claims
-                if claim.source_id == FOTMOB_SOURCE_ID
-                and claim.document.source.verified
-                and claim.article_category == event
-                and claim.league_relevant
-                and claim.status in fotmob_allowed_statuses
-                and claim.document.metadata.get("structured_fotmob_transfer") is not True
-            ]
-            if trusted_fotmob:
-                newest = max(
-                    trusted_fotmob,
-                    key=lambda claim: parse_timestamp(claim.document.published_at)
-                    or datetime.min.replace(tzinfo=timezone.utc),
-                )
-                return [newest], FOTMOB_NEWS_AUTHORITY_KIND
-
         if (
             event == EventType.TRANSFER
             and self.config.policy("allow_structured_fotmob_completed_transfers")
@@ -671,8 +634,6 @@ class VerificationEngine:
         max_age = (
             self.config.threshold("max_fotmob_transfer_age_hours")
             if confirmation_kind == FOTMOB_AUTHORITY_KIND
-            else self.config.threshold("max_fotmob_news_age_hours")
-            if confirmation_kind == FOTMOB_NEWS_AUTHORITY_KIND
             else self.config.threshold("max_confirmation_age_hours")
         )
         future_skew = timedelta(
@@ -681,8 +642,6 @@ class VerificationEngine:
         age_label = (
             "FotMob listing"
             if confirmation_kind == FOTMOB_AUTHORITY_KIND
-            else "FotMob report"
-            if confirmation_kind == FOTMOB_NEWS_AUTHORITY_KIND
             else "official confirmation"
         )
         ages = []

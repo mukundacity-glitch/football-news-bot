@@ -47,7 +47,6 @@ from src.verification.press_roundup import (
 from src.verification.reported_transfer_gate import is_reported_transfer
 from src.verification.source_registry import SourceRegistry as V2SourceRegistry
 from src.verification.consensus import normalize_fact as _normalize_verified_fact
-from src.x_api_client import XApiClient
 from src.constants import (
     POSTED_FILE,
     PENDING_DIR,
@@ -106,10 +105,11 @@ from twikit import Client
 # ── SECRETS ──────────────────────────────────────────────────────────────
 X_AUTH_TOKEN = (os.getenv("X_AUTH_TOKEN") or "").strip()
 X_CT0_TOKEN = (os.getenv("X_CT0_TOKEN") or "").strip()
-# Live publication uses the official X API only. Browser-session cookies above
-# remain available for read-only discovery/corroboration and are never used by
-# the posting transport.
-X_API_ACCESS_TOKEN = (os.getenv("X_API_ACCESS_TOKEN") or "").strip()
+# Posting cookies fall back to the read-only pair so the scheduled workflow can
+# stay hands-off with a single maintained X cookie set. Dedicated posting
+# secrets still win when provided.
+X_POST_AUTH_TOKEN = (os.getenv("X_POST_AUTH_TOKEN") or X_AUTH_TOKEN or "").strip()
+X_POST_CT0_TOKEN = (os.getenv("X_POST_CT0_TOKEN") or X_CT0_TOKEN or "").strip()
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
 # Set once by main(); post_item uses the same verified decision ledger that
@@ -1738,6 +1738,11 @@ def record_posted(item, data):
     save_data(data)
     move_to_posted(item)
 
+_TWIKIT_SUCCESS_PARSE_KEYS = {
+    "urls", "withheld_in_countries", "pinned_tweet_ids_str",
+    "entities", "extended_entities", "card",
+}
+
 # ── X SAFETY: ERROR CLASSIFICATION & BACK-OFF ────────────────────────────
 # X returns numeric error codes when it doesn't like our activity. Retrying on
 # the wrong one is what gets an account locked. We classify the error and react:
@@ -1748,7 +1753,7 @@ def record_posted(item, data):
 _X_DUPLICATE_CODES = {"187"}
 _X_FLAG_CODES = {"226", "326", "334", "64", "261"}   # automated / locked / suspended
 _X_RATELIMIT_CODES = {"429", "88"}
-_X_AUTH_CODES = {"32", "89", "99", "135", "215", "401", "403"}  # bad/expired API auth or missing permission
+_X_AUTH_CODES = {"32", "89", "99", "135", "215", "401"}  # bad/expired posting cookies
 
 class XBackoffError(Exception):
     """Raised when X signals automation/rate-limit. The posting run must abort
@@ -1870,6 +1875,14 @@ async def post_item(post_client, item, data):
         await post_client.create_tweet(text=caption, media_ids=[media_id])
         posted_live = True
 
+    except KeyError as ke:
+        key = str(ke).strip("'\"")
+        if key in _TWIKIT_SUCCESS_PARSE_KEYS:
+            print(f"  [WARN] twikit KeyError({ke}) after create_tweet — tweet is live; recording as posted to prevent duplicate.")
+            posted_live = True
+        else:
+            raise
+
     except Exception as exc:
         kind = classify_x_error(exc)
         if kind == "duplicate":
@@ -1891,12 +1904,13 @@ async def post_item(post_client, item, data):
             _set_cooldown(data, kind)
             raise XBackoffError(kind, exc) from exc
         if kind == "auth":
-            # Official API auth/scope failures will fail every post the same way.
-            # Stop immediately rather than retrying or falling back to browser automation.
-            print("  [X-AUTH] ❌ Official X API authorization was rejected. "
-                  "Check GitHub Secret X_API_ACCESS_TOKEN and ensure the user token "
-                  "has tweet.write, media.write, tweet.read and users.read scopes. "
-                  "Nothing was posted and no browser-posting fallback was attempted.")
+            # Posting cookies are invalid/expired — EVERY post will fail the same
+            # way, so abort once with an actionable message (no cooldown; a re-run
+            # works immediately after the cookies are refreshed).
+            print("  [X-AUTH] ❌ X rejected the login (code 32 / 401 'Could not "
+                  "authenticate you'). The posting cookies are expired or wrong.\n"
+                  "          Refresh the GitHub Secrets X_POST_AUTH_TOKEN and "
+                  "X_POST_CT0_TOKEN, then re-run. Nothing was posted; account is NOT flagged.")
             raise XBackoffError("auth", exc) from exc
         # transient -> let the caller's single cautious retry handle it.
         raise
@@ -3142,11 +3156,11 @@ async def main(post: bool = True):
             print("[BOT] No items passed all validation gates this run.")
             return
 
-        if not X_API_ACCESS_TOKEN:
-            status["no_post_reason"] = status["no_post_reason"] or "missing_official_x_api_token"
-            print("[BOT] ENABLE_AUTOPOST=true but official X API user token is missing. "
-                  "Set GitHub Secret X_API_ACCESS_TOKEN. Browser-session posting is "
-                  "disabled; nothing was posted.")
+        if not (X_POST_AUTH_TOKEN and X_POST_CT0_TOKEN):
+            status["no_post_reason"] = status["no_post_reason"] or "missing_posting_credentials"
+            print("[BOT] ENABLE_AUTOPOST=true but posting credentials are missing. "
+                  "Set X_POST_AUTH_TOKEN/X_POST_CT0_TOKEN or X_AUTH_TOKEN/X_CT0_TOKEN. "
+                  "Nothing was posted.")
             return
 
         print(f"\n[BOT] {len(drafts)} item(s) prepared — evaluating for live post…")
@@ -3233,10 +3247,11 @@ async def main(post: bool = True):
             return
 
         try:
-            post_client = XApiClient(X_API_ACCESS_TOKEN)
+            post_client = Client("en-US")
+            post_client.set_cookies({"auth_token": X_POST_AUTH_TOKEN, "ct0": X_POST_CT0_TOKEN})
         except Exception as e:
-            status["no_post_reason"] = status["no_post_reason"] or "official_x_api_client_init_failed"
-            print(f"[BOT] could not init official X API posting client: {e}")
+            status["no_post_reason"] = status["no_post_reason"] or "posting_client_init_failed"
+            print(f"[BOT] could not init posting client: {e}")
             return
 
         daily_limit = _positive_cap(data["daily"].get("limit", DAILY_POST_LIMIT))

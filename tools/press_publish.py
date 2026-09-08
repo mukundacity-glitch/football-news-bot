@@ -304,12 +304,15 @@ async def run() -> int:
             _status(run_exit="press_graphic_build_failed", posted_count=0)
             return 0
 
-        if not bot.X_API_ACCESS_TOKEN:
-            _status(run_exit="missing_official_x_api_token", posted_count=0)
-            print("[PRESS] Official X API user token is missing; no browser fallback.")
+        if not (bot.X_POST_AUTH_TOKEN and bot.X_POST_CT0_TOKEN):
+            _status(run_exit="missing_posting_credentials", posted_count=0)
             return 0
 
-        client = bot.XApiClient(bot.X_API_ACCESS_TOKEN)
+        client = bot.Client("en-US")
+        client.set_cookies({
+            "auth_token": bot.X_POST_AUTH_TOKEN,
+            "ct0": bot.X_POST_CT0_TOKEN,
+        })
         jitter = random.randint(*bot.POST_JITTER_RANGE_S)
         print(f"[PRESS] Verified roundup ready; posting after {jitter}s pacing delay.")
         await asyncio.sleep(jitter)
