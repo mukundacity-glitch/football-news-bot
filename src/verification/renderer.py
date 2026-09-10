@@ -13,7 +13,6 @@ from typing import Dict, List
 
 from .models import EventStatus, EventType, VerificationDecision
 from .presentation import injury_display_parts, injury_display_status
-from .reported_transfer_gate import is_reported_transfer
 from .source_registry import SourceRegistry
 
 
@@ -103,56 +102,42 @@ class VerifiedPostRenderer:
         origin = str(required(facts, "club_from_name"))
         destination = str(required(facts, "club_to_name"))
 
-        reported = is_reported_transfer(decision)
-        if not reported:
-            if decision.status not in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
-                raise UnverifiedTransferError(
-                    f"refusing transfer status: {decision.status.value}"
-                )
-            status = "OFFICIAL"
-        elif decision.status == EventStatus.COMPLETED:
+        if decision.status in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
             status = "COMPLETED"
         elif decision.status in {
-            EventStatus.TALKS,
-            EventStatus.NEGOTIATION,
-            EventStatus.BID,
-            EventStatus.AGREEMENT,
-            EventStatus.MEDICAL,
-            EventStatus.HERE_WE_GO,
+            EventStatus.UNKNOWN,
+            EventStatus.RUMOUR,
+            EventStatus.INTEREST,
         }:
-            status = "REPORTED"
+            status = "RUMOUR"
         else:
-            status = "PENDING"
+            status = "IN PROGRESS"
 
-        details: list[str] = []
-        if facts.get("transfer_kind"):
-            details.append(str(facts["transfer_kind"]).replace("_", " ").title())
-        if facts.get("fee"):
-            details.append(f"Fee {facts['fee']}")
-        if facts.get("contract_length"):
-            details.append(f"Contract {facts['contract_length']}")
+        raw_kind = str(facts.get("transfer_kind") or "").strip().casefold()
+        deal_type = "Loan" if "loan" in raw_kind else "Permanent"
+        deal = f"Deal — {deal_type}"
+        contract = facts.get("contract_length") or facts.get("contract_date")
+        if contract:
+            deal += f" | Contract {self._cap(contract, 42)}"
 
-        route = f"{self._cap(origin, 34)} → {self._cap(destination, 34)}"
-        context = route
-        if details:
-            context += " | " + " | ".join(details[:2])
+        if status == "COMPLETED":
+            take = "Check the FPL impact before making your next transfer."
+        elif status == "IN PROGRESS":
+            take = "Monitor for confirmation before making an FPL move."
+        else:
+            take = "Wait for stronger confirmation before making an FPL move."
 
-        headline = "🚨 REPORTED TRANSFER" if reported else "✅ TRANSFER UPDATE"
-        take = (
-            "Monitor for confirmation before making an FPL move."
-            if reported
-            else "Review the FPL impact before your next transfer."
-        )
         description = [
-            f"{headline} — {self._cap(player, 42)}",
-            self._cap(context, 104),
+            f"🚨 REPORTED TRANSFER — {self._cap(player, 42)}",
+            f"{self._cap(origin, 38)} → {self._cap(destination, 38)}",
+            self._cap(deal, 92),
             f"Status: {status}",
             take,
         ]
-        return self._finish_fixed_template(
+        return self._finish_transfer_template(
             decision,
             description,
-            self._hashtags("#TransferNews", destination),
+            self._hashtags("#TransferNews", destination or origin),
         )
 
     def _render_suspension_template(self, decision: VerificationDecision) -> str:
@@ -270,6 +255,48 @@ class VerifiedPostRenderer:
         if len(unique) != 3:
             raise RenderingError("fixed post requires three distinct hashtags")
         return " ".join(unique)
+
+    def _finish_transfer_template(
+        self,
+        decision: VerificationDecision,
+        description: List[str],
+        hashtag_line: str,
+    ) -> str:
+        """Render the locked seven-line transfer caption without touching graphics."""
+        body = [" ".join(str(line or "").split()) for line in description]
+        tags = " ".join(str(hashtag_line or "").split())
+        if len(body) != 5 or not all(body):
+            raise RenderingError("transfer caption requires exactly five information lines")
+        if len(tags.split()) != 3 or not all(
+            tag.startswith("#") for tag in tags.split()
+        ):
+            raise RenderingError("transfer caption requires exactly three hashtags")
+
+        def rendered() -> str:
+            return "\n".join(
+                [body[0], body[1], body[2], body[3], "", body[4], tags]
+            )
+
+        minima = {0: 32, 1: 24, 2: 18, 4: 28}
+        while twitter_weight(rendered()) > self.limit:
+            candidates = [
+                (len(body[index]) - minimum, index, minimum)
+                for index, minimum in minima.items()
+                if len(body[index]) > minimum
+            ]
+            if not candidates:
+                raise RenderingError("fixed transfer caption does not fit X limit")
+            _room, index, minimum = max(candidates)
+            body[index] = self._cap(
+                body[index], max(minimum, len(body[index]) - 8)
+            )
+
+        result = rendered()
+        lines = result.splitlines()
+        if len(lines) != 7 or lines[4] != "":
+            raise RenderingError("fixed transfer caption structure changed during fitting")
+        decision.rendered_text = result
+        return result
 
     def _finish_fixed_template(
         self,

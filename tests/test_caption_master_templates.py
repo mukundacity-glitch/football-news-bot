@@ -50,11 +50,18 @@ def render(value):
     assert "http" not in text
     assert "Verified by" not in text
     lines = text.splitlines()
-    assert len(lines) == 6
-    assert lines[3] == ""
-    assert not any(line.startswith("#") for line in lines[:5])
-    assert len(lines[5].split()) == 3
-    assert all(tag.startswith("#") for tag in lines[5].split())
+    if value.event_type == EventType.TRANSFER:
+        assert len(lines) == 7
+        assert lines[4] == ""
+        assert not any(line.startswith("#") for line in lines[:6])
+        hashtag_line = lines[6]
+    else:
+        assert len(lines) == 6
+        assert lines[3] == ""
+        assert not any(line.startswith("#") for line in lines[:5])
+        hashtag_line = lines[5]
+    assert len(hashtag_line.split()) == 3
+    assert all(tag.startswith("#") for tag in hashtag_line.split())
     return text
 
 
@@ -67,6 +74,8 @@ def test_reported_transfer_template_exact():
                 "club_from_name": "Marseille",
                 "club_to_name": "Man City",
                 "structured_source": "fotmob_transfer_table",
+                "transfer_kind": "permanent",
+                "contract_length": "2030",
             },
             status=EventStatus.COMPLETED,
             source_ids=["media.fotmob"],
@@ -76,14 +85,15 @@ def test_reported_transfer_template_exact():
     assert text == (
         "🚨 REPORTED TRANSFER — Gerónimo Rulli\n"
         "Marseille → Man City\n"
+        "Deal — Permanent | Contract 2030\n"
         "Status: COMPLETED\n"
         "\n"
-        "Monitor for confirmation before making an FPL move.\n"
+        "Check the FPL impact before making your next transfer.\n"
         "#FPL #TransferNews #ManCity"
     )
 
 
-def test_official_transfer_uses_official_status_and_three_hashtags():
+def test_official_transfer_uses_completed_status_and_three_hashtags():
     text = render(
         decision(
             EventType.TRANSFER,
@@ -96,9 +106,47 @@ def test_official_transfer_uses_official_status_and_three_hashtags():
             source_ids=["club.chelsea"],
         )
     )
-    assert "Status: OFFICIAL" in text
+    assert text.splitlines()[0] == "🚨 REPORTED TRANSFER — Dynamic Player"
+    assert "Status: COMPLETED" in text
+    assert "Deal — Permanent" in text
     assert "Arsenal → Chelsea" in text
     assert text.splitlines()[-1] == "#FPL #TransferNews #Chelsea"
+
+
+def test_transfer_in_progress_status_is_locked():
+    text = render(
+        decision(
+            EventType.TRANSFER,
+            {
+                "subject_name": "Dynamic Player",
+                "club_from_name": "Arsenal",
+                "club_to_name": "Chelsea",
+                "transfer_kind": "loan",
+            },
+            status=EventStatus.AGREEMENT,
+            source_ids=["media.bbc_sport", "media.sky_sports"],
+            authority_kind="tier_one_reported_transfer",
+        )
+    )
+    assert text.splitlines()[2] == "Deal — Loan"
+    assert text.splitlines()[3] == "Status: IN PROGRESS"
+
+
+def test_transfer_rumour_status_is_locked():
+    text = render(
+        decision(
+            EventType.TRANSFER,
+            {
+                "subject_name": "Dynamic Player",
+                "club_from_name": "Arsenal",
+                "club_to_name": "Chelsea",
+            },
+            status=EventStatus.RUMOUR,
+            source_ids=["media.bbc_sport"],
+            authority_kind="tier_one_reported_transfer",
+        )
+    )
+    assert text.splitlines()[3] == "Status: RUMOUR"
 
 
 def test_suspension_template_exact():
