@@ -203,11 +203,11 @@ def test_official_transfer_publishes_and_renders_only_verified_facts(runtime):
     decision = runtime.verify_observations([obs])
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
     assert decision.may_publish
-    assert "✅ OFFICIAL TRANSFER — Danny Welbeck" in decision.rendered_text
+    assert "✅ TRANSFER UPDATE — Danny Welbeck" in decision.rendered_text
     assert "Brighton → Chelsea" in decision.rendered_text
-    assert "STATUS — OFFICIAL" in decision.rendered_text
-    assert "#TransferNews #PremierLeague #FPL" in decision.rendered_text
-    assert "#Chelsea #DannyWelbeck" in decision.rendered_text
+    assert "Status: OFFICIAL" in decision.rendered_text
+    assert "#FPL #TransferNews #Chelsea" in decision.rendered_text
+    assert "Verified by" not in decision.rendered_text
     assert len(decision.rendered_text.splitlines()) == 6
     assert "http" not in decision.rendered_text
     assert "Source:" not in decision.rendered_text
@@ -413,10 +413,10 @@ def test_official_structured_fpl_injury_publishes(runtime):
     decision = runtime.verify_observations([obs])
     assert decision.decision == DecisionType.PUBLISH, decision.reasons
     assert "🚑 INJURY UPDATE — Danny Welbeck" in decision.rendered_text
-    assert "Brighton — Hamstring injury - Expected back 15 August" in decision.rendered_text
-    assert "STATUS — RETURNING" in decision.rendered_text
-    assert "#InjuryNews #PremierLeague #FPL" in decision.rendered_text
-    assert "#Brighton #DannyWelbeck" in decision.rendered_text
+    assert "Brighton | Hamstring injury – Expected back 15 August" in decision.rendered_text
+    assert "Status: RETURNING" in decision.rendered_text
+    assert "#FPL #InjuryNews #Brighton" in decision.rendered_text
+    assert "Verified by" not in decision.rendered_text
     assert len(decision.rendered_text.splitlines()) == 6
     assert "http" not in decision.rendered_text
     assert "Source:" not in decision.rendered_text
@@ -775,7 +775,7 @@ def test_player_terms_wording_is_agreement_and_requires_two_sources(runtime):
     assert two.decision == DecisionType.PUBLISH, two.reasons
     assert two.may_publish
     assert two.verified_facts["reported_status_detail"] == "PLAYER TERMS AGREED"
-    assert "STATUS — REPORTED" in two.rendered_text
+    assert "Status: REPORTED" in two.rendered_text
     assert "Brighton → Chelsea" in two.rendered_text
     assert "CONFIRMED" not in two.rendered_text
 
@@ -993,7 +993,7 @@ def test_fotmob_player_id_prevents_shared_given_name_substitution(tmp_path):
         assert decision.verified_facts["provider_player_name"] == "Gabriel Jesus"
         assert "🚨 REPORTED TRANSFER — Gabriel Jesus" in decision.rendered_text
         assert "Arsenal → Barcelona" in decision.rendered_text
-        assert "Deal — Permanent | Fee €10m" in decision.rendered_text
+        assert "Arsenal → Barcelona | Permanent | Fee €10m" in decision.rendered_text
         assert "Gabriel dos Santos" not in decision.rendered_text
 
         decision.verified_facts["subject_name"] = "Gabriel dos Santos Magalhães"
