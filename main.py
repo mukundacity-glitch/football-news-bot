@@ -29,6 +29,7 @@ from src import confidence as _conf
 from src import direction as _direction
 from src.verifier import cross_verify, reset_x_search_health, x_search_health
 from src.rejection_log import log_rejection
+from src.x_delivery import UnconfirmedPostError, create_tweet_confirmed
 from src.verification import (
     RuntimeUnavailable as V2RuntimeUnavailable,
     VerificationDecision as V2VerificationDecision,
@@ -1733,15 +1734,14 @@ def record_posted(item, data):
         "status": "collapsed" if item.get("collapsed") else "active",
         "sources": item["sources"], "last_updated": datetime.now(timezone.utc).isoformat(),
     }
+    if item.get("x_post_id"):
+        data["stories"][item["key"]].update({
+            "x_post_id": item["x_post_id"], "x_post_url": item["x_post_url"],
+        })
     record_content_dedup(item, data)
     increment_daily(data)
     save_data(data)
     move_to_posted(item)
-
-_TWIKIT_SUCCESS_PARSE_KEYS = {
-    "urls", "withheld_in_countries", "pinned_tweet_ids_str",
-    "entities", "extended_entities", "card",
-}
 
 # ── X SAFETY: ERROR CLASSIFICATION & BACK-OFF ────────────────────────────
 # X returns numeric error codes when it doesn't like our activity. Retrying on
@@ -1869,19 +1869,16 @@ async def post_item(post_client, item, data):
               f"| card {image_path} | {len(caption)} chars. No X call made.")
         return False
 
-    posted_live = False
+    receipt = None
     try:
         media_id = await post_client.upload_media(image_path, media_type="image/png")
-        await post_client.create_tweet(text=caption, media_ids=[media_id])
-        posted_live = True
+        receipt = await create_tweet_confirmed(
+            post_client, text=caption, media_ids=[media_id],
+        )
 
-    except KeyError as ke:
-        key = str(ke).strip("'\"")
-        if key in _TWIKIT_SUCCESS_PARSE_KEYS:
-            print(f"  [WARN] twikit KeyError({ke}) after create_tweet — tweet is live; recording as posted to prevent duplicate.")
-            posted_live = True
-        else:
-            raise
+    except UnconfirmedPostError as exc:
+        print(f"  [X-DELIVERY] {exc}. Stopping without marking this story posted.")
+        raise XBackoffError("unconfirmed", exc) from exc
 
     except Exception as exc:
         kind = classify_x_error(exc)
@@ -1915,16 +1912,20 @@ async def post_item(post_client, item, data):
         # transient -> let the caller's single cautious retry handle it.
         raise
 
-    if posted_live:
+    if receipt is not None:
+        item["x_post_id"] = receipt.tweet_id
+        item["x_post_url"] = receipt.url
         try:
-            _VERIFICATION_RUNTIME.repository.mark_published(v2_decision)
+            _VERIFICATION_RUNTIME.repository.mark_published(
+                v2_decision, platform_post_id=receipt.tweet_id,
+            )
         except Exception as exc:
             # The X post is already live. Preserve legacy dedup state and make the
             # ledger failure visible; never retry this item in the same run.
             print(f"  [V2-LEDGER] publication ledger failed after X success: {exc}")
         record_posted(item, data)
         print(f"  ✅ POSTED [V2 {v2_decision.status.value}]: "
-              f"{item['player']} — {v2_decision.event_type.value}")
+              f"{item['player']} — {v2_decision.event_type.value} | {receipt.url}")
         return True
 
     return False
@@ -2999,6 +3000,8 @@ async def main(post: bool = True):
         "no_post_reason": None,
         "auth_expired": False,
         "x_backoff": None,
+        "posting_failures": [],
+        "published_posts": [],
         "run_exit": "running",
     }
 
@@ -3290,6 +3293,7 @@ async def main(post: bool = True):
             try:
                 if await post_item(post_client, item, data):
                     posted += 1
+                    status["published_posts"].append(item["x_post_url"])
                 else:
                     # Blocked as duplicate/invalid — advance to next candidate
                     # instead of ending the run at zero.
@@ -3315,6 +3319,7 @@ async def main(post: bool = True):
                         await asyncio.sleep(10)
                         if await post_item(post_client, item, data):
                             posted += 1
+                            status["published_posts"].append(item["x_post_url"])
                     except XBackoffError as be:
                         if be.kind == "auth":
                             status["auth_expired"] = True
@@ -3325,10 +3330,10 @@ async def main(post: bool = True):
                         print(f"[BOT] X-SAFETY STOP ({be}) on retry — aborting posting run.")
                         break
                     except Exception as e2:
-                        print(f"  [ERROR] {item['key']} (attempt 2): {e2} — skipping")
-                        if item.get("id") and item["id"] not in data["posted_ids"]:
-                            data["posted_ids"].append(item["id"])
-                            save_data(data)
+                        print(f"  [ERROR] {item['key']} (attempt 2): {e2} — leaving unposted")
+                        status["posting_failures"].append({
+                            "key": item["key"], "error_type": type(e2).__name__,
+                        })
 
         if posted == 0 and status["no_post_reason"] is None:
             status["no_post_reason"] = "no_post_succeeded"

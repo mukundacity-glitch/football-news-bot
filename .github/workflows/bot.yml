@@ -186,3 +186,7 @@ jobs:
               echo "WARNING: could not push bot state after retries; will re-attempt next run."
             fi
           fi
+
+      - name: Check X delivery result
+        if: always() && steps.run.outcome == 'success'
+        run: python tools/check_posting_result.py
