@@ -1,0 +1,30 @@
+name: Bot posting diagnostics
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - tools/check_x_posting.py
+      - src/x_delivery.py
+      - .github/workflows/bot-diagnostics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check-posting-account:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Read posting account and recent tweets
+        env:
+          X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
+          X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
+          X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
+          X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
+        run: python -m tools.check_x_posting
