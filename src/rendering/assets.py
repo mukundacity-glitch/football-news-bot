@@ -1,4 +1,9 @@
-"""Identity-safe image and crest resolution for the broadcast renderer."""
+"""Identity-safe FPL asset resolution for the broadcast renderer.
+
+Player and club images are resolved from the official FPL registry and the
+corresponding Premier League asset CDN identifiers exposed by that registry.
+No Wikipedia, FotMob, or other third-party image source is used for graphics.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -9,9 +14,9 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 import requests
-from PIL import Image, ImageDraw
+from PIL import Image
 
-from src.constants import CLUB_ALIASES, CLUB_COLORS, FPL_LOGO_IDS
+from src.constants import CLUB_ALIASES, CLUB_COLORS
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl
 
 CACHE = Path(".cache/render_assets")
@@ -58,121 +63,16 @@ def _fpl_data(value: Optional[dict]) -> Optional[dict]:
         return None
 
 
-def _club_terms(club_name: str) -> set[str]:
-    """Return normalized aliases that identify one verified club."""
-    wanted = _norm(club_name)
-    if not wanted:
-        return set()
-    canonical = CLUB_ALIASES.get(wanted)
-    terms = {wanted}
-    if canonical:
-        terms.add(_norm(str(canonical).replace("_", " ")))
-        terms.update(
-            _norm(alias)
-            for alias, target in CLUB_ALIASES.items()
-            if target == canonical
-        )
-    # Very short aliases create false positives in prose/image metadata.
-    return {term for term in terms if len(term) >= 4}
-
-
-def _mentions_club(text: object, club_name: str) -> bool:
-    context = _norm(text)
-    return bool(context) and any(term in context for term in _club_terms(club_name))
-
-
-def _wikipedia_image(
-    subject: str,
-    expected_club: str = "",
-) -> Optional[Image.Image]:
-    """Return an identity-matched image, club-grounded when a club is known.
-
-    A player page mentioning the current club is not enough: the selected
-    Wikimedia image metadata must also mention that club.  This prevents an old
-    academy/previous-club portrait from being shown under a current-club card.
-    """
-    try:
-        search = requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={
-                "action": "query",
-                "generator": "search",
-                "gsrsearch": f'"{subject}" footballer',
-                "gsrlimit": 4,
-                "prop": "pageimages|description|extracts",
-                "piprop": "name|original",
-                "exintro": 1,
-                "explaintext": 1,
-                "exsentences": 3,
-                "format": "json",
-                "origin": "*",
-            },
-            headers={"User-Agent": "FPLVortexRenderer/1.0"},
-            timeout=12,
-        )
-        search.raise_for_status()
-        pages = (search.json().get("query") or {}).get("pages") or {}
-        target_norm = _norm(subject)
-
-        for page in pages.values():
-            title = str(page.get("title") or "")
-            description = str(page.get("description") or "").casefold()
-            extract = str(page.get("extract") or "")
-            if target_norm not in _norm(title) and _norm(title) not in target_norm:
-                continue
-            if not any(
-                word in description
-                for word in (
-                    "football", "soccer", "goalkeeper", "midfielder",
-                    "defender", "forward", "winger",
-                )
-            ):
-                continue
-
-            if expected_club and not _mentions_club(
-                " ".join((title, description, extract)), expected_club
-            ):
-                continue
-
-            url = ((page.get("original") or {}).get("source"))
-            if expected_club:
-                pageimage = str(page.get("pageimage") or "").strip()
-                if not pageimage:
-                    continue
-                media = requests.get(
-                    "https://en.wikipedia.org/w/api.php",
-                    params={
-                        "action": "query",
-                        "titles": f"File:{pageimage}",
-                        "prop": "imageinfo",
-                        "iiprop": "url|extmetadata",
-                        "format": "json",
-                        "origin": "*",
-                    },
-                    headers={"User-Agent": "FPLVortexRenderer/1.0"},
-                    timeout=12,
-                )
-                media.raise_for_status()
-                media_pages = (media.json().get("query") or {}).get("pages") or {}
-                image_info = next(iter(media_pages.values()), {}).get("imageinfo") or []
-                if not image_info:
-                    continue
-                info = image_info[0]
-                metadata = info.get("extmetadata") or {}
-                metadata_text = " ".join(
-                    str((value or {}).get("value") or "")
-                    for value in metadata.values()
-                    if isinstance(value, dict)
-                )
-                if not _mentions_club(metadata_text, expected_club):
-                    continue
-                url = str(info.get("url") or url or "")
-
-            if url:
-                key = f"{subject}|{expected_club}" if expected_club else subject
-                return _download_image(url, _safe_name("wiki", key))
-    except Exception:
+def _team_from_fpl(club_name: str, data: Optional[dict]) -> Optional[dict]:
+    if not data:
         return None
+    wanted = _norm(club_name)
+    canonical = CLUB_ALIASES.get(wanted)
+    for team in data.get("teams", []):
+        values = {_norm(team.get("name")), _norm(team.get("short_name"))}
+        team_canonical = CLUB_ALIASES.get(_norm(team.get("name")))
+        if wanted in values or (canonical and team_canonical == canonical):
+            return team
     return None
 
 
@@ -193,14 +93,16 @@ def resolve_player_metadata(subject: str, *, fpl_data: Optional[dict] = None) ->
             from datetime import date
             born = date.fromisoformat(birth[:10])
             today = date.today()
-            result["age"] = today.year - born.year - (
-                (today.month, today.day) < (born.month, born.day)
-            )
+            result["age"] = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
         except Exception:
             pass
     teams = {team.get("id"): team for team in data.get("teams", [])}
     team = teams.get(player.get("team")) or {}
     result["club_name"] = team.get("name")
+    result["fpl_player_id"] = player.get("id")
+    result["fpl_player_code"] = player.get("code")
+    result["fpl_team_id"] = player.get("team")
+    result["fpl_team_code"] = team.get("code")
     return {key: value for key, value in result.items() if value not in (None, "")}
 
 
@@ -210,76 +112,34 @@ def resolve_player_image(
     *,
     fpl_data: Optional[dict] = None,
 ) -> tuple[Optional[Image.Image], str]:
-    """Resolve a real player image without risking a wrong current-club kit.
+    """Resolve the verified player's official FPL/Premier League headshot only.
 
-    When the verified current club is known, only a Wikimedia image whose page
-    and image metadata both name that club is accepted as a portrait.  If that
-    cannot be established, the renderer uses its verified current-team shirt
-    fallback instead of displaying an old FPL/academy image as if it were current.
+    The FPL bootstrap payload is the identity authority. Its player ``code`` is
+    used to address the official Premier League player asset. If the FPL player
+    cannot be matched or the official image cannot be fetched, this fails closed
+    instead of substituting an image from another provider.
     """
     data = _fpl_data(fpl_data)
-    current_club, _club_id = _verified_shirt_club(subject, facts, data)
-
-    if current_club:
-        image = _wikipedia_image(subject, current_club)
-        if image:
-            return image, "Wikipedia"
-        shirt = resolve_team_shirt(subject, facts, fpl_data=data)
-        if shirt:
-            return shirt, "Team shirt fallback"
+    if not data:
         return None, ""
-
-    # Without a verified club relation, keep the older identity-only fallback
-    # order.  This lane cannot make a claim about a current club kit.
-    if data:
-        player = find_player_in_fpl(subject, data)
-        if player and player.get("code"):
-            code = int(player["code"])
-            image = _download_image(
-                f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png",
-                _safe_name("fpl_player", code),
-            )
-            if image:
-                return image, "FPL API"
-
-    image = _wikipedia_image(subject)
+    player = find_player_in_fpl(subject, data)
+    if not player:
+        return None, ""
+    code = player.get("code")
+    if not str(code or "").isdigit():
+        return None, ""
+    image = _download_image(
+        f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{int(code)}.png",
+        _safe_name("fpl_player", int(code)),
+    )
     if image:
-        return image, "Wikipedia"
-
-    provider_id = facts.get("provider_player_id")
-    if str(provider_id or "").isdigit():
-        image = _download_image(
-            f"https://images.fotmob.com/image_resources/playerimages/{provider_id}.png",
-            _safe_name("fotmob_player", provider_id),
-        )
-        if image:
-            return image, "Reliable provider"
-
-    shirt = resolve_team_shirt(subject, facts, fpl_data=data)
-    if shirt:
-        return shirt, "Team shirt fallback"
+        return image, "FPL API"
     return None, ""
 
 
 def identity_safe_portrait(image: Image.Image, source: str) -> Image.Image:
-    """Preserve the verified source image without cropping or reshaping it."""
+    """Preserve the verified FPL asset without altering its source pixels."""
     return image.convert("RGBA")
-
-
-def _team_from_fpl(club_name: str, data: Optional[dict]) -> Optional[dict]:
-    if not data:
-        return None
-    wanted = _norm(club_name)
-    canonical = CLUB_ALIASES.get(wanted)
-    for team in data.get("teams", []):
-        values = {
-            _norm(team.get("name")),
-            _norm(team.get("short_name")),
-        }
-        team_canonical = CLUB_ALIASES.get(_norm(team.get("name")))
-        if wanted in values or (canonical and team_canonical == canonical):
-            return team
-    return None
 
 
 def resolve_club_logo(
@@ -288,34 +148,22 @@ def resolve_club_logo(
     provider_id: object = None,
     fpl_data: Optional[dict] = None,
 ) -> Optional[Image.Image]:
+    """Resolve a club badge from the FPL team registry only.
+
+    ``provider_id`` is intentionally ignored so a FotMob/team-provider ID can
+    never become an image-source escape hatch.
+    """
     data = _fpl_data(fpl_data)
     team = _team_from_fpl(club_name, data)
-    if team:
-        badge_id = team.get("code") or team.get("id")
-        if badge_id:
-            image = _download_image(
-                f"https://resources.premierleague.com/premierleague/badges/100/t{badge_id}.png",
-                _safe_name("fpl_badge", badge_id),
-            )
-            if image:
-                return image
-
-    key = CLUB_ALIASES.get(_norm(club_name))
-    badge_id = FPL_LOGO_IDS.get(key or club_name)
-    if badge_id:
-        image = _download_image(
-            f"https://resources.premierleague.com/premierleague/badges/100/t{badge_id}.png",
-            _safe_name("pl_badge", badge_id),
-        )
-        if image:
-            return image
-
-    if str(provider_id or "").isdigit():
-        return _download_image(
-            f"https://images.fotmob.com/image_resources/logo/teamlogo/{provider_id}.png",
-            _safe_name("fotmob_badge", provider_id),
-        )
-    return None
+    if not team:
+        return None
+    badge_id = team.get("code")
+    if not str(badge_id or "").isdigit():
+        return None
+    return _download_image(
+        f"https://resources.premierleague.com/premierleague/badges/100/t{int(badge_id)}.png",
+        _safe_name("fpl_badge", int(badge_id)),
+    )
 
 
 def _verified_shirt_club(
@@ -323,60 +171,22 @@ def _verified_shirt_club(
     facts: Mapping[str, Any],
     data: Optional[dict],
 ) -> tuple[str, object]:
-    """Return a truth-anchored club name and optional structured provider ID."""
+    """Return the current club anchored to the FPL player registry."""
     if data:
         player = find_player_in_fpl(subject, data)
         teams = {team.get("id"): team for team in data.get("teams", [])}
         team = teams.get((player or {}).get("team")) or {}
         if team.get("name"):
             return str(team["name"]), team.get("code") or team.get("id")
-
-    # A current/owning club is safer than a destination for an incomplete
-    # transfer. Destination remains the last resort for completed/new signings.
-    for name_key, id_key in (
-        ("club_name", "provider_club_id"),
-        ("club_from_name", "provider_from_club_id"),
-        ("club_to_name", "provider_to_club_id"),
-    ):
-        value = str(facts.get(name_key) or "").strip()
-        if value:
-            return value, facts.get(id_key)
     return "", None
 
 
 def _club_palette(club_name: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     key = CLUB_ALIASES.get(_norm(club_name), club_name)
     primary = CLUB_COLORS.get(key, (31, 93, 173))
-    luminance = (
-        (0.2126 * primary[0])
-        + (0.7152 * primary[1])
-        + (0.0722 * primary[2])
-    )
+    luminance = (0.2126 * primary[0]) + (0.7152 * primary[1]) + (0.0722 * primary[2])
     secondary = (16, 18, 28) if luminance > 165 else (246, 248, 252)
     return primary, secondary
-
-
-def _paste_badge(
-    base: Image.Image,
-    badge: Image.Image,
-    box: tuple[int, int, int, int],
-) -> None:
-    x1, y1, x2, y2 = box
-    asset = badge.convert("RGBA")
-    scale = min(
-        (x2 - x1) / max(1, asset.width),
-        (y2 - y1) / max(1, asset.height),
-    )
-    asset = asset.resize(
-        (
-            max(1, round(asset.width * scale)),
-            max(1, round(asset.height * scale)),
-        ),
-        Image.Resampling.LANCZOS,
-    )
-    x = x1 + (x2 - x1 - asset.width) // 2
-    y = y1 + (y2 - y1 - asset.height) // 2
-    base.paste(asset, (x, y), asset)
 
 
 def resolve_team_shirt(
@@ -385,66 +195,28 @@ def resolve_team_shirt(
     *,
     fpl_data: Optional[dict] = None,
 ) -> Optional[Image.Image]:
-    """Create a polished generic shirt for the player's verified team.
+    """Create only a clearly generic, FPL-team-anchored fallback illustration.
 
-    This is deliberately a team-identity fallback, not a fabricated player
-    portrait or a claim that the illustrated garment is the current official kit.
+    This is not used as a substitute for a missing player photo by
+    ``resolve_player_image``. It remains available for callers that explicitly
+    request a generic team-identity illustration.
     """
     data = _fpl_data(fpl_data)
-    club_name, provider_id = _verified_shirt_club(subject, facts, data)
+    club_name, _provider_id = _verified_shirt_club(subject, facts, data)
     if not club_name:
         return None
-
     primary, secondary = _club_palette(club_name)
     shirt = Image.new("RGBA", (900, 1120), (0, 0, 0, 0))
-
-    # Soft shadow and neon edge give the fallback the same broadcast presence as
-    # a portrait while retaining a clearly generic T-shirt silhouette.
-    shadow = Image.new("RGBA", shirt.size, (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shadow)
-    sd.ellipse((120, 900, 780, 1090), fill=(0, 0, 0, 105))
-    shirt.alpha_composite(shadow)
-
+    from PIL import ImageDraw
     draw = ImageDraw.Draw(shirt)
     left_sleeve = [(265, 190), (82, 270), (20, 505), (205, 575), (300, 385)]
     right_sleeve = [(635, 190), (818, 270), (880, 505), (695, 575), (600, 385)]
-    torso = [
-        (265, 185),
-        (365, 145),
-        (535, 145),
-        (635, 185),
-        (705, 1000),
-        (195, 1000),
-    ]
+    torso = [(265, 185), (365, 145), (535, 145), (635, 185), (705, 1000), (195, 1000)]
     for points in (left_sleeve, right_sleeve, torso):
         draw.polygon(points, fill=(*primary, 255), outline=(*secondary, 255))
-        draw.line(
-            points + [points[0]],
-            fill=(*secondary, 255),
-            width=13,
-            joint="curve",
-        )
-
-    # Collar, cuffs and subtle vertical panels use a contrast color derived from
-    # the verified club palette; no unverified sponsor or exact kit pattern is used.
+        draw.line(points + [points[0]], fill=(*secondary, 255), width=13, joint="curve")
     draw.pieslice((355, 115, 545, 300), start=0, end=180, fill=(*secondary, 255))
     draw.pieslice((388, 142, 512, 260), start=0, end=180, fill=(*primary, 255))
     draw.line((45, 470, 214, 535), fill=(*secondary, 255), width=28)
     draw.line((855, 470, 686, 535), fill=(*secondary, 255), width=28)
-    stripe = tuple(
-        round(primary[i] * 0.62 + secondary[i] * 0.38)
-        for i in range(3)
-    )
-    draw.polygon(
-        [(255, 235), (330, 205), (370, 985), (285, 985)],
-        fill=(*stripe, 120),
-    )
-    draw.polygon(
-        [(645, 235), (570, 205), (530, 985), (615, 985)],
-        fill=(*stripe, 120),
-    )
-
-    badge = resolve_club_logo(club_name, provider_id=provider_id, fpl_data=data)
-    if badge:
-        _paste_badge(shirt, badge, (505, 305, 680, 500))
     return shirt

@@ -1,10 +1,11 @@
-name: PRESS CONFERENCE BOT
+name: FPL PRESS CONFERENCE BOT
 
-# Press conference only:
-# - collect official PremierLeague.com roundup links throughout the gameweek
+# FPL-only press/news lane:
+# - collect only explicit press-conference data exposed by the official FPL API
 # - publish one verified combined graphic between 60 and 30 minutes before
 #   the official FPL deadline
-# The normal transfer/injury/suspension workflow is separate and untouched.
+# The normal transfer/injury/suspension workflow is separate and uses the
+# official FPL API plus the FotMob transfer-family lane.
 on:
   schedule:
     - cron: "*/10 * * * *"
@@ -31,7 +32,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Collect official press-conference links
+      - name: Collect official FPL press/news data
         run: python tools/press_collection.py
 
       - name: Check press publication window
@@ -56,13 +57,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Mandatory press verification test gate
+      - name: Mandatory FPL press verification test gate
         if: steps.window.outputs.should_run == 'true'
         run: |
           python -m py_compile tools/press_collection.py tools/press_deadline_window.py tools/press_publish.py
           python -m pytest -q
 
-      - name: Publish verified press-conference roundup
+      - name: Publish verified FPL press-conference roundup
         id: run
         if: steps.window.outputs.should_run == 'true'
         env:
@@ -115,9 +116,9 @@ jobs:
           git add data/press_conference_status.json 2>/dev/null || true
           git add data/posted_news.json 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "No press-conference state changes to commit."
+            echo "No FPL press-conference state changes to commit."
           else
-            git commit -m "update press-conference state [skip ci]"
+            git commit -m "update FPL press-conference state [skip ci]"
             pushed=""
             for i in 1 2 3 4 5; do
               if git push; then pushed=1; break; fi
@@ -126,6 +127,6 @@ jobs:
               sleep 3
             done
             if [ -z "$pushed" ]; then
-              echo "WARNING: could not push press-conference state after retries."
+              echo "WARNING: could not push FPL press-conference state after retries."
             fi
           fi

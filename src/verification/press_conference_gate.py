@@ -1,15 +1,13 @@
-"""Official PremierLeague.com press-conference publication gate.
+"""Official FPL press-conference/news publication gate.
 
-Press roundups use one authoritative source: the Premier League website. No
-second-source confirmation is required for this lane. The source-domain check
-remains so a media or journalist report cannot accidentally enter the official
-roundup route.
+The bot now has two approved upstream data authorities: official FPL data and
+FotMob. This gate keeps the press-conference lane on official FPL provenance
+only. It never authorizes a media, journalist, Google News, social, or other
+third-party source.
 """
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 from urllib.parse import urlparse
@@ -17,16 +15,17 @@ from urllib.parse import urlparse
 from .models import DecisionType, EventStatus, EventType, VerificationDecision
 from .source_registry import SourceRegistry, normalize_domain
 
-PREMIER_LEAGUE_SOURCE_ID = "official.premier_league"
-PREMIER_LEAGUE_DOMAIN = "premierleague.com"
+FPL_SOURCE_ID = "official.fpl"
+FPL_DOMAIN = "fantasy.premierleague.com"
+FPL_API_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 _OFFICIAL_STATUSES = frozenset({EventStatus.OFFICIAL, EventStatus.COMPLETED})
 
 
-@dataclass(frozen=True)
 class OfficialPressConferenceValidation:
-    ok: bool
-    reason: str
-    verified_at: Optional[str] = None
+    def __init__(self, ok: bool, reason: str, verified_at: Optional[str] = None):
+        self.ok = ok
+        self.reason = reason
+        self.verified_at = verified_at
 
     def __bool__(self) -> bool:
         return self.ok
@@ -42,9 +41,9 @@ def _is_valid_url(url: Optional[str]) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
-def _is_premier_league_domain(url: str) -> bool:
+def _is_fpl_domain(url: str) -> bool:
     domain = normalize_domain(url)
-    return domain == PREMIER_LEAGUE_DOMAIN or domain.endswith("." + PREMIER_LEAGUE_DOMAIN)
+    return domain == FPL_DOMAIN or domain.endswith("." + FPL_DOMAIN)
 
 
 def validate_official_press_conference(
@@ -53,12 +52,11 @@ def validate_official_press_conference(
     *,
     now: Optional[datetime] = None,
 ) -> OfficialPressConferenceValidation:
-    """Validate one combined PremierLeague.com roundup.
+    """Validate one FPL-authorized press-conference/news item.
 
-    This deliberately does not inspect publisher counts or corroboration. One
-    verified PremierLeague.com article is sufficient authority for this event
-    type, while the URL, source identity, speaker, club and extracted roundup
-    content are still required.
+    A valid FPL source is necessary but not sufficient: the normal V2 engine
+    must already have authorized publication, and the extracted speaker, club,
+    quote summary, key quotes and roundup must all be present.
     """
     now = now or datetime.now(timezone.utc)
     if decision.event_type != EventType.PRESS_CONFERENCE:
@@ -71,16 +69,16 @@ def validate_official_press_conference(
     facts: Mapping[str, Any] = decision.verified_facts
     url = decision.source_url
     if not _is_valid_url(url):
-        return OfficialPressConferenceValidation(False, "missing_or_invalid_premierleague_source_url")
-    if not _is_premier_league_domain(url):
-        return OfficialPressConferenceValidation(False, "source_url_is_not_premierleague.com")
+        return OfficialPressConferenceValidation(False, "missing_or_invalid_fpl_source_url")
+    if not _is_fpl_domain(url):
+        return OfficialPressConferenceValidation(False, "source_url_is_not_fpl")
 
     authority_ids = list(dict.fromkeys(decision.authority_source_ids or decision.source_ids))
-    if PREMIER_LEAGUE_SOURCE_ID not in authority_ids:
-        return OfficialPressConferenceValidation(False, "source_is_not_official_premier_league")
-    profile = sources.get(PREMIER_LEAGUE_SOURCE_ID)
+    if FPL_SOURCE_ID not in authority_ids:
+        return OfficialPressConferenceValidation(False, "source_is_not_official_fpl")
+    profile = sources.get(FPL_SOURCE_ID)
     if profile is None or not profile.is_official:
-        return OfficialPressConferenceValidation(False, "official_premier_league_profile_missing")
+        return OfficialPressConferenceValidation(False, "official_fpl_profile_missing")
 
     speaker = facts.get("subject_name")
     club = facts.get("club_name")
@@ -96,7 +94,7 @@ def validate_official_press_conference(
     if not isinstance(facts.get("roundup"), list) or not facts["roundup"]:
         return OfficialPressConferenceValidation(False, "missing_extracted_roundup")
 
-    return OfficialPressConferenceValidation(True, "official_premierleague_roundup", verified_at=now.isoformat())
+    return OfficialPressConferenceValidation(True, "official_fpl_press_roundup", verified_at=now.isoformat())
 
 
 def log_skipped_unverified_press_conference(

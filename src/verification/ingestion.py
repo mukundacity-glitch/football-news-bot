@@ -1,4 +1,4 @@
-"""Config-driven RSS and Bluesky ingestion with publisher provenance metadata."""
+"""Config-driven news ingestion with a strict FotMob source allowlist."""
 
 from __future__ import annotations
 
@@ -6,20 +6,19 @@ import hashlib
 import html
 import json
 import re
-import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import feedparser
 import requests
 
-from .club_feeds import as_feed_definitions, resolve_club_feeds, summary
 from .documents import FeedDefinition
 from .runtime import VerificationRuntime
 
 
 _TAGS = re.compile(r"<[^>]+>")
+ALLOWED_NEWS_FEED_IDS = {"fotmob.premier_league.topnews"}
+ALLOWED_NEWS_SOURCE_ID = "media.fotmob"
 
 
 def _clean_html(value: str) -> str:
@@ -41,54 +40,24 @@ def _legacy_source_name(runtime: VerificationRuntime, identity: Any) -> str:
 
 
 def _all_feed_definitions(runtime: VerificationRuntime) -> List[FeedDefinition]:
-    feeds = list(runtime.feeds.feeds)
+    """Return only the explicitly allowed FotMob news feed.
 
-    # Direct club RSS, discovered and cached automatically. This comes first
-    # because it is the only first-party route: each feed carries the club's own
-    # OFFICIAL_CLUB source_hint and so inherits the ~0.99 prior and the
-    # official_first_party_sufficient policy — a club announcing its own signing
-    # publishes without waiting for a second source.
-    #
-    # The Google News discovery below covers the same domains but arrives with
-    # source_hint=None, so it resolves as generic media and can never
-    # self-confirm. It stays as a safety net for clubs whose feed is unresolved.
-    try:
-        resolved = resolve_club_feeds(runtime.sources)
-        if resolved:
-            feeds.extend(as_feed_definitions(resolved))
-        print(f"  [CLUB-FEEDS] {summary(resolved, runtime.sources)}")
-    except Exception as exc:  # noqa: BLE001 — discovery must never break a run
-        print(f"  [CLUB-FEEDS] resolution skipped: {type(exc).__name__}: {exc}")
-
-    cfg = runtime.feeds.official_discovery
-    if not cfg.get("enabled"):
-        return feeds
-    domains = sorted({
-        domain
-        for profile in runtime.sources.all()
-        if profile.kind.value == "OFFICIAL_CLUB"
-        for domain in profile.domains
-    })
-    chunk_size = max(1, int(cfg["domains_per_query"]))
-    terms = " OR ".join(f'"{term}"' if " " in term else term for term in cfg["query_terms"])
-    lookback = int(cfg["lookback_days"])
-    for index in range(0, len(domains), chunk_size):
-        chunk = domains[index:index + chunk_size]
-        sites = " OR ".join(f"site:{domain}" for domain in chunk)
-        query = f"({sites}) ({terms}) when:{lookback}d"
-        url = (
-            "https://news.google.com/rss/search?q="
-            + urllib.parse.quote_plus(query)
-            + "&hl=en-GB&gl=GB&ceid=GB:en"
+    Do not add club feeds, Google News discovery feeds, social feeds, or other
+    media feeds here. FPL structured data is ingested separately by the FPL API
+    workflow. Keeping this allowlist in code is defense-in-depth in case an old
+    feed remains in config/feeds.json.
+    """
+    feeds = [
+        feed
+        for feed in runtime.feeds.feeds
+        if feed.id in ALLOWED_NEWS_FEED_IDS
+        and str(feed.source_hint or "") == ALLOWED_NEWS_SOURCE_ID
+        and str(feed.transport or "").upper() == "DIRECT_RSS"
+    ]
+    if len(feeds) != 1:
+        raise RuntimeError(
+            "FotMob-only ingestion requires exactly one configured FotMob direct feed"
         )
-        feeds.append(FeedDefinition(
-            id=f"official-clubs.discovery.{index // chunk_size + 1}",
-            url=url,
-            transport="GOOGLE_NEWS",
-            source_hint=None,
-            declared_sport="football",
-            max_entries=int(cfg["max_entries"]),
-        ))
     return feeds
 
 
@@ -145,9 +114,8 @@ def _fotmob_transfer_text(row: Dict[str, Any]) -> str:
 
     if kind == "contract_extension":
         club = to_club or from_club
-        lead = f"{name} extends the contract with {club}."
         bits = [
-            lead,
+            f"{name} extends the contract with {club}.",
             "FotMob listed the contract extension as completed.",
             "Deal type: contract extension.",
         ]
@@ -233,12 +201,11 @@ def _fetch_fotmob_transfers(
     seen: set[str],
     fetched_at: str,
 ) -> tuple[List[Dict[str, Any]], int, List[Dict[str, str]]]:
-    """Fetch FotMob Premier League transfer table as discovery input.
+    """Fetch the structured FotMob Premier League transfer table.
 
-    FotMob is not allowed to invent a post by itself unless the downstream V2
-    gates can ground player + clubs + PL relevance and the engine accepts the
-    structured FotMob transfer source. This only adds candidate coverage for the
-    transfer table the user sees in the app.
+    The data is discovery input only. Existing downstream V2 verification,
+    entity matching, status checks, freshness checks and deduplication remain
+    mandatory before publication.
     """
     feed_id = "fotmob.premier_league.transfers"
     url = "https://www.fotmob.com/leagues/47/transfers/premier-league?season=2026%2F2027"
@@ -264,17 +231,11 @@ def _fetch_fotmob_transfers(
             .get("data", [])
         )
         items: List[Dict[str, Any]] = []
-        # FotMob does not guarantee row order across regions/caches. Sort by the
-        # structured timestamp before limiting so fresh rows can never fall
-        # outside an arbitrary first-80 slice on a GitHub runner.
         ordered = sorted(
             transfers,
             key=lambda row: str(row.get("transferDate") or row.get("fromDate") or ""),
             reverse=True,
         )
-        # Process the complete Premier League transfer table. Freshness,
-        # deduplication and the existing posting caps are enforced downstream;
-        # an arbitrary ingestion slice must not silently omit a valid row.
         for row in ordered:
             name = str(row.get("name") or "").strip()
             to_club = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
@@ -301,8 +262,8 @@ def _fetch_fotmob_transfers(
                 "source_url": url,
                 "publisher_url": "https://www.fotmob.com/",
                 "publisher_name": "FotMob",
-                "source_id": "media.fotmob",
-                "source_hint": "media.fotmob",
+                "source_id": ALLOWED_NEWS_SOURCE_ID,
+                "source_hint": ALLOWED_NEWS_SOURCE_ID,
                 "source_handle": "fotmob",
                 "username": "fotmob",
                 "transport": "FOTMOB",
@@ -311,12 +272,8 @@ def _fetch_fotmob_transfers(
                 "feed_id": feed_id,
                 "fetched_at": fetched_at,
                 "metadata": {
-                    "structured_fotmob_transfer": bool(
-                        legacy_story.get("_structured_fotmob_transfer")
-                    ),
-                    "structured_fotmob_contract_extension": bool(
-                        legacy_story.get("_structured_fotmob_contract_extension")
-                    ),
+                    "structured_fotmob_transfer": bool(legacy_story.get("_structured_fotmob_transfer")),
+                    "structured_fotmob_contract_extension": bool(legacy_story.get("_structured_fotmob_contract_extension")),
                     "fotmob_row": row,
                 },
                 "_legacy_story": legacy_story,
@@ -367,7 +324,7 @@ def fetch_configured_news(
                     publisher_url=publisher_url,
                     source_hint=feed_def.source_hint,
                     transport=feed_def.transport,
-                    configured_direct_feed=feed_def.transport.upper() == "DIRECT_RSS",
+                    configured_direct_feed=True,
                 )
                 text = title if not summary or summary == title else f"{title}. {summary}"
                 items.append({
@@ -386,7 +343,7 @@ def fetch_configured_news(
                     "source_hint": feed_def.source_hint,
                     "username": _legacy_source_name(runtime, identity),
                     "transport": feed_def.transport,
-                    "configured_direct_feed": feed_def.transport.upper() == "DIRECT_RSS",
+                    "configured_direct_feed": True,
                     "declared_sport": feed_def.declared_sport,
                     "feed_id": feed_def.id,
                     "fetched_at": fetched_at,
@@ -399,17 +356,11 @@ def fetch_configured_news(
     successes += fotmob_successes
     failures.extend(fotmob_failures)
 
-    social_items, social_successes, social_failures = _fetch_bluesky(runtime, seen, fetched_at)
-    items.extend(social_items)
-    successes += social_successes
-    failures.extend(social_failures)
-    total = len(feed_definitions) + len(runtime.feeds.social_feeds) + 1
+    total = len(feed_definitions) + 1
     fotmob_recent = 0
     for item in fotmob_items:
         try:
-            published = datetime.fromisoformat(
-                str(item.get("created_at") or "").replace("Z", "+00:00")
-            )
+            published = datetime.fromisoformat(str(item.get("created_at") or "").replace("Z", "+00:00"))
             if published.tzinfo is None:
                 published = published.replace(tzinfo=timezone.utc)
             if (datetime.now(timezone.utc) - published).total_seconds() <= 48 * 3600:
@@ -427,69 +378,6 @@ def fetch_configured_news(
         "at": fetched_at,
     }
     return items, health
-
-
-def _fetch_bluesky(
-    runtime: VerificationRuntime,
-    seen: set[str],
-    fetched_at: str,
-) -> tuple[List[Dict[str, Any]], int, List[Dict[str, str]]]:
-    items: List[Dict[str, Any]] = []
-    failures: List[Dict[str, str]] = []
-    successes = 0
-    for feed_def in runtime.feeds.social_feeds:
-        try:
-            url = (
-                "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
-                f"?actor={urllib.parse.quote(feed_def.handle)}"
-                f"&limit={feed_def.max_entries}&filter=posts_no_replies"
-            )
-            request = urllib.request.Request(
-                url, headers={"User-Agent": "FPLVortexBot/2.0"}
-            )
-            with urllib.request.urlopen(request, timeout=12) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            successes += 1
-            for feed_item in (payload.get("feed") or [])[: feed_def.max_entries]:
-                post = feed_item.get("post", {})
-                record = post.get("record", {})
-                text = str(record.get("text") or "").strip()
-                if not text:
-                    continue
-                uri = post.get("uri") or text
-                item_id = "bsky_" + hashlib.sha256(uri.encode()).hexdigest()[:20]
-                if item_id in seen:
-                    continue
-                seen.add(item_id)
-                match = re.match(r"at://([^/]+)/[^/]+/([^/]+)$", post.get("uri", ""))
-                source_url = (
-                    f"https://bsky.app/profile/{match.group(1)}/post/{match.group(2)}"
-                    if match else None
-                )
-                profile = runtime.sources.require(feed_def.source_id)
-                items.append({
-                    "id": item_id,
-                    "document_id": item_id,
-                    "title": text,
-                    "summary": "",
-                    "text": text,
-                    "media_url": None,
-                    "created_at": record.get("createdAt") or post.get("indexedAt"),
-                    "published_at": record.get("createdAt") or post.get("indexedAt"),
-                    "source_url": source_url,
-                    "source_id": profile.id,
-                    "source_hint": profile.id,
-                    "source_handle": feed_def.handle,
-                    "username": profile.handles[0] if profile.handles else profile.id,
-                    "transport": "BLUESKY",
-                    "configured_direct_feed": False,
-                    "declared_sport": feed_def.declared_sport,
-                    "feed_id": feed_def.id,
-                    "fetched_at": fetched_at,
-                })
-        except Exception as exc:
-            failures.append({"feed_id": feed_def.id, "error": str(exc)[:300]})
-    return items, successes, failures
 
 
 def _media_url(entry: Any) -> Any:
