@@ -2861,6 +2861,7 @@ EVENT_PRIORITY = {
 }
 ALL_LIVE_POST_EVENT_NAMES = frozenset({
     "transfer", "loan", "loan_option", "injury", "suspension", "press_conference",
+    "renewal",
 })
 
 

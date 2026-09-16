@@ -357,10 +357,15 @@ class LegacyClaimAdapter:
                 {"type": support_type.value, "evidence": str(evidence)}
             )
 
-        structured_fotmob = bool(
+        structured_fotmob_transfer = bool(
             document.metadata.get("structured_fotmob_transfer") is True
             and document.source.profile_id == "media.fotmob"
         )
+        structured_fotmob_contract = bool(
+            document.metadata.get("structured_fotmob_contract_extension") is True
+            and document.source.profile_id == "media.fotmob"
+        )
+        structured_fotmob = structured_fotmob_transfer or structured_fotmob_contract
         fotmob_row = document.metadata.get("fotmob_row") or {}
         from_club = self._resolve_club(
             legacy_story.get("from_key"), legacy_story.get("from_club")
@@ -582,7 +587,7 @@ class LegacyClaimAdapter:
                     EvidenceSupport.TEXT_SPAN,
                     classification.status_evidence,
             )
-            if structured_fotmob:
+            if structured_fotmob_transfer:
                 provider_player_name = str(fotmob_row.get("name") or "").strip()
                 add_fact(
                     "structured_source", "fotmob_transfer_table",
@@ -683,6 +688,29 @@ class LegacyClaimAdapter:
             self._add_optional_grounded(
                 "contract_length", legacy_story.get("contract"), document, add_fact
             )
+            if structured_fotmob_contract:
+                provider_player_name = str(fotmob_row.get("name") or "").strip()
+                add_fact(
+                    "structured_source", "fotmob_transfer_table",
+                    EvidenceSupport.STRUCTURED_DATA,
+                    "structured_fotmob_contract_extension=true",
+                )
+                add_fact(
+                    "provider_player_name", provider_player_name,
+                    EvidenceSupport.STRUCTURED_DATA, provider_player_name,
+                )
+                add_fact(
+                    "provider_player_id", str(fotmob_row.get("playerId") or ""),
+                    EvidenceSupport.STRUCTURED_DATA, str(fotmob_row.get("playerId") or ""),
+                )
+                add_fact(
+                    "provider_to_club_id", str(fotmob_row.get("toClubId") or ""),
+                    EvidenceSupport.STRUCTURED_DATA, str(fotmob_row.get("toClubId") or ""),
+                )
+                for key in ("market_value", "position"):
+                    value = legacy_story.get(key)
+                    if value:
+                        add_fact(key, value, EvidenceSupport.STRUCTURED_DATA, str(value))
         elif event == EventType.OFFICIAL_STATEMENT:
             if document.title:
                 add_fact(

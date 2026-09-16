@@ -31,7 +31,7 @@ def test_live_event_scope_is_transfer_injury_suspension_only():
     assert main._live_event_allowed({"event": "injury"}) is True
     assert main._live_event_allowed({"event": "suspension"}) is True
     assert main._live_event_allowed({"event": "manager"}) is False
-    assert main._live_event_allowed({"event": "renewal"}) is False
+    assert main._live_event_allowed({"event": "renewal"}) is True
     assert main._live_event_allowed({"event": "official_statement"}) is False
 
 

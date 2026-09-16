@@ -495,9 +495,9 @@ def test_new_official_injury_status_is_material_progression(runtime):
     assert second.verified_facts["injury_status"] == "Returned to full training"
 
 
-def test_official_contract_extension_is_rejected_out_of_scope(runtime):
-    # Strict policy: only TRANSFER / INJURY / SUSPENSION may publish. Even an
-    # official club confirmation of a contract extension must be rejected.
+def test_official_contract_extension_without_term_fails_closed(runtime):
+    # CONTRACT is now a supported category, but a vague extension announcement
+    # still cannot publish without an explicitly grounded contract end/term.
     obs = observation(
         title="Brighton confirm Danny Welbeck has signed a new contract",
         source_id="club.brighton-and-hove-albion",
@@ -508,8 +508,11 @@ def test_official_contract_extension_is_rejected_out_of_scope(runtime):
         },
     )
     decision = runtime.verify_observations([obs])
-    assert decision.decision == DecisionType.REJECT, decision.reasons
+    assert decision.decision == DecisionType.PENDING, decision.reasons
     assert not decision.may_publish
+    mandatory = decision.gate("mandatory_facts")
+    assert mandatory.state.value != "PASS"
+    assert "contract_length" in mandatory.reason
 
 
 def test_official_club_statement_is_rejected_out_of_scope(runtime):

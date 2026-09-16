@@ -119,32 +119,58 @@ def _fotmob_contract_until(value: object) -> str:
         return text[:10]
 
 
+def _fotmob_row_kind(row: Dict[str, Any]) -> str:
+    """Return the explicit FotMob transaction kind without guessing from clubs."""
+    fee = row.get("fee") or {}
+    fee_label = str(fee.get("feeText") or "").strip().lower()
+    if "contract extension" in fee_label:
+        return "contract_extension"
+    if bool(row.get("onLoan")) or "loan" in fee_label:
+        return "loan"
+    if "free" in fee_label:
+        return "free"
+    return "permanent"
+
+
 def _fotmob_transfer_text(row: Dict[str, Any]) -> str:
     name = str(row.get("name") or "").strip()
     from_club = str(row.get("fromClubFullName") or row.get("fromClub") or "").strip()
     to_club = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
+    kind = _fotmob_row_kind(row)
     fee = row.get("fee") or {}
-    fee_label = str(fee.get("feeText") or "").strip().lower()
     fee_value = _fotmob_euro(fee.get("value"))
     contract_until = _fotmob_contract_until(row.get("toDate"))
     market_value = _fotmob_euro(row.get("marketValue"))
     position = str((row.get("position") or {}).get("label") or "").strip()
-    is_loan = bool(row.get("onLoan")) or "loan" in fee_label
-    is_free = "free" in fee_label
-    if is_loan:
-        lead = f"{name} has joined {to_club} from {from_club} on loan."
-    elif is_free:
-        lead = f"{name} has joined {to_club} from {from_club} on a free transfer."
+
+    if kind == "contract_extension":
+        club = to_club or from_club
+        lead = f"{name} extends the contract with {club}."
+        bits = [
+            lead,
+            "FotMob listed the contract extension as completed.",
+            "Deal type: contract extension.",
+        ]
+    elif kind == "loan":
+        bits = [
+            f"{name} has joined {to_club} from {from_club} on loan.",
+            "FotMob listed the transfer as completed.",
+            "Deal type: loan.",
+        ]
+    elif kind == "free":
+        bits = [
+            f"{name} has joined {to_club} from {from_club} on a free transfer.",
+            "FotMob listed the transfer as completed.",
+            "Deal type: free transfer.",
+        ]
     else:
-        lead = f"{name} has joined {to_club} from {from_club}."
-    bits = [lead, "FotMob listed the transfer as completed."]
-    if is_loan:
-        bits.append("Deal type: loan.")
-    elif is_free:
-        bits.append("Deal type: free transfer.")
-    else:
-        bits.append("Deal type: permanent transfer.")
-    if fee_value:
+        bits = [
+            f"{name} has joined {to_club} from {from_club}.",
+            "FotMob listed the transfer as completed.",
+            "Deal type: permanent transfer.",
+        ]
+
+    if fee_value and kind != "contract_extension":
         bits.append(f"Fee: {fee_value}.")
     if contract_until:
         bits.append(f"Contract until {contract_until}.")
@@ -156,24 +182,38 @@ def _fotmob_transfer_text(row: Dict[str, Any]) -> str:
 
 
 def _fotmob_legacy_story(row: Dict[str, Any]) -> Dict[str, Any]:
+    kind = _fotmob_row_kind(row)
     fee = row.get("fee") or {}
-    fee_label = str(fee.get("feeText") or "").strip().lower()
     fee_text = _fotmob_euro(fee.get("value"))
-    is_loan = bool(row.get("onLoan")) or "loan" in fee_label
-    is_free = "free" in fee_label
-    transfer_kind = "loan" if is_loan else "free" if is_free else "permanent"
-    event = "loan" if is_loan else "transfer"
+    is_extension = kind == "contract_extension"
     player_name = str(row.get("name") or "").strip()
-    from_club = str(row.get("fromClubFullName") or row.get("fromClub") or "").strip()
-    to_club = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
+    raw_from = str(row.get("fromClubFullName") or row.get("fromClub") or "").strip()
+    raw_to = str(row.get("toClubFullName") or row.get("toClub") or "").strip()
+    club = raw_to or raw_from
+    text = _fotmob_transfer_text(row)
+
+    if is_extension:
+        event = "renewal"
+        from_club = None
+        to_club = club
+        transfer_kind = None
+    else:
+        event = "loan" if kind == "loan" else "transfer"
+        from_club = raw_from
+        to_club = raw_to
+        transfer_kind = kind
+
     return {
         "player": player_name,
         "event": event,
         "from_club": from_club,
         "to_club": to_club,
-        "_structured_fotmob_transfer": True,
-        "_structured_transfer_group": f"{player_name}|{from_club}|{to_club}",
-        "fee": fee_text or None,
+        "_structured_fotmob_transfer": not is_extension,
+        "_structured_fotmob_contract_extension": is_extension,
+        "_structured_transfer_group": (
+            f"{player_name}|{raw_from}|{raw_to}" if not is_extension else None
+        ),
+        "fee": (fee_text or None) if not is_extension else None,
         "contract": _fotmob_contract_until(row.get("toDate")) or None,
         "market_value": _fotmob_euro(row.get("marketValue")) or None,
         "position": str((row.get("position") or {}).get("label") or "").strip() or None,
@@ -182,8 +222,8 @@ def _fotmob_legacy_story(row: Dict[str, Any]) -> Dict[str, Any]:
         "stage": 4,
         "collapsed": False,
         "historical": False,
-        "headline": _fotmob_transfer_text(row),
-        "raw_text": _fotmob_transfer_text(row),
+        "headline": text,
+        "raw_text": text,
         "sources": ["fotmob"],
     }
 
@@ -246,6 +286,7 @@ def _fetch_fotmob_transfers(
             if item_id in seen:
                 continue
             seen.add(item_id)
+            legacy_story = _fotmob_legacy_story(row)
             text = _fotmob_transfer_text(row)
             created = row.get("transferDate") or row.get("fromDate")
             items.append({
@@ -269,8 +310,16 @@ def _fetch_fotmob_transfers(
                 "declared_sport": "football",
                 "feed_id": feed_id,
                 "fetched_at": fetched_at,
-                "metadata": {"structured_fotmob_transfer": True, "fotmob_row": row},
-                "_legacy_story": _fotmob_legacy_story(row),
+                "metadata": {
+                    "structured_fotmob_transfer": bool(
+                        legacy_story.get("_structured_fotmob_transfer")
+                    ),
+                    "structured_fotmob_contract_extension": bool(
+                        legacy_story.get("_structured_fotmob_contract_extension")
+                    ),
+                    "fotmob_row": row,
+                },
+                "_legacy_story": legacy_story,
             })
         return items, 1, []
     except Exception as exc:

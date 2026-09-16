@@ -46,6 +46,9 @@ from .repository import VerificationRepository
 from .source_registry import SourceRegistry
 
 
+FOTMOB_CONTRACT_AUTHORITY_KIND = "structured_fotmob_contract_extension"
+
+
 class VerificationEngine:
     def __init__(
         self,
@@ -76,7 +79,10 @@ class VerificationEngine:
         event, event_claims, event_ambiguity = self._select_event(claims)
         current_structured_fotmob = any(
             claim.source_id == FOTMOB_SOURCE_ID
-            and claim.document.metadata.get("structured_fotmob_transfer") is True
+            and (
+                claim.document.metadata.get("structured_fotmob_transfer") is True
+                or claim.document.metadata.get("structured_fotmob_contract_extension") is True
+            )
             for claim in event_claims
         )
         if (
@@ -268,6 +274,7 @@ class VerificationEngine:
             "configured_elite_medical": "elite source medical/deal-agreed transfer milestone",
             REPORTED_TRANSFER_AUTHORITY: "approved tier-one reported-transfer evidence",
             FOTMOB_AUTHORITY_KIND: "structured FotMob completed-transfer listing",
+            FOTMOB_CONTRACT_AUTHORITY_KIND: "structured FotMob contract-extension listing",
             FOTMOB_NEWS_AUTHORITY_KIND: "trusted FotMob Premier League report",
             "none": "media/journalist evidence remains pending",
         }[confirmation_kind]
@@ -331,10 +338,10 @@ class VerificationEngine:
             value=1.0 if temporal_ok else 0.0,
         ))
 
-        if confirmation_kind == FOTMOB_AUTHORITY_KIND:
+        if confirmation_kind in {FOTMOB_AUTHORITY_KIND, FOTMOB_CONTRACT_AUTHORITY_KIND}:
             # Historical free-text outcome learning must not disable the
-            # separately approved structured table lane. Use the configured
-            # structural prior for this exact source/mode only.
+            # separately approved structured table lanes. Use the configured
+            # structural prior for these exact source/modes only.
             source_reliability = self.sources.require(FOTMOB_SOURCE_ID).prior_mean
         else:
             authority_reliabilities = [
@@ -509,6 +516,33 @@ class VerificationEngine:
             return [trusted_fotmob], FOTMOB_NEWS_AUTHORITY_KIND
 
         if (
+            event == EventType.CONTRACT
+            and self.config.policy("allow_structured_fotmob_contract_extensions")
+        ):
+            structured_contracts = []
+            for claim in claims:
+                if not (
+                    claim.source_id == FOTMOB_SOURCE_ID
+                    and claim.document.source.verified
+                    and claim.article_category == event
+                    and claim.league_relevant
+                    and claim.status == EventStatus.COMPLETED
+                    and claim.document.metadata.get("structured_fotmob_contract_extension") is True
+                    and claim.facts.get("structured_source") == "fotmob_transfer_table"
+                    and claim.facts.get("contract_status") == "extended"
+                    and claim.facts.get("contract_length")
+                    and str(claim.facts.get("provider_player_id") or "").isdigit()
+                    and str(claim.facts.get("provider_to_club_id") or "").isdigit()
+                ):
+                    continue
+                club = self.entities.get(str(claim.facts.get("club_id") or ""))
+                if not club or not club.active_premier_league:
+                    continue
+                structured_contracts.append(claim)
+            if structured_contracts:
+                return [structured_contracts[0]], FOTMOB_CONTRACT_AUTHORITY_KIND
+
+        if (
             event == EventType.TRANSFER
             and self.config.policy("allow_structured_fotmob_completed_transfers")
         ):
@@ -666,7 +700,7 @@ class VerificationEngine:
             return False, "awaiting authoritative timestamp", 0.0
         max_age = (
             self.config.threshold("max_fotmob_transfer_age_hours")
-            if confirmation_kind == FOTMOB_AUTHORITY_KIND
+            if confirmation_kind in {FOTMOB_AUTHORITY_KIND, FOTMOB_CONTRACT_AUTHORITY_KIND}
             else FOTMOB_NEWS_MAX_AGE_HOURS
             if confirmation_kind == FOTMOB_NEWS_AUTHORITY_KIND
             else self.config.threshold("max_confirmation_age_hours")
@@ -676,7 +710,7 @@ class VerificationEngine:
         )
         age_label = (
             "FotMob listing"
-            if confirmation_kind == FOTMOB_AUTHORITY_KIND
+            if confirmation_kind in {FOTMOB_AUTHORITY_KIND, FOTMOB_CONTRACT_AUTHORITY_KIND}
             else "FotMob report"
             if confirmation_kind == FOTMOB_NEWS_AUTHORITY_KIND
             else "official confirmation"
