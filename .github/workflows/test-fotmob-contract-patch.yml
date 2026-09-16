@@ -7,6 +7,7 @@ on:
       - tools/_apply_fotmob_contract_patch.py
       - tools/_fix_fotmob_patch_helper.py
       - tools/_fix_fotmob_contract_tests.py
+      - tools/_fix_generated_contract_tests.py
       - .github/workflows/test-fotmob-contract-patch.yml
 
 permissions:
@@ -32,6 +33,7 @@ jobs:
           python tools/_fix_fotmob_patch_helper.py
           python tools/_fix_fotmob_contract_tests.py
           python tools/_apply_fotmob_contract_patch.py
+          python tools/_fix_generated_contract_tests.py
       - name: Run full safety suite
         run: python -m pytest -q
       - name: Commit tested production changes
