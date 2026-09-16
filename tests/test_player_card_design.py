@@ -1,4 +1,4 @@
-"""Focused regression tests for the player-card-only visual redesign."""
+"""Focused regression tests for the FPL-only graphic asset source."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -39,160 +39,87 @@ def _portrait(color: tuple[int, int, int]) -> Image.Image:
     return Image.new("RGBA", (300, 400), (*color, 255))
 
 
-def test_current_club_grounded_wikipedia_precedes_stale_fpl_portrait(monkeypatch):
+def test_verified_player_uses_fpl_portrait_even_when_current_club_is_known(monkeypatch):
     expected = _portrait((40, 80, 220))
-    calls: list[tuple[str, str]] = []
+    calls: list[str] = []
 
-    def wikipedia(subject, expected_club=""):
-        calls.append((subject, expected_club))
+    def download(url, _cache):
+        calls.append(url)
         return expected
 
-    monkeypatch.setattr(assets, "_wikipedia_image", wikipedia)
-    monkeypatch.setattr(
-        assets,
-        "_download_image",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("ungrounded FPL portrait must not be requested")
-        ),
-    )
-
-    image, source = assets.resolve_player_image(
-        "Truth Player", {}, fpl_data=_fpl_data()
-    )
-
-    assert image is expected
-    assert source == "Wikipedia"
-    assert calls == [("Truth Player", "Arsenal")]
-
-
-def test_current_club_without_grounded_portrait_uses_verified_team_shirt(monkeypatch):
-    calls: list[str] = []
-
-    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: None)
-
-    def download(url, _cache):
-        calls.append(url)
-        return None
-
     monkeypatch.setattr(assets, "_download_image", download)
 
-    image, source = assets.resolve_player_image(
-        "Truth Player", {}, fpl_data=_fpl_data()
-    )
-
-    assert source == "Team shirt fallback"
-    assert image is not None and image.mode == "RGBA"
-    assert not any("/photos/players/" in url for url in calls)
-
-
-def test_identity_only_lane_can_use_fpl_portrait(monkeypatch):
-    data = _fpl_data()
-    data["elements"][0]["team"] = 99
-    expected = _portrait((10, 220, 30))
-    calls: list[str] = []
-
-    def download(url, _cache):
-        calls.append(url)
-        return expected if "/photos/players/" in url else None
-
-    monkeypatch.setattr(assets, "_download_image", download)
-    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: None)
-
-    image, source = assets.resolve_player_image(
-        "Truth Player", {}, fpl_data=data
-    )
+    image, source = assets.resolve_player_image("Truth Player", {}, fpl_data=_fpl_data())
 
     assert image is expected
     assert source == "FPL API"
-    assert any("/photos/players/" in url for url in calls)
+    assert calls == ["https://resources.premierleague.com/premierleague/photos/players/250x250/p12345.png"]
 
 
-def test_wikipedia_precedes_reliable_provider_in_identity_only_lane(monkeypatch):
-    expected = _portrait((40, 80, 220))
+def test_player_image_does_not_fallback_to_wikipedia_or_fotmob(monkeypatch):
     calls: list[str] = []
 
-    monkeypatch.setattr(assets, "_fpl_data", lambda _value: None)
-    monkeypatch.setattr(assets, "_download_image", lambda url, _cache: calls.append(url))
-    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: expected)
-
-    image, source = assets.resolve_player_image(
-        "Truth Player", {"provider_player_id": "9988"}, fpl_data=None,
+    monkeypatch.setattr(assets, "_download_image", lambda url, _cache: calls.append(url) or None)
+    monkeypatch.setattr(
+        assets,
+        "fetch_fpl_data",
+        lambda: _fpl_data(),
     )
 
-    assert image is expected
-    assert source == "Wikipedia"
-    assert not any("fotmob.com" in url for url in calls)
+    image, source = assets.resolve_player_image("Truth Player", {}, fpl_data=_fpl_data())
+
+    assert image is None
+    assert source == ""
+    assert all("wikipedia.org" not in url and "fotmob.com" not in url for url in calls)
 
 
-def test_reliable_provider_runs_after_wikipedia_in_identity_only_lane(monkeypatch):
-    expected = _portrait((220, 40, 160))
+def test_missing_fpl_player_identity_fails_closed(monkeypatch):
+    monkeypatch.setattr(assets, "_download_image", lambda *_args, **_kwargs: None)
+    image, source = assets.resolve_player_image("Unknown Player", {}, fpl_data=_fpl_data())
+    assert image is None
+    assert source == ""
+
+
+def test_club_logo_uses_fpl_team_code_only(monkeypatch):
     calls: list[str] = []
-
-    monkeypatch.setattr(assets, "_fpl_data", lambda _value: None)
+    expected = _portrait((220, 40, 160))
 
     def download(url, _cache):
         calls.append(url)
-        if "fotmob.com/image_resources/playerimages/9988.png" in url:
-            return expected
-        return None
+        return expected
 
     monkeypatch.setattr(assets, "_download_image", download)
-    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: None)
 
-    image, source = assets.resolve_player_image(
-        "Truth Player", {"provider_player_id": "9988"}, fpl_data=None,
-    )
-
-    assert image is expected
-    assert source == "Reliable provider"
-    assert any("fotmob.com/image_resources/playerimages/9988.png" in url for url in calls)
-
-
-def test_verified_team_shirt_is_the_final_image_fallback(monkeypatch):
-    monkeypatch.setattr(assets, "_download_image", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: None)
-
-    image, source = assets.resolve_player_image(
-        "Truth Player",
-        {"club_from_name": "Chelsea", "club_to_name": "Tottenham"},
+    image = assets.resolve_club_logo(
+        "Arsenal",
+        provider_id="9999",
         fpl_data=_fpl_data(),
     )
 
-    assert source == "Team shirt fallback"
-    assert image is not None and image.mode == "RGBA"
-    assert image.getchannel("A").getbbox() is not None
-    # The live FPL team is the identity anchor, not either supplied transfer club.
-    assert assets._verified_shirt_club(
-        "Truth Player", {"club_to_name": "Chelsea"}, _fpl_data(),
-    )[0] == "Arsenal"
+    assert image is expected
+    assert calls == ["https://resources.premierleague.com/premierleague/badges/100/t3.png"]
+    assert not any("fotmob.com" in url for url in calls)
 
 
-def test_club_aliases_ground_current_club_metadata():
-    assert assets._mentions_club(
-        "The player joined Manchester City and remains with the club.",
-        "Man City",
-    )
-    assert not assets._mentions_club(
-        "The player came through Tottenham Hotspur's academy.",
-        "Arsenal",
-    )
+def test_club_logo_missing_fpl_team_fails_closed(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(assets, "_download_image", lambda url, _cache: calls.append(url) or None)
+    image = assets.resolve_club_logo("Unknown FC", provider_id="9999", fpl_data=_fpl_data())
+    assert image is None
+    assert calls == []
 
 
-def test_verified_player_portrait_keeps_original_image_intact():
+def test_identity_safe_portrait_keeps_verified_fpl_asset_intact():
     portrait = Image.new("RGBA", (500, 500), (0, 0, 0, 0))
     portrait.paste((20, 180, 240, 255), (0, 0, 500, 220))
     portrait.paste((255, 210, 0, 255), (0, 220, 500, 500))
-
-    safe = assets.identity_safe_portrait(portrait, "Wikipedia")
-
+    safe = assets.identity_safe_portrait(portrait, "FPL API")
     assert safe.size == portrait.size
     assert safe.tobytes() == portrait.tobytes()
 
 
-def test_verified_team_shirt_is_never_cropped_as_a_stale_portrait():
-    shirt = Image.new("RGBA", (900, 1120), (80, 20, 120, 255))
-    safe = assets.identity_safe_portrait(shirt, "Team shirt fallback")
-    assert safe.size == shirt.size
+def test_verified_shirt_club_is_anchored_to_fpl_player_team():
+    assert assets._verified_shirt_club("Truth Player", {"club_to_name": "Chelsea"}, _fpl_data())[0] == "Arsenal"
 
 
 def test_player_name_and_values_use_large_responsive_font_ranges(monkeypatch):
@@ -202,69 +129,28 @@ def test_player_name_and_values_use_large_responsive_font_ranges(monkeypatch):
 
     def capture(draw, value, max_width, *, max_size, min_size, role="bold"):
         calls.append((str(value), max_size, min_size))
-        return original_fit_font(
-            draw,
-            value,
-            max_width,
-            max_size=max_size,
-            min_size=min_size,
-            role=role,
-        )
+        return original_fit_font(draw, value, max_width, max_size=max_size, min_size=min_size, role=role)
 
     monkeypatch.setattr(engine, "fit_font", capture)
 
-    def capture_wrapped(
-        draw,
-        value,
-        max_width,
-        max_height,
-        max_lines,
-        *,
-        max_size,
-        min_size,
-        role="bold",
-        line_spacing=1.12,
-    ):
+    def capture_wrapped(draw, value, max_width, max_height, max_lines, *, max_size, min_size, role="bold", line_spacing=1.12):
         calls.append((str(value), max_size, min_size))
         return original_fit_wrapped_text(
-            draw,
-            value,
-            max_width,
-            max_height,
-            max_lines,
-            max_size=max_size,
-            min_size=min_size,
-            role=role,
-            line_spacing=line_spacing,
+            draw, value, max_width, max_height, max_lines,
+            max_size=max_size, min_size=min_size, role=role, line_spacing=line_spacing,
         )
 
     monkeypatch.setattr(engine, "fit_wrapped_text", capture_wrapped)
     monkeypatch.setattr(engine, "resolve_player_metadata", lambda *_args, **_kwargs: {})
     renderer = MasterGraphicRenderer(None, fpl_data=_fpl_data())
     image = Image.new("RGB", (3840, 2160), (0, 0, 0))
-    decision = SimpleNamespace(
-        event_type=EventType.INJURY,
-        verified_facts={"subject_name": "Large Type", "club_name": "Arsenal"},
-    )
+    decision = SimpleNamespace(event_type=EventType.INJURY, verified_facts={"subject_name": "Large Type", "club_name": "Arsenal"})
 
-    renderer._player_heading(
-        image,
-        (200, 485, 2325, 750),
-        decision,
-        STYLES[EventType.INJURY],
-    )
-    renderer._draw_rows(
-        image,
-        (200, 790, 2325, 1014),
-        [Field("STATUS", "Ready", "status")],
-        STYLES[EventType.INJURY],
-    )
+    renderer._player_heading(image, (200, 485, 2325, 750), decision, STYLES[EventType.INJURY])
+    renderer._draw_rows(image, (200, 790, 2325, 1014), [Field("STATUS", "Ready", "status")], STYLES[EventType.INJURY])
 
     assert ("Large Type", 180, 96) in calls
-    assert any(
-        value == "Ready" and minimum == CORE_TEXT_MIN
-        for value, _maximum, minimum in calls
-    )
+    assert any(value == "Ready" and minimum == CORE_TEXT_MIN for value, _maximum, minimum in calls)
 
 
 def test_phone_preview_font_floors_are_calculated_not_magic_tiny_sizes():
@@ -276,13 +162,7 @@ def test_phone_preview_font_floors_are_calculated_not_magic_tiny_sizes():
 def test_dynamic_rows_never_overlap_or_escape_their_panel():
     panel = Rect(200, 790, 2325, 1810)
     for count in range(1, 6):
-        rows = [
-            Rect(*value)
-            for value in stacked_rects(panel.tuple(), count, gap=22, max_height=500)
-        ]
+        rows = [Rect(*value) for value in stacked_rects(panel.tuple(), count, gap=22, max_height=500)]
         assert len(rows) == count
         assert all(panel.contains(row) for row in rows)
-        assert all(
-            not left.overlaps(right)
-            for left, right in zip(rows, rows[1:])
-        )
+        assert all(not left.overlaps(right) for left, right in zip(rows, rows[1:]))
