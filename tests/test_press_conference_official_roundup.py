@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qs, urlparse
 
 from src.verification.models import (
     DecisionType,
@@ -13,7 +12,9 @@ from src.verification.models import (
 )
 from src.verification.press_conference_gate import validate_official_press_conference
 from src.verification.press_roundup import (
-    PREMIER_LEAGUE_SOURCE_ID,
+    FPL_SOURCE_ID,
+    PRESS_FEED_ID,
+    is_fpl_url,
     parse_premier_league_roundup,
     press_deadline_target,
     press_deadline_window_open,
@@ -42,31 +43,39 @@ TWENTY_MANAGERS = [
 ]
 
 
-def test_official_premier_league_press_feed_is_configured():
+def test_only_fpl_is_used_for_press_provenance():
     feeds = FeedRegistry.load("config/feeds.json")
-    press = next(feed for feed in feeds.feeds if feed.id == "google.premier_league.press_conference")
-    query = parse_qs(urlparse(press.url).query)["q"][0]
-    assert query.startswith("site:premierleague.com/en/news (")
-    assert '"press conference"' in query
-    assert query.endswith(") when:2d")
-    assert press.source_hint == PREMIER_LEAGUE_SOURCE_ID
+    assert [feed.id for feed in feeds.feeds] == ["fotmob.premier_league.topnews"]
+    assert not feeds.social_feeds
+    assert feeds.official_discovery.get("enabled") is False
+    assert FPL_SOURCE_ID == "official.fpl"
+    assert PRESS_FEED_ID == "official.fpl.news"
+    assert is_fpl_url("https://fantasy.premierleague.com/api/bootstrap-static/") is True
+    assert is_fpl_url("https://www.premierleague.com/en/news/123") is False
 
 
-def test_all_official_premier_league_searches_group_terms_and_limit_lookback():
-    feeds = FeedRegistry.load("config/feeds.json")
-    official = {
-        feed.id: parse_qs(urlparse(feed.url).query)["q"][0]
-        for feed in feeds.feeds
-        if feed.id.startswith("google.premier_league.")
-    }
-    assert set(official) == {
-        "google.premier_league.transfers",
-        "google.premier_league.availability",
-        "google.premier_league.press_conference",
-    }
-    for query in official.values():
-        assert query.startswith("site:premierleague.com/en/news (")
-        assert query.endswith(") when:2d")
+def test_fpl_press_item_requires_official_fpl_provenance():
+    assert project_roundup_story(
+        {},
+        {
+            "source_id": FPL_SOURCE_ID,
+            "feed_id": PRESS_FEED_ID,
+            "source_url": "https://fantasy.premierleague.com/api/bootstrap-static/",
+            "full_text": ROUNDUP_TEXT,
+        },
+        resolve_staff=lambda _name: None,
+        resolve_club_key=lambda club: club.lower(),
+    ) is True
+
+    assert project_roundup_story(
+        {},
+        {
+            "source_id": "official.premier_league",
+            "feed_id": "official.premier_league.press",
+            "source_url": "https://www.premierleague.com/en/news/123",
+            "full_text": ROUNDUP_TEXT,
+        },
+    ) is False
 
 
 def test_official_roundup_extracts_all_sections_for_existing_graphic_fields():
@@ -109,7 +118,9 @@ def test_roundup_without_speaker_or_quotes_fails_closed():
 def test_project_roundup_keeps_exact_official_speaker_when_snapshot_lags():
     story = {}
     source = {
-        "feed_id": "google.premierleague.press_conference",
+        "source_id": FPL_SOURCE_ID,
+        "feed_id": PRESS_FEED_ID,
+        "source_url": "https://fantasy.premierleague.com/api/bootstrap-static/",
         "full_text": ROUNDUP_TEXT,
     }
     assert project_roundup_story(
@@ -157,35 +168,35 @@ def _decision(url: str) -> VerificationDecision:
             "key_quotes": ["Mikel Arteta: The squad is ready"],
             "roundup": ["Arsenal — Mikel Arteta: The squad is ready"],
         },
-        source_ids=[PREMIER_LEAGUE_SOURCE_ID],
+        source_ids=[FPL_SOURCE_ID],
         publisher_groups=["premier-league"],
         gates=[GateResult("test", GateState.PASS, "ok")],
         reasons=[],
         confidence=1.0,
         confidence_dimensions={},
-        evidence_document_ids=["official-press-1"],
+        evidence_document_ids=["fpl-press-1"],
         fingerprint="test-fingerprint",
         source_url=url,
         authority_kind="first_party_official",
-        authority_source_ids=[PREMIER_LEAGUE_SOURCE_ID],
+        authority_source_ids=[FPL_SOURCE_ID],
     )
 
 
-def test_one_premierleague_source_is_sufficient_without_second_confirmation():
+def test_one_fpl_source_is_sufficient_without_second_confirmation():
     sources = SourceRegistry.load("config/sources.json")
     result = validate_official_press_conference(
-        _decision("https://www.premierleague.com/en/news/1234567"),
+        _decision("https://fantasy.premierleague.com/api/bootstrap-static/"),
         sources,
     )
     assert result.ok is True
-    assert result.reason == "official_premierleague_roundup"
+    assert result.reason == "official_fpl_press_roundup"
 
 
-def test_non_premierleague_url_is_rejected():
+def test_non_fpl_url_is_rejected():
     sources = SourceRegistry.load("config/sources.json")
     result = validate_official_press_conference(
         _decision("https://www.bbc.com/sport/football/123456"),
         sources,
     )
     assert result.ok is False
-    assert result.reason == "source_url_is_not_premierleague.com"
+    assert result.reason == "source_url_is_not_fpl"
