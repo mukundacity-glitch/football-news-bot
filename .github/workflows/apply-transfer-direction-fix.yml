@@ -1,0 +1,98 @@
+name: Apply guarded transfer direction fix
+
+on:
+  push:
+    branches:
+      - fix/transfer-direction-fpl-current-club
+    paths:
+      - '.github/workflows/apply-transfer-direction-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/transfer-direction-fpl-current-club
+      - name: Patch direction handoff and add regression tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('main.py')
+          text = path.read_text(encoding='utf-8')
+
+          old_direction = '''        if rt:
+              # Parser's "destination" is actually the resolved ORIGIN => inverted.
+              if s.get("to_key") and rfk and s.get("to_key") == rfk:
+                  s["to_club"], s["to_key"] = rt, rtk
+              elif not (s.get("to_key") or s.get("to_club")):
+                  s["to_club"], s["to_key"] = rt, rtk
+          '''
+          new_direction = '''        if rt:
+              # Direction resolver only emits a destination when explicit transfer
+              # grammar grounds it (movement verb, signing subject, or joint agreement).
+              # That is stronger evidence than the legacy parser's positional club guess,
+              # so always carry the grounded destination into V2.
+              s["to_club"], s["to_key"] = rt, rtk
+          '''
+
+          old_fpl = '''        if actual_club and not is_free_agent:
+              # FPL ground truth always wins over parser/direction guesses.
+              s["from_key"] = actual_club
+              s["from_club"] = actual_club.replace("_", " ")
+          '''
+          new_fpl = '''        if actual_club and not is_free_agent:
+              actual_name = actual_club.replace("_", " ")
+              destination_is_actual = bool(
+                  s.get("to_key") == actual_club
+                  or str(s.get("to_club") or "").strip().lower().replace("_", " ")
+                     == actual_name.lower()
+              )
+
+              if rf:
+                  # Explicit "from ..."/agreement grammar already established origin.
+                  # Never overwrite it with the *current* FPL club: after a completed
+                  # transfer FPL may already list the player at the destination club.
+                  pass
+              elif destination_is_actual:
+                  # If the legacy parser used the current FPL club as origin but that
+                  # same club is explicitly the destination, discard the false origin
+                  # and fail closed until a real origin is grounded.
+                  if s.get("from_key") == actual_club:
+                      s["from_key"] = None
+                  if (
+                      str(s.get("from_club") or "").strip().lower().replace("_", " ")
+                      == actual_name.lower()
+                  ):
+                      s["from_club"] = None
+              elif not (s.get("from_key") or s.get("from_club")):
+                  # Current FPL club is useful only as a missing-origin fallback when
+                  # it is not also the grounded destination.
+                  s["from_key"] = actual_club
+                  s["from_club"] = actual_name
+          '''
+
+          if old_direction not in text:
+              raise SystemExit('expected direction block not found; refusing unsafe patch')
+          if old_fpl not in text:
+              raise SystemExit('expected FPL origin block not found; refusing unsafe patch')
+
+          text = text.replace(old_direction, new_direction, 1)
+          text = text.replace(old_fpl, new_fpl, 1)
+          path.write_text(text, encoding='utf-8')
+
+          test = Path('tests/test_transfer_direction_current_fpl.py')
+          test.write_text('''"""Regression coverage for transfer direction after FPL updates a completed move."""\n\nimport main\n\n\ndef _fpl(team_id: int):\n    return {\n        "teams": [\n            {"id": 1, "name": "Arsenal", "short_name": "ARS"},\n            {"id": 2, "name": "Chelsea", "short_name": "CHE"},\n        ],\n        "elements": [\n            {\n                "id": 9001,\n                "first_name": "Example",\n                "second_name": "Player",\n                "web_name": "Player",\n                "team": team_id,\n            }\n        ],\n    }\n\n\ndef test_completed_inbound_transfer_keeps_grounded_origin_after_fpl_update():\n    story = main.build_story(\n        "Chelsea have completed the signing of Example Player from Arsenal.",\n        _fpl(2),\n    )\n\n    assert story["event"] == "transfer"\n    assert story["from_key"] == "arsenal"\n    assert story["to_key"] == "chelsea"\n    assert story["from_key"] != story["to_key"]\n\n\ndef test_current_fpl_club_remains_origin_for_outbound_move():\n    story = main.build_story(\n        "Example Player has joined Chelsea from Arsenal.",\n        _fpl(1),\n    )\n\n    assert story["event"] == "transfer"\n    assert story["from_key"] == "arsenal"\n    assert story["to_key"] == "chelsea"\n    assert story["from_key"] != story["to_key"]\n''', encoding='utf-8')
+          PY
+
+          git config user.name 'FPL VORTEX'
+          git config user.email 'mukundacity@gmail.com'
+          git add main.py tests/test_transfer_direction_current_fpl.py
+          git diff --cached --check
+          git commit -m 'Fix completed transfer direction after FPL roster updates'
+          git push origin HEAD:fix/transfer-direction-fpl-current-club
