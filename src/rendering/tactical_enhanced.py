@@ -93,6 +93,15 @@ class EnhancedTacticalGraphicRenderer(TacticalGraphicRenderer):
             self._loaded_assets = {}
             self._hero_is_jersey = False
 
+    def _footer(self, image: Image.Image, post: Mapping[str, object]) -> None:
+        # Preserve the audited source in post/state, but use a compact display
+        # label so the locked footer never ellipsizes the Day 1 source name.
+        display_post = dict(post)
+        source = str(display_post.get("source_label") or "")
+        if source == "Official FPL via FPL Vortex Day 1":
+            display_post["source_label"] = "Official FPL • Vortex D1"
+        super()._footer(image, display_post)
+
     def _body(self, image: Image.Image, post: Mapping[str, object], evidence: Sequence[object]) -> None:
         # Keep the original left-side hierarchy/evidence cards untouched. Then
         # repaint only the right panel where the base renderer placed its pitch.
