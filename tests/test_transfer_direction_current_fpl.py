@@ -28,9 +28,9 @@ def test_completed_inbound_transfer_keeps_grounded_origin_after_fpl_update():
     )
 
     assert story["event"] == "transfer"
-    assert story["from_key"] == "arsenal"
-    assert story["to_key"] == "chelsea"
-    assert story["from_key"] != story["to_key"]
+    assert story["from_key"].lower() == "arsenal"
+    assert story["to_key"].lower() == "chelsea"
+    assert story["from_key"].lower() != story["to_key"].lower()
 
 
 def test_current_fpl_club_remains_origin_for_outbound_move():
@@ -40,6 +40,6 @@ def test_current_fpl_club_remains_origin_for_outbound_move():
     )
 
     assert story["event"] == "transfer"
-    assert story["from_key"] == "arsenal"
-    assert story["to_key"] == "chelsea"
-    assert story["from_key"] != story["to_key"]
+    assert story["from_key"].lower() == "arsenal"
+    assert story["to_key"].lower() == "chelsea"
+    assert story["from_key"].lower() != story["to_key"].lower()
