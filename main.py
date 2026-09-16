@@ -516,11 +516,11 @@ def build_story(tweet_text, fpl_data):
     if s.get("event") in ("transfer", "loan", "loan_option"):
         rf, rfk, rt, rtk = _direction.resolve(tweet_text)
         if rt:
-            # Parser's "destination" is actually the resolved ORIGIN => inverted.
-            if s.get("to_key") and rfk and s.get("to_key") == rfk:
-                s["to_club"], s["to_key"] = rt, rtk
-            elif not (s.get("to_key") or s.get("to_club")):
-                s["to_club"], s["to_key"] = rt, rtk
+            # Direction resolver only emits a destination when explicit transfer
+            # grammar grounds it (movement verb, signing subject, or joint agreement).
+            # That is stronger evidence than the legacy parser's positional club guess,
+            # so always carry the grounded destination into V2.
+            s["to_club"], s["to_key"] = rt, rtk
         if rf:
             # Direction module found explicit "from [club]" grammar — more
             # reliable than the parser's "2nd club in tweet" positional guess.
@@ -533,10 +533,34 @@ def build_story(tweet_text, fpl_data):
         actual_club = fpl_team_key(el, fpl_data) if el else None
 
         if actual_club and not is_free_agent:
-            # FPL ground truth always wins over parser/direction guesses.
-            s["from_key"] = actual_club
-            s["from_club"] = actual_club.replace("_", " ")
+            actual_name = actual_club.replace("_", " ")
+            destination_is_actual = bool(
+                s.get("to_key") == actual_club
+                or str(s.get("to_club") or "").strip().lower().replace("_", " ")
+                   == actual_name.lower()
+            )
 
+            if rf:
+                # Explicit transfer grammar already established the origin.
+                # Never overwrite it with the current FPL club: after a
+                # completed move FPL may already list the player at destination.
+                pass
+            elif destination_is_actual:
+                # The current FPL club is the grounded destination, so it cannot
+                # also prove the origin. Clear only the parser's matching fallback
+                # and fail closed until a real origin is grounded.
+                if s.get("from_key") == actual_club:
+                    s["from_key"] = None
+                if (
+                    str(s.get("from_club") or "").strip().lower().replace("_", " ")
+                    == actual_name.lower()
+                ):
+                    s["from_club"] = None
+            elif not (s.get("from_key") or s.get("from_club")):
+                # Current FPL club remains a missing-origin fallback only when
+                # it is distinct from the grounded destination.
+                s["from_key"] = actual_club
+                s["from_club"] = actual_name
     # Loan fee guard: the fee regex often captures a player's market value
     # mentioned in the same tweet (e.g. "€100M-rated Bouaddi on loan"), not an
     # actual loan fee payment. Clear it unless the tweet explicitly names a fee
