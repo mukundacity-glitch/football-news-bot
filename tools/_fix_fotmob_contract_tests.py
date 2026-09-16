@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 path = Path("tools/_apply_fotmob_contract_patch.py")
 text = path.read_text(encoding="utf-8")
@@ -19,5 +20,21 @@ comment = '# 6) Regression tests based on the structured shape shown in FotMob T
 text = text.replace(anchor, prefix + legacy_update + comment, 1)
 text = text.replace('assert not mandatory.passed', 'assert mandatory.state.value != "PASS"')
 text = text.replace('assert not temporal.passed', 'assert temporal.state.value != "PASS"')
+
+pattern = re.compile(
+    r'# 5\) NEWS BOT owns contract extensions too\. PRESS CONFERENCE BOT remains isolated\.\n'
+    r'replace_once\(\n    "\.github/workflows/bot\.yml",.*?\n\)\n'
+    r'replace_once\(\n    "tests/test_press_deadline_routing\.py",.*?\n\)\n'
+    r'replace_once\(\n    "tests/test_press_deadline_routing\.py",.*?\n\)\n\n',
+    re.S,
+)
+text, count = pattern.subn(
+    '# 5) Workflow scope is updated separately after tested code is pushed.\n',
+    text,
+    count=1,
+)
+if count != 1:
+    raise RuntimeError(f"expected workflow-scope block once, found {count}")
+
 path.write_text(text, encoding="utf-8")
-print("Corrected FotMob contract tests and legacy expectation")
+print("Corrected FotMob contract tests and workflow packaging")
