@@ -109,7 +109,7 @@ jobs:
           VERIFICATION_V2_ALLOW_DB_REBUILD: ${{ vars.VERIFICATION_V2_ALLOW_DB_REBUILD }}
           # The dedicated deadline workflow owns the combined press roundup so
           # it is not published early while manager conferences are incomplete.
-          LIVE_EVENT_SCOPE: transfer,loan,loan_option,injury,suspension
+          LIVE_EVENT_SCOPE: transfer,loan,loan_option,injury,suspension,renewal
           SAVE_DRAFTS_TO_DISK: false
           MAX_POSTS_PER_RUN: 2
           MAX_POSTS_PER_HOUR: 4
