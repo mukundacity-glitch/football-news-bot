@@ -317,7 +317,18 @@ async def run() -> int:
         print(f"[PRESS] Verified roundup ready; posting after {jitter}s pacing delay.")
         await asyncio.sleep(jitter)
 
-        posted = await bot.post_item(client, draft, data)
+        try:
+            posted = await bot.post_item(client, draft, data)
+        except Exception as exc:
+            # post_item owns cooldown and delivery receipts. Preserve its state
+            # and report failure without locking this gameweek or exposing X data.
+            bot.save_data(data)
+            _status(run_exit="post_not_completed", posted_count=0,
+                    posting_failures=[{"error_type": type(exc).__name__}])
+            print(f"[PRESS] X delivery failed: {type(exc).__name__}")
+            return 1
+        finally:
+            await client.http.aclose()
         ledger_has_post = runtime.repository.has_publication_fingerprint(
             decision.fingerprint
         )
@@ -341,7 +352,12 @@ async def run() -> int:
             )
             print(f"[PRESS] {event['event_name']} locked after publication; no repeat.")
         else:
-            _status(run_exit="post_not_completed", posted_count=0)
+            if bot.DRY_RUN:
+                _status(run_exit="dry_run", posted_count=0)
+                return 0
+            _status(run_exit="post_not_completed", posted_count=0,
+                    posting_failures=[{"error_type": "UnconfirmedDelivery"}])
+            return 1
         return 0
     finally:
         bot._VERIFICATION_RUNTIME = None
