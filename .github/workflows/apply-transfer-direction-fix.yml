@@ -26,68 +26,118 @@ jobs:
           path = Path('main.py')
           text = path.read_text(encoding='utf-8')
 
-          old_direction = '''        if rt:
-              # Parser's "destination" is actually the resolved ORIGIN => inverted.
-              if s.get("to_key") and rfk and s.get("to_key") == rfk:
-                  s["to_club"], s["to_key"] = rt, rtk
-              elif not (s.get("to_key") or s.get("to_club")):
-                  s["to_club"], s["to_key"] = rt, rtk
-          '''
-          new_direction = '''        if rt:
-              # Direction resolver only emits a destination when explicit transfer
-              # grammar grounds it (movement verb, signing subject, or joint agreement).
-              # That is stronger evidence than the legacy parser's positional club guess,
-              # so always carry the grounded destination into V2.
-              s["to_club"], s["to_key"] = rt, rtk
-          '''
+          direction_start_marker = '        if rt:\n' + '            # Parser\'s "destination" is actually the resolved ORIGIN => inverted.\n'
+          direction_end_marker = '        if rf:\n'
+          try:
+              direction_start = text.index(direction_start_marker)
+              direction_end = text.index(direction_end_marker, direction_start)
+          except ValueError as exc:
+              raise SystemExit(f'expected direction block not found; refusing unsafe patch: {exc}')
 
-          old_fpl = '''        if actual_club and not is_free_agent:
-              # FPL ground truth always wins over parser/direction guesses.
-              s["from_key"] = actual_club
-              s["from_club"] = actual_club.replace("_", " ")
-          '''
-          new_fpl = '''        if actual_club and not is_free_agent:
-              actual_name = actual_club.replace("_", " ")
-              destination_is_actual = bool(
-                  s.get("to_key") == actual_club
-                  or str(s.get("to_club") or "").strip().lower().replace("_", " ")
-                     == actual_name.lower()
-              )
+          direction_lines = [
+              '        if rt:',
+              '            # Direction resolver only emits a destination when explicit transfer',
+              '            # grammar grounds it (movement verb, signing subject, or joint agreement).',
+              '            # That is stronger evidence than the legacy parser\'s positional club guess,',
+              '            # so always carry the grounded destination into V2.',
+              '            s["to_club"], s["to_key"] = rt, rtk',
+              '',
+          ]
+          text = text[:direction_start] + '\n'.join(direction_lines) + text[direction_end:]
 
-              if rf:
-                  # Explicit "from ..."/agreement grammar already established origin.
-                  # Never overwrite it with the *current* FPL club: after a completed
-                  # transfer FPL may already list the player at the destination club.
-                  pass
-              elif destination_is_actual:
-                  # If the legacy parser used the current FPL club as origin but that
-                  # same club is explicitly the destination, discard the false origin
-                  # and fail closed until a real origin is grounded.
-                  if s.get("from_key") == actual_club:
-                      s["from_key"] = None
-                  if (
-                      str(s.get("from_club") or "").strip().lower().replace("_", " ")
-                      == actual_name.lower()
-                  ):
-                      s["from_club"] = None
-              elif not (s.get("from_key") or s.get("from_club")):
-                  # Current FPL club is useful only as a missing-origin fallback when
-                  # it is not also the grounded destination.
-                  s["from_key"] = actual_club
-                  s["from_club"] = actual_name
-          '''
+          fpl_start_marker = '        if actual_club and not is_free_agent:\n'
+          fpl_end_marker = '\n    # Loan fee guard:'
+          try:
+              fpl_start = text.index(fpl_start_marker, direction_start)
+              fpl_end = text.index(fpl_end_marker, fpl_start)
+          except ValueError as exc:
+              raise SystemExit(f'expected FPL origin block not found; refusing unsafe patch: {exc}')
 
-          if old_direction not in text:
-              raise SystemExit('expected direction block not found; refusing unsafe patch')
-          if old_fpl not in text:
-              raise SystemExit('expected FPL origin block not found; refusing unsafe patch')
-
-          text = text.replace(old_direction, new_direction, 1)
-          text = text.replace(old_fpl, new_fpl, 1)
+          fpl_lines = [
+              '        if actual_club and not is_free_agent:',
+              '            actual_name = actual_club.replace("_", " ")',
+              '            destination_is_actual = bool(',
+              '                s.get("to_key") == actual_club',
+              '                or str(s.get("to_club") or "").strip().lower().replace("_", " ")',
+              '                   == actual_name.lower()',
+              '            )',
+              '',
+              '            if rf:',
+              '                # Explicit transfer grammar already established the origin.',
+              '                # Never overwrite it with the current FPL club: after a',
+              '                # completed move FPL may already list the player at destination.',
+              '                pass',
+              '            elif destination_is_actual:',
+              '                # The current FPL club is the grounded destination, so it cannot',
+              '                # also prove the origin. Clear only the parser\'s matching fallback',
+              '                # and fail closed until a real origin is grounded.',
+              '                if s.get("from_key") == actual_club:',
+              '                    s["from_key"] = None',
+              '                if (',
+              '                    str(s.get("from_club") or "").strip().lower().replace("_", " ")',
+              '                    == actual_name.lower()',
+              '                ):',
+              '                    s["from_club"] = None',
+              '            elif not (s.get("from_key") or s.get("from_club")):',
+              '                # Current FPL club remains a missing-origin fallback only when',
+              '                # it is distinct from the grounded destination.',
+              '                s["from_key"] = actual_club',
+              '                s["from_club"] = actual_name',
+          ]
+          text = text[:fpl_start] + '\n'.join(fpl_lines) + text[fpl_end:]
           path.write_text(text, encoding='utf-8')
 
-          test = Path('tests/test_transfer_direction_current_fpl.py')
-          test.write_text('''"""Regression coverage for transfer direction after FPL updates a completed move."""\n\nimport main\n\n\ndef _fpl(team_id: int):\n    return {\n        "teams": [\n            {"id": 1, "name": "Arsenal", "short_name": "ARS"},\n            {"id": 2, "name": "Chelsea", "short_name": "CHE"},\n        ],\n        "elements": [\n            {\n                "id": 9001,\n                "first_name": "Example",\n                "second_name": "Player",\n                "web_name": "Player",\n                "team": team_id,\n            }\n        ],\n    }\n\n\ndef test_completed_inbound_transfer_keeps_grounded_origin_after_fpl_update():\n    story = main.build_story(\n        "Chelsea have completed the signing of Example Player from Arsenal.",\n        _fpl(2),\n    )\n\n    assert story["event"] == "transfer"\n    assert story["from_key"] == "arsenal"\n    assert story["to_key"] == "chelsea"\n    assert story["from_key"] != story["to_key"]\n\n\ndef test_current_fpl_club_remains_origin_for_outbound_move():\n    story = main.build_story(\n        "Example Player has joined Chelsea from Arsenal.",\n        _fpl(1),\n    )\n\n    assert story["event"] == "transfer"\n    assert story["from_key"] == "arsenal"\n    assert story["to_key"] == "chelsea"\n    assert story["from_key"] != story["to_key"]\n''', encoding='utf-8')
+          test_lines = [
+              '"""Regression coverage for transfer direction after FPL updates a completed move."""',
+              '',
+              'import main',
+              '',
+              '',
+              'def _fpl(team_id: int):',
+              '    return {',
+              '        "teams": [',
+              '            {"id": 1, "name": "Arsenal", "short_name": "ARS"},',
+              '            {"id": 2, "name": "Chelsea", "short_name": "CHE"},',
+              '        ],',
+              '        "elements": [',
+              '            {',
+              '                "id": 9001,',
+              '                "first_name": "Example",',
+              '                "second_name": "Player",',
+              '                "web_name": "Player",',
+              '                "team": team_id,',
+              '            }',
+              '        ],',
+              '    }',
+              '',
+              '',
+              'def test_completed_inbound_transfer_keeps_grounded_origin_after_fpl_update():',
+              '    story = main.build_story(',
+              '        "Chelsea have completed the signing of Example Player from Arsenal.",',
+              '        _fpl(2),',
+              '    )',
+              '',
+              '    assert story["event"] == "transfer"',
+              '    assert story["from_key"] == "arsenal"',
+              '    assert story["to_key"] == "chelsea"',
+              '    assert story["from_key"] != story["to_key"]',
+              '',
+              '',
+              'def test_current_fpl_club_remains_origin_for_outbound_move():',
+              '    story = main.build_story(',
+              '        "Example Player has joined Chelsea from Arsenal.",',
+              '        _fpl(1),',
+              '    )',
+              '',
+              '    assert story["event"] == "transfer"',
+              '    assert story["from_key"] == "arsenal"',
+              '    assert story["to_key"] == "chelsea"',
+              '    assert story["from_key"] != story["to_key"]',
+              '',
+          ]
+          Path('tests/test_transfer_direction_current_fpl.py').write_text(
+              '\n'.join(test_lines), encoding='utf-8'
+          )
           PY
 
           git config user.name 'FPL VORTEX'
