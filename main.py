@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from collections import Counter
 
 # Connected to Core Engines & Ground Truth Caches
 from src.fpl_feed import fetch_fpl_data, find_player_in_fpl, fpl_team_key
@@ -2374,6 +2375,27 @@ def _v2_log_decision(decision: V2VerificationDecision) -> None:
         print(f"       {reason}")
 
 
+def _v2_collection_priority(item: dict, runtime) -> tuple:
+    """Spend bounded collection work on target news before unrelated headlines.
+
+    This only orders discovery work; it cannot authorize publication or change
+    a claim. Stable sorting retains feed order when priorities and dates match.
+    """
+    target = False
+    try:
+        document = runtime.documents.from_item(_v2_document_item(item))
+        classification = runtime.extractor.classifier.classify(document, None)
+        event = classification.event_type.value.lower()
+        target = (
+            event in LIVE_POST_EVENT_NAMES
+            and classification.event_certainty >= runtime.config.threshold("event_certainty_min")
+        )
+    except Exception:
+        pass
+    created = _parse_rss_date(item.get("created_at") or item.get("published_at"))
+    return (not target, -created.timestamp() if created else 0)
+
+
 async def scrape(data, fpl=None, verification_runtime=None):
     """V2 candidate discovery → grounded claims → fail-closed decisions.
 
@@ -2424,6 +2446,32 @@ async def scrape(data, fpl=None, verification_runtime=None):
     collection_config = runtime.config.collection_config
     official_enrichment_budget = int(collection_config["official_enrichment_budget"])
     fotmob_pipeline_stats = {"seen": 0, "grouped": 0, "posted_id_skip": 0, "age_skip": 0}
+    outcomes = Counter()
+    decisions = Counter()
+    failed_gates = Counter()
+    ready_sources = Counter()
+    enrichment_candidates = []
+    for item in items:
+        if item["id"] in data.get("posted_ids", []) or "_fpl_pre_built" in item or "_legacy_story" in item:
+            continue
+        created = _parse_rss_date(item.get("created_at"))
+        if created is None or (datetime.now(timezone.utc) - created).total_seconds() > max_age_hours * 3600:
+            continue
+        if str(item.get("feed_id") or "") == PRESS_FEED_ID:
+            continue  # The dedicated roundup enrichment is handled below.
+        try:
+            probe = runtime.documents.from_item(_v2_document_item(item))
+            profile = runtime.sources.get(probe.source.profile_id)
+            if profile and profile.is_official and probe.source.verified:
+                enrichment_candidates.append(item)
+        except Exception:
+            continue
+    enrichment_ids = {
+        item["id"] for item in sorted(
+            enrichment_candidates, key=lambda item: _v2_collection_priority(item, runtime)
+        )[:max(0, official_enrichment_budget)]
+    }
+    collection_priorities = {}
     for raw_source_item in items:
         source_item = raw_source_item
         item_id = source_item["id"]
@@ -2433,16 +2481,19 @@ async def scrape(data, fpl=None, verification_runtime=None):
         if is_fotmob_item:
             fotmob_pipeline_stats["seen"] += 1
         if item_id in data.get("posted_ids", []):
+            outcomes["already_posted_item"] += 1
             if is_fotmob_item:
                 fotmob_pipeline_stats["posted_id_skip"] += 1
             continue
         created = _parse_rss_date(source_item.get("created_at"))
         if created is None:
+            outcomes["unknown_publication_time"] += 1
             print(f"   [V2-SKIP] unknown publication time: {source_item.get('title', '')[:80]!r}")
             if is_fotmob_item:
                 fotmob_pipeline_stats["age_skip"] += 1
             continue
         if (datetime.now(timezone.utc) - created).total_seconds() > max_age_hours * 3600:
+            outcomes["stale_item"] += 1
             if is_fotmob_item:
                 fotmob_pipeline_stats["age_skip"] += 1
             continue
@@ -2460,12 +2511,13 @@ async def scrape(data, fpl=None, verification_runtime=None):
             # it must carry the full article body so the combined roundup can
             # include every manager section instead of only the RSS headline.
             is_press_feed = str(source_item.get("feed_id") or "") == PRESS_FEED_ID
-            if is_press_feed or official_enrichment_budget > 0:
+            if is_press_feed or item_id in enrichment_ids:
                 try:
                     probe = runtime.documents.from_item(_v2_document_item(source_item))
                     profile = runtime.sources.get(probe.source.profile_id)
                     if profile and profile.is_official and probe.source.verified:
                         source_item = enrich_official_item(source_item, runtime)
+                        outcomes["official_enriched" if source_item.get("full_text") else "official_enrichment_unavailable"] += 1
                         if not is_press_feed:
                             official_enrichment_budget -= 1
                 except Exception:
@@ -2509,6 +2561,8 @@ async def scrape(data, fpl=None, verification_runtime=None):
         })
         group["observations"].append(observation)
         group["legacy_sources"].append(source_item.get("username") or "unknown")
+        priority = _v2_collection_priority(source_item, runtime)
+        collection_priorities[key] = min(collection_priorities.get(key, priority), priority)
         if is_fotmob_item:
             fotmob_pipeline_stats["grouped"] += 1
 
@@ -2523,7 +2577,16 @@ async def scrape(data, fpl=None, verification_runtime=None):
             read_client.set_cookies({"auth_token": X_AUTH_TOKEN, "ct0": X_CT0_TOKEN})
         except Exception as exc:
             print(f"  [V2-X] read client unavailable: {exc}")
-    for group in list(groups.values())[: int(collection_config["cross_verify_budget"]) ]:
+    # Empty subjects cannot be searched. Press conferences have a separate
+    # first-party roundup owner and must not consume the news search budget.
+    search_groups = [group for key, group in sorted(
+        groups.items(), key=lambda pair: collection_priorities[pair[0]]
+    ) if group["representative"].get("player")
+        and not (group["representative"].get("event") == "press_conference"
+                 and "press_conference" not in LIVE_POST_EVENT_NAMES)]
+    search_groups = search_groups[:max(0, int(collection_config["cross_verify_budget"]))]
+    outcomes["cross_verified_groups"] = len(search_groups)
+    for group in search_groups:
         representative = group["representative"]
         try:
             result = await cross_verify(
@@ -2575,7 +2638,10 @@ async def scrape(data, fpl=None, verification_runtime=None):
             decision = runtime.verify_observations(group["observations"])
         except Exception as exc:
             print(f"  [V2-ERROR] {key}: {exc} — fail closed")
+            outcomes["verification_error"] += 1
             continue
+        decisions[f"{decision.decision.value}:{decision.event_type.value}"] += 1
+        failed_gates.update(g.name for g in decision.gates if g.state.value == "FAIL")
         _v2_log_decision(decision)
         if group["representative"].get("_structured_fotmob_transfer"):
             print(
@@ -2598,16 +2664,31 @@ async def scrape(data, fpl=None, verification_runtime=None):
         _v2_project_verified_facts(item, decision)
         duplicate, duplicate_reason = is_duplicate_content(item, data)
         if duplicate:
+            outcomes["legacy_duplicate"] += 1
             print(f"  [V2-DUPLICATE-LEGACY] {item.get('player')!r}: {duplicate_reason}")
             continue
         pending_v2.pop(decision.story_id, None)
         ready.append(item)
+        ready_sources.update(decision.authority_source_ids)
 
     # Keep the compact compatibility snapshot bounded; full evidence lives in SQLite.
     if len(pending_v2) > 500:
         oldest = sorted(pending_v2, key=lambda k: pending_v2[k].get("last_seen", ""))
         for key in oldest[:-500]:
             pending_v2.pop(key, None)
+    health["pipeline"] = {
+        "items_read": len(items),
+        "items_by_feed": dict(Counter(item.get("feed_id") or "unknown" for item in items)),
+        "items_by_source": dict(Counter(item.get("source_id") or item.get("username") or "unknown" for item in items)),
+        "outcomes": dict(outcomes),
+        "groups_verified": sum(decisions.values()),
+        "decisions": dict(decisions),
+        "failed_gates": dict(failed_gates),
+        "ready_count": len(ready),
+        "ready_authority_sources": dict(ready_sources),
+        "fotmob": fotmob_pipeline_stats,
+    }
+    print(f"  [V2-PIPELINE] read={len(items)} groups={sum(decisions.values())} ready={len(ready)} outcomes={dict(outcomes)} decisions={dict(decisions)}")
     save_data(data)
     return ready
 
@@ -3354,6 +3435,7 @@ async def main(post: bool = True):
             status["feeds_total"] = rh.get("feeds_total") or rh.get("accounts_total")
             status["feeds_failed"] = rh.get("feeds_failed") or rh.get("accounts_failed")
             status["feed_failures"] = list(rh.get("failures") or [])[:10]
+            status["pipeline"] = rh.get("pipeline", {})
             # Recorded on every run, not just empty ones, so a partial X outage
             # is visible in the status file even when a few stories still post.
             status["x_search_health"] = x_search_health()

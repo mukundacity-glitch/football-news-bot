@@ -263,3 +263,20 @@ def test_diagnostic_excludes_retweets_and_embedded_quotes():
 ])
 def test_delivery_check_distinguishes_quiet_runs_from_posting_failures(status, failed):
     assert posting_failed(status) is failed
+
+
+def test_run_summary_explains_source_mix_and_verification_blocks():
+    from tools.check_posting_result import pipeline_summary
+
+    report = "\n".join(pipeline_summary({"pipeline": {
+        "items_read": 15, "groups_verified": 4, "ready_count": 0,
+        "outcomes": {"stale_item": 10, "already_posted_item": 1},
+        "decisions": {"DUPLICATE:INJURY": 3, "PENDING:TRANSFER": 1},
+        "items_by_source": {"media.fotmob": 10, "club.chelsea": 5},
+    }}))
+    assert "stale: 10" in report
+    assert "Already posted items: 1" in report
+    assert "DUPLICATE:INJURY=3" in report
+    assert "media.fotmob=10" in report and "club.chelsea=5" in report
+    assert "0 ready before posting limits" in report
+    assert pipeline_summary({}) == []

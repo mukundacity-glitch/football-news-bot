@@ -83,7 +83,7 @@ jobs:
           POST_JITTER_MAX_S: 45
           COOLDOWN_FLAGGED_MIN: 180
           COOLDOWN_RATELIMIT_MIN: 30
-        run: python tools/press_publish.py
+        run: python -m tools.press_publish
 
       - name: Save generated roundup for inspection
         if: always() && steps.window.outputs.should_run == 'true'
