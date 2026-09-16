@@ -5,14 +5,17 @@ selected from the live fixture/provider response and the official FPL snapshot.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import Any, Callable, Mapping
-
-from src.tactical_intelligence import Candidate, normalize_name
 
 PRIORITY_SCORE = 75
 STRONG_SCORE = 60
 TREND_SCORE = 45
+
+
+def _normalize_name(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
 
 
 def score_tier(score: int) -> str:
@@ -26,15 +29,16 @@ def score_tier(score: int) -> str:
     return "REJECT"
 
 
-def story_quality_gate(candidate: Candidate) -> tuple[bool, str]:
+def story_quality_gate(candidate: Any) -> tuple[bool, str]:
     """Reject weak/generic observations before priority scoring can publish them."""
     focus = str(candidate.post.get("diagram_focus") or "").casefold()
     evidence = list(candidate.post.get("evidence") or [])
     if len(evidence) < 2:
         return False, "insufficient_tactical_evidence"
     if candidate.mode == "review" and focus == "pressure":
-        # The legacy review pressure candidate is based only on a shots-on-target
-        # gap. A single box-score delta is not enough to call a tactical pattern.
+        # A shots-on-target gap by itself describes an outcome, not necessarily
+        # the tactical mechanism behind it. Keep this out until richer evidence
+        # supports the conclusion.
         return False, "generic_single_stat_review"
     if focus not in {"set_piece", "possession", "pressure"}:
         return False, "unsupported_tactical_pattern"
@@ -43,16 +47,14 @@ def story_quality_gate(candidate: Candidate) -> tuple[bool, str]:
     return True, "verified_tactical_pattern"
 
 
-def _focus_team(candidate: Candidate) -> tuple[int, str]:
-    thesis = normalize_name(candidate.post.get("thesis"))
-    home_key = normalize_name(candidate.fixture.home)
-    away_key = normalize_name(candidate.fixture.away)
+def _focus_team(candidate: Any) -> tuple[int, str]:
+    thesis = _normalize_name(candidate.post.get("thesis"))
+    home_key = _normalize_name(candidate.fixture.home)
+    away_key = _normalize_name(candidate.fixture.away)
     if home_key and home_key in thesis:
         return candidate.fixture.home_id, candidate.fixture.home
     if away_key and away_key in thesis:
         return candidate.fixture.away_id, candidate.fixture.away
-    # A fixture-level story still needs a representative visual. Prefer the side
-    # with the earlier mention in the topic line, which is the home side.
     return candidate.fixture.home_id, candidate.fixture.home
 
 
@@ -94,11 +96,15 @@ def _official_fpl_hero(bootstrap: Mapping[str, Any], team_id: int) -> dict[str, 
     if _fpl_player_score(player) < 0:
         return None
     name = " ".join(
-        part for part in (str(player.get("first_name") or "").strip(), str(player.get("second_name") or "").strip())
+        part for part in (
+            str(player.get("first_name") or "").strip(),
+            str(player.get("second_name") or "").strip(),
+        )
         if part
     ) or str(player.get("web_name") or "PLAYER")
     code = int(player["code"])
     return {
+        "kind": "player",
         "name": name,
         "url": f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png",
         "source": "Official Premier League/FPL",
@@ -120,11 +126,11 @@ def _review_provider_hero(
         result = provider_get("fixtures/players", {"fixture": fixture_id})
     except Exception:
         return None
-    wanted = normalize_name(focus_name)
+    wanted = _normalize_name(focus_name)
     best: tuple[float, dict[str, Any]] | None = None
     for team_row in result.data.get("response", []) or []:
         team = team_row.get("team") or {}
-        if normalize_name(team.get("name")) != wanted:
+        if _normalize_name(team.get("name")) != wanted:
             continue
         for row in team_row.get("players", []) or []:
             player = row.get("player") or {}
@@ -156,6 +162,7 @@ def _review_provider_hero(
                 + n(passes.get("key")) * 1.5
             )
             payload = {
+                "kind": "player",
                 "name": str(player.get("name") or "PLAYER"),
                 "url": photo,
                 "source": "Licensed structured provider",
@@ -167,39 +174,50 @@ def _review_provider_hero(
 
 
 def visual_assets(
-    candidate: Candidate,
+    candidate: Any,
     bootstrap: Mapping[str, Any],
     provider_row: Mapping[str, Any],
     *,
     provider_get: Callable[[str, Mapping[str, Any]], Any] | None = None,
-) -> dict[str, Any] | None:
-    """Return two dynamic crests and one relevant real-player image."""
+) -> dict[str, Any]:
+    """Return dynamic team identities and a player visual with jersey fallback.
+
+    A missing portrait never kills the story. The renderer will first try the
+    selected player image and then create the same verified-team generic jersey
+    fallback already used by the main news workflow.
+    """
     provider_teams = provider_row.get("teams") or {}
     home_provider = provider_teams.get("home") or {}
     away_provider = provider_teams.get("away") or {}
-    home_logo = str(home_provider.get("logo") or "").strip()
-    away_logo = str(away_provider.get("logo") or "").strip()
-    if not home_logo or not away_logo:
-        return None
-
     focus_id, focus_name = _focus_team(candidate)
+
     hero = None
     if candidate.mode == "review":
         hero = _review_provider_hero(provider_row, focus_name, provider_get)
     if hero is None:
         hero = _official_fpl_hero(bootstrap, focus_id)
     if hero is None:
-        return None
+        hero = {
+            "kind": "team_shirt",
+            "name": focus_name,
+            "url": "",
+            "source": "Verified team jersey fallback",
+            "club_name": focus_name,
+        }
+    else:
+        # If the selected real image cannot be downloaded at render time, this
+        # verified club name tells the renderer which jersey fallback to build.
+        hero["club_name"] = focus_name
 
     return {
         "home_logo": {
             "team": candidate.fixture.home,
-            "url": home_logo,
+            "url": str(home_provider.get("logo") or "").strip(),
             "source": "Licensed structured provider",
         },
         "away_logo": {
             "team": candidate.fixture.away,
-            "url": away_logo,
+            "url": str(away_provider.get("logo") or "").strip(),
             "source": "Licensed structured provider",
         },
         "hero_player": hero,
@@ -207,26 +225,28 @@ def visual_assets(
 
 
 def enhance_candidate(
-    candidate: Candidate | None,
+    candidate: Any,
     bootstrap: Mapping[str, Any],
     provider_row: Mapping[str, Any],
     *,
     provider_get: Callable[[str, Mapping[str, Any]], Any] | None = None,
-) -> Candidate | None:
+) -> Any:
     if candidate is None:
         return None
     allowed, reason = story_quality_gate(candidate)
     if not allowed:
-        return None
-    assets = visual_assets(candidate, bootstrap, provider_row, provider_get=provider_get)
-    if assets is None:
         return None
 
     post = dict(candidate.post)
     tier = score_tier(candidate.priority_score)
     post["priority_tier"] = tier
     post["quality_gate"] = reason
-    post["assets"] = assets
+    post["assets"] = visual_assets(
+        candidate,
+        bootstrap,
+        provider_row,
+        provider_get=provider_get,
+    )
     if tier == "TREND":
         post["heading"] = "TACTICAL TREND"
     post["score_label"] = f"{tier.title()} • {candidate.priority_score}/100"
