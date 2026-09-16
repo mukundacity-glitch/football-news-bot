@@ -283,8 +283,23 @@ class VerificationEngine:
 
         missing = []
         unsupported = []
+        required_fields = list(policy.required_facts) if policy else []
+        # A source-grounded free transfer has no current origin club to prove.
+        # This is a narrow alternative fact shape, not a weaker transfer gate:
+        # subject + destination + transfer_kind remain mandatory and the final
+        # transfer-safety layer independently re-checks the free-agent cue.
+        if (
+            event == EventType.TRANSFER
+            and normalize_fact(provisional_facts.get("transfer_kind")) == "free"
+        ):
+            required_fields = [
+                field for field in required_fields
+                if field not in {"club_from_id", "club_from_name"}
+            ]
+            if "transfer_kind" not in required_fields:
+                required_fields.append("transfer_kind")
         if policy:
-            for field in policy.required_facts:
+            for field in required_fields:
                 if provisional_facts.get(field) in (None, ""):
                     missing.append(field)
                 elif not any(field in claim.fact_support for claim in authoritative):

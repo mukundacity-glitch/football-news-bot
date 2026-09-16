@@ -99,7 +99,14 @@ class VerifiedPostRenderer:
     def _render_transfer_template(self, decision: VerificationDecision) -> str:
         facts = decision.verified_facts
         player = str(required(facts, "subject_name"))
-        origin = str(required(facts, "club_from_name"))
+        raw_kind = str(facts.get("transfer_kind") or "").strip().casefold()
+        free_transfer = raw_kind in {"free", "free transfer"}
+        origin_value = facts.get("club_from_name")
+        origin = (
+            str(origin_value) if origin_value
+            else "Free Agent" if free_transfer
+            else str(required(facts, "club_from_name"))
+        )
         destination = str(required(facts, "club_to_name"))
 
         if decision.status in {EventStatus.OFFICIAL, EventStatus.COMPLETED}:
@@ -113,8 +120,11 @@ class VerifiedPostRenderer:
         else:
             status = "IN PROGRESS"
 
-        raw_kind = str(facts.get("transfer_kind") or "").strip().casefold()
-        deal_type = "Loan" if "loan" in raw_kind else "Permanent"
+        deal_type = (
+            "Loan" if "loan" in raw_kind
+            else "Free Transfer" if free_transfer
+            else "Permanent"
+        )
         deal = f"Deal — {deal_type}"
         contract = facts.get("contract_length") or facts.get("contract_date")
         if contract:

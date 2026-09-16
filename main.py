@@ -2342,6 +2342,18 @@ def _v2_project_verified_facts(item: dict, decision: V2VerificationDecision) -> 
         "CONTRACT": "renewal",
         "OFFICIAL_STATEMENT": "official_statement",
     }.get(decision.event_type.value, item.get("event"))
+    transfer_kind = str(facts.get("transfer_kind") or "").strip().casefold()
+    is_free_transfer = (
+        decision.event_type.value == "TRANSFER"
+        and transfer_kind in {"free", "free transfer"}
+    )
+    if is_free_transfer:
+        item["is_free"] = True
+        # Do not let an unverified legacy/parser origin leak back into the
+        # posting envelope when V2 intentionally verified a free-agent move.
+        if not facts.get("club_from_name"):
+            item["from_club"] = None
+            item["from_key"] = None
     if facts.get("club_from_name"):
         item["from_club"] = facts["club_from_name"]
         item["from_key"] = resolve_club_key(facts["club_from_name"])
