@@ -1,8 +1,7 @@
 """Quality-gated runner for Premier League tactical intelligence.
 
-This layer keeps the proven verification/data pipeline in tactical_intelligence,
-then adds editorial quality gates, dynamic player/team visuals, a jersey fallback,
-and an explicit one-time format-trial path.
+Official FPL evidence can run through the user's FPL-VORTEX-AUTO Day 1 source
+without a paid football-data key. API-Football remains optional enrichment.
 """
 from __future__ import annotations
 
@@ -13,15 +12,30 @@ import os
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
+from src import fpl_vortex_day1 as day1
 from src import tactical_intelligence as base
 from src.rendering.tactical_enhanced import EnhancedTacticalGraphicRenderer
 from src.tactical_quality import TREND_SCORE, enhance_candidate
 
+_ORIGINAL_REQUEST_JSON = base.request_json
 _ORIGINAL_OFFICIAL_SNAPSHOT = base.official_snapshot
 _ORIGINAL_BUILD_WATCH = base.build_watch
 _ORIGINAL_BUILD_REVIEW = base.build_review
+_ORIGINAL_CHOOSE_WATCH = base.choose_watch
+_ORIGINAL_CHOOSE_REVIEW = base.choose_review
 _ORIGINAL_LOAD_CONFIG = base.load_config
 _BOOTSTRAP: dict[str, Any] = {}
+
+
+def _request_json(url: str, *, headers=None, params=None):
+    if day1.available():
+        return day1.request_json(
+            url,
+            headers=headers,
+            params=params,
+            fallback=_ORIGINAL_REQUEST_JSON,
+        )
+    return _ORIGINAL_REQUEST_JSON(url, headers=headers, params=params)
 
 
 def _official_snapshot():
@@ -45,8 +59,37 @@ def _build_review(*args, **kwargs):
     return enhance_candidate(candidate, _BOOTSTRAP, provider_row, provider_get=base.provider_get)
 
 
+def _day1_choose_watch(fixtures, teams, ownership, config, now, tz, official_sources):
+    return day1.choose_watch(
+        fixtures,
+        teams,
+        ownership,
+        config,
+        now,
+        tz,
+        official_sources,
+        bootstrap=_BOOTSTRAP,
+    )
+
+
+def _day1_choose_review(fixtures, teams, ownership, config, now, tz, state, official_sources):
+    return day1.choose_review(
+        fixtures,
+        teams,
+        ownership,
+        config,
+        now,
+        tz,
+        state,
+        official_sources,
+        bootstrap=_BOOTSTRAP,
+    )
+
+
 def _load_config() -> dict[str, Any]:
     config = dict(_ORIGINAL_LOAD_CONFIG())
+    # The score is a ranking layer after evidence gates. A 45-59 story may only
+    # publish as Tactical Trend when it is the strongest verified option.
     config["minimum_publish_score"] = int(config.get("minimum_trend_score", TREND_SCORE))
     return config
 
@@ -66,12 +109,28 @@ def _posted_today(state: Mapping[str, Any], now, tz, mode: str | None = None) ->
 
 
 def _install() -> None:
+    # Official FPL requests use the user's Day 1 retry/request layer whenever
+    # that checked-out source is available.
+    base.request_json = _request_json
     base.official_snapshot = _official_snapshot
-    base.build_watch = _build_watch
-    base.build_review = _build_review
     base.load_config = _load_config
     base.posted_today = _posted_today
     base.TacticalGraphicRenderer = EnhancedTacticalGraphicRenderer
+
+    if base.provider_key():
+        # Rich licensed provider path: retain the existing deeper match analysis.
+        base.build_watch = _build_watch
+        base.build_review = _build_review
+        base.choose_watch = _ORIGINAL_CHOOSE_WATCH
+        base.choose_review = _ORIGINAL_CHOOSE_REVIEW
+    elif day1.available():
+        # Free path: Official FPL + fixture-specific player summaries from the
+        # Day 1 source. Claims are intentionally narrower than provider-backed
+        # possession/shot/corner analysis.
+        base.build_watch = _ORIGINAL_BUILD_WATCH
+        base.build_review = _ORIGINAL_BUILD_REVIEW
+        base.choose_watch = _day1_choose_watch
+        base.choose_review = _day1_choose_review
 
 
 def _trial_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -82,13 +141,14 @@ def _trial_config(config: Mapping[str, Any]) -> dict[str, Any]:
     return trial
 
 
-def _missing_provider_key(mode: str) -> int:
+def _missing_day1_source(mode: str) -> int:
     status = {
         "checked_at": base.iso(base.utcnow()),
         "mode": mode,
         "published": False,
-        "reason": "missing_structured_provider_key",
-        "required_secret": "API_FOOTBALL_KEY or APIFOOTBALL_KEY",
+        "reason": "missing_fpl_vortex_day1_source",
+        "expected_path": str(day1.DAY1_PATH),
+        "optional_enrichment": "API_FOOTBALL_KEY or APIFOOTBALL_KEY",
     }
     base.save_json(base.RUN_STATUS_PATH, status)
     print(json.dumps(status, indent=2))
@@ -105,6 +165,7 @@ def run_trial(*, dry_run: bool = False) -> int:
         "mode": "trial",
         "published": False,
         "reason": "",
+        "data_path": "structured_provider" if base.provider_key() else "fpl_vortex_day1",
     }
 
     bootstrap, fixtures_response, teams, fixtures, ownership = _official_snapshot()
@@ -187,8 +248,9 @@ def main() -> int:
     _install()
     trial_env = os.getenv("TACTICAL_TRIAL_POST", "").casefold() == "true"
     effective_mode = "trial" if args.mode == "trial" or trial_env else args.mode
-    if not base.provider_key():
-        return _missing_provider_key(effective_mode)
+
+    if not base.provider_key() and not day1.available():
+        return _missing_day1_source(effective_mode)
     if effective_mode == "trial":
         return run_trial(dry_run=dry_run)
     return base.run(args.mode, dry_run=dry_run)
