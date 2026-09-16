@@ -6,6 +6,7 @@ on:
     paths:
       - tools/_apply_fotmob_contract_patch.py
       - tools/_fix_fotmob_patch_helper.py
+      - tools/_fix_fotmob_contract_tests.py
       - .github/workflows/test-fotmob-contract-patch.yml
 
 permissions:
@@ -29,6 +30,7 @@ jobs:
       - name: Apply guarded patch
         run: |
           python tools/_fix_fotmob_patch_helper.py
+          python tools/_fix_fotmob_contract_tests.py
           python tools/_apply_fotmob_contract_patch.py
       - name: Run full safety suite
         run: python -m pytest -q
@@ -36,7 +38,7 @@ jobs:
         run: |
           git config user.name "FPL VORTEX"
           git config user.email "mukundacity@gmail.com"
-          git add src/verification/ingestion.py src/verification/extractor.py src/verification/engine.py src/verification/config.py config/verification.json main.py .github/workflows/bot.yml tests/test_press_deadline_routing.py tests/test_autopost_unlimited.py tests/test_fotmob_contract_extensions.py
+          git add src/verification/ingestion.py src/verification/extractor.py src/verification/engine.py src/verification/config.py config/verification.json main.py .github/workflows/bot.yml tests/test_press_deadline_routing.py tests/test_autopost_unlimited.py tests/test_verification_v2.py tests/test_fotmob_contract_extensions.py
           git diff --cached --check
           git commit -m "Add fail-closed FotMob contract extension lane"
           git push origin HEAD:feat/fotmob-contract-extensions-v2
