@@ -11,7 +11,7 @@ import requests
 from PIL import Image, ImageDraw
 
 from .assets import resolve_club_logo, resolve_team_shirt
-from .layout import alpha_panel, fit_font, fit_wrapped_text, paste_contain, truncate
+from .layout import alpha_panel, fit_font, paste_contain, truncate
 from .tactical import CYAN, GOLD, LIME, MUTED, WHITE, TacticalGraphicRenderer
 
 _ALLOWED_ASSET_HOSTS = {
@@ -48,7 +48,7 @@ def _remote_asset(url: str, *, minimum: int = 100) -> Image.Image | None:
 
 
 class EnhancedTacticalGraphicRenderer(TacticalGraphicRenderer):
-    """Keep the locked FPL Vortex shell and always show relevant team identity."""
+    """Reuse the locked layout and replace only its right-side visual stage."""
 
     def render(self, post: Mapping[str, object], output_path: str | Path) -> str:
         assets = post.get("assets")
@@ -94,56 +94,19 @@ class EnhancedTacticalGraphicRenderer(TacticalGraphicRenderer):
             self._hero_is_jersey = False
 
     def _body(self, image: Image.Image, post: Mapping[str, object], evidence: Sequence[object]) -> None:
-        draw = ImageDraw.Draw(image)
-        left = (120, 420, 2460, 1870)
-        right = (2520, 420, 3720, 1870)
-        alpha_panel(image, left, fill=(1, 3, 10, 246), outline=(*CYAN, 255), width=7, radius=38, glow=True)
-        alpha_panel(image, right, fill=(1, 3, 10, 235), outline=(123, 38, 238, 255), width=7, radius=38, glow=True)
-
-        topic = str(post.get("topic_line") or "")
-        topic_font = fit_font(draw, topic, 2160, max_size=64, min_size=56, role="bold")
-        draw.text((190, 500), truncate(draw, topic, topic_font, 2160), font=topic_font, fill=GOLD)
-
-        thesis = str(post.get("thesis") or "")
-        thesis_font, thesis_lines, thesis_step = fit_wrapped_text(
-            draw, thesis, 2160, 250, 3, max_size=76, min_size=64, role="bold", line_spacing=1.05
+        # Keep the original left-side hierarchy/evidence cards untouched. Then
+        # repaint only the right panel where the base renderer placed its pitch.
+        super()._body(image, post, evidence)
+        right = (2505, 420, 3720, 1870)
+        alpha_panel(
+            image,
+            right,
+            fill=(1, 3, 10, 255),
+            outline=(123, 38, 238, 255),
+            width=7,
+            radius=38,
+            glow=False,
         )
-        y = 620
-        for line in thesis_lines:
-            draw.text((190, y), line, font=thesis_font, fill=WHITE)
-            y += thesis_step
-
-        explanation = str(post.get("explanation") or "")
-        exp_font, exp_lines, exp_step = fit_wrapped_text(
-            draw, explanation, 2160, 190, 3, max_size=46, min_size=40, role="regular", line_spacing=1.2
-        )
-        y = 910
-        for line in exp_lines:
-            draw.text((190, y), line, font=exp_font, fill=MUTED)
-            y += exp_step
-
-        card_y = 1210
-        card_gap = 24
-        card_w = 686
-        for idx, item in enumerate(evidence[:3]):
-            x1 = 180 + idx * (card_w + card_gap)
-            box = (x1, card_y, x1 + card_w, 1765)
-            draw.rounded_rectangle(box, radius=28, fill=(7, 10, 20), outline=CYAN, width=4)
-            if isinstance(item, Mapping):
-                label = str(item.get("label") or "EVIDENCE").upper()
-                value = str(item.get("value") or "")
-            else:
-                label, value = "EVIDENCE", str(item)
-            label_font = fit_font(draw, label, card_w - 70, max_size=34, min_size=30, role="bold")
-            draw.text((x1 + 34, card_y + 35), label, font=label_font, fill=CYAN)
-            value_font, value_lines, value_step = fit_wrapped_text(
-                draw, value, card_w - 70, 330, 4, max_size=72, min_size=44, role="bold", line_spacing=1.08
-            )
-            vy = card_y + 130
-            for line in value_lines:
-                draw.text((x1 + 34, vy), line, font=value_font, fill=WHITE)
-                vy += value_step
-
         self._visual_stage(image, right, post)
 
     def _visual_stage(self, image: Image.Image, box, post: Mapping[str, object]) -> None:
@@ -171,7 +134,13 @@ class EnhancedTacticalGraphicRenderer(TacticalGraphicRenderer):
         if getattr(self, "_hero_is_jersey", False):
             display_name = f"{str(hero.get('club_name') or display_name)} • TEAM JERSEY"
         name_font = fit_font(draw, display_name, x2 - x1 - 160, max_size=52, min_size=36, role="bold")
-        draw.rounded_rectangle((x1 + 55, y2 - 170, x2 - 55, y2 - 55), radius=24, fill=(3, 5, 12), outline=CYAN, width=4)
+        draw.rounded_rectangle(
+            (x1 + 55, y2 - 170, x2 - 55, y2 - 55),
+            radius=24,
+            fill=(3, 5, 12),
+            outline=CYAN,
+            width=4,
+        )
         draw.text(
             ((x1 + x2) // 2, y2 - 112),
             truncate(draw, display_name, name_font, x2 - x1 - 180),
