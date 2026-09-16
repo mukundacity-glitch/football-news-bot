@@ -18,7 +18,13 @@ import requests
 
 from src.verification.entities import EntityRegistry
 from src.verification.source_registry import SourceRegistry
+from src.x_search_compat import install_twikit_search_post_patch
 
+
+# Install only the narrow SearchTimeline GET→POST compatibility shim. If Twikit
+# changes incompatibly this returns False; searches then fail through the normal
+# exception path below and the X health gate still blocks publication.
+_TWIKIT_SEARCH_POST_PATCHED = install_twikit_search_post_patch()
 
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q={q}&hl=en-GB&gl=GB&ceid=GB:en"
 _UA = {"User-Agent": "Mozilla/5.0 (compatible; FPLVortexBot/2.0; +https://x.com/FPLVortex)"}
