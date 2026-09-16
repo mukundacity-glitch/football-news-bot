@@ -36,30 +36,17 @@ def _official_snapshot():
 def _build_watch(*args, **kwargs):
     candidate = _ORIGINAL_BUILD_WATCH(*args, **kwargs)
     provider_row = args[1] if len(args) > 1 else kwargs.get("provider_row") or {}
-    return enhance_candidate(
-        candidate,
-        _BOOTSTRAP,
-        provider_row,
-        provider_get=base.provider_get,
-    )
+    return enhance_candidate(candidate, _BOOTSTRAP, provider_row, provider_get=base.provider_get)
 
 
 def _build_review(*args, **kwargs):
     candidate = _ORIGINAL_BUILD_REVIEW(*args, **kwargs)
     provider_row = args[1] if len(args) > 1 else kwargs.get("provider_row") or {}
-    return enhance_candidate(
-        candidate,
-        _BOOTSTRAP,
-        provider_row,
-        provider_get=base.provider_get,
-    )
+    return enhance_candidate(candidate, _BOOTSTRAP, provider_row, provider_get=base.provider_get)
 
 
 def _load_config() -> dict[str, Any]:
     config = dict(_ORIGINAL_LOAD_CONFIG())
-    # 75+ = priority, 60-74 = strong, 45-59 = Tactical Trend. Because the
-    # chooser already selects the highest-scoring verified story, a Trend is
-    # published only when no stronger qualifying story exists.
     config["minimum_publish_score"] = int(config.get("minimum_trend_score", TREND_SCORE))
     return config
 
@@ -89,12 +76,23 @@ def _install() -> None:
 
 def _trial_config(config: Mapping[str, Any]) -> dict[str, Any]:
     trial = dict(config)
-    # A format trial should not depend on the normal 09:00 window. It still uses
-    # live verified fixtures and the same scoring/quality gates.
     trial["watch_fixture_min_hours"] = 0
     trial["watch_fixture_max_hours"] = max(120, int(config.get("watch_fixture_max_hours", 36)))
     trial["minimum_publish_score"] = int(config.get("minimum_trend_score", TREND_SCORE))
     return trial
+
+
+def _missing_provider_key(mode: str) -> int:
+    status = {
+        "checked_at": base.iso(base.utcnow()),
+        "mode": mode,
+        "published": False,
+        "reason": "missing_structured_provider_key",
+        "required_secret": "API_FOOTBALL_KEY or APIFOOTBALL_KEY",
+    }
+    base.save_json(base.RUN_STATUS_PATH, status)
+    print(json.dumps(status, indent=2))
+    return 0
 
 
 def run_trial(*, dry_run: bool = False) -> int:
@@ -114,15 +112,7 @@ def run_trial(*, dry_run: bool = False) -> int:
         base.source_record("official_bootstrap", bootstrap),
         base.source_record("official_fixtures", fixtures_response),
     ]
-    candidate = base.choose_watch(
-        fixtures,
-        teams,
-        ownership,
-        config,
-        now,
-        tz,
-        official_sources,
-    )
+    candidate = base.choose_watch(fixtures, teams, ownership, config, now, tz, official_sources)
     if candidate is None:
         status["reason"] = "no_verified_trial_candidate"
         base.save_json(base.STATE_PATH, state)
@@ -132,10 +122,7 @@ def run_trial(*, dry_run: bool = False) -> int:
 
     threshold = int(config["minimum_publish_score"])
     if candidate.priority_score < threshold:
-        status.update({
-            "reason": "trial_priority_below_threshold",
-            "priority_score": candidate.priority_score,
-        })
+        status.update({"reason": "trial_priority_below_threshold", "priority_score": candidate.priority_score})
         base.save_json(base.STATE_PATH, state)
         base.save_json(base.RUN_STATUS_PATH, status)
         print(json.dumps(status, indent=2))
@@ -199,7 +186,10 @@ def main() -> int:
 
     _install()
     trial_env = os.getenv("TACTICAL_TRIAL_POST", "").casefold() == "true"
-    if args.mode == "trial" or trial_env:
+    effective_mode = "trial" if args.mode == "trial" or trial_env else args.mode
+    if not base.provider_key():
+        return _missing_provider_key(effective_mode)
+    if effective_mode == "trial":
         return run_trial(dry_run=dry_run)
     return base.run(args.mode, dry_run=dry_run)
 

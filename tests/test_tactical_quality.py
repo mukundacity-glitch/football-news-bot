@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from PIL import Image
 
+from src import tactical_agent_v2
 from src.rendering import tactical_enhanced
 from src.rendering.tactical_enhanced import EnhancedTacticalGraphicRenderer
 from src.tactical_intelligence import Candidate, Fixture
@@ -134,3 +135,15 @@ def test_renderer_uses_team_jersey_when_selected_player_image_is_unavailable(mon
     assert output.exists()
     with Image.open(output) as rendered:
         assert rendered.size == (3840, 2160)
+
+
+def test_missing_provider_key_records_status_and_exits_cleanly(monkeypatch):
+    captured = {}
+    fixed_now = datetime(2026, 9, 16, 16, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(tactical_agent_v2.base, "utcnow", lambda: fixed_now)
+    monkeypatch.setattr(tactical_agent_v2.base, "save_json", lambda path, value: captured.update(value))
+    result = tactical_agent_v2._missing_provider_key("trial")
+    assert result == 0
+    assert captured["published"] is False
+    assert captured["mode"] == "trial"
+    assert captured["reason"] == "missing_structured_provider_key"
