@@ -446,6 +446,21 @@ class LegacyClaimAdapter:
                 else:
                     to_club = grammatical_to
 
+            # Free-agent announcements often name only the destination. The
+            # legacy parser can then place that same club in both slots. Clear
+            # only that duplicate when THIS document itself contains a grounded
+            # free-transfer cue. Every non-free duplicate stays a relationship
+            # conflict and therefore fails entity validation.
+            transfer_kind, transfer_kind_evidence = self.classifier.fact_value(
+                "transfer_kind", document.text
+            )
+            if from_club and to_club and from_club.id == to_club.id:
+                if transfer_kind == "free" and transfer_kind_evidence:
+                    from_club = None
+                    warnings.append("free_transfer_duplicate_origin_cleared")
+                else:
+                    warnings.append("origin_destination_relationship_conflict")
+
         # A verified official club account/domain is itself evidence of club
         # context for non-directional events. It is never enough to guess a
         # transfer destination because official selling clubs announce exits too.

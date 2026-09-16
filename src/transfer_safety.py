@@ -20,6 +20,9 @@ _POLICY = json.loads(_POLICY_PATH.read_text(encoding="utf-8"))
 _SPEC_RE = [re.compile(p, re.I) for p in _POLICY["speculation_patterns"]]
 _DONE_RE = [re.compile(p, re.I) for p in _POLICY["completion_patterns"]]
 _ROUTE_RE = [re.compile(p, re.I) for p in _POLICY["route_evidence_patterns"]]
+_FREE_TRANSFER_RE = re.compile(
+    r"\b(?:free transfer|free agent|on a free|out of contract|bosman)\b", re.I
+)
 _OFFICIAL_KINDS = set(_POLICY["official_source_kinds"])
 
 
@@ -351,6 +354,7 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
     state, canonical = _resolved_fact_club(story, "to")
     if state != "RESOLVED":
         return "REJECT", f"destination_{state.lower()}"
+    free_transfer = _normalize_phrase(story.get("transfer_kind")) == "free"
     from_state, from_canonical = _resolved_fact_club(story, "from")
     if from_state == "AMBIGUOUS":
         return "REJECT", "origin_ambiguous"
@@ -391,6 +395,10 @@ def validate_before_publish(story: Mapping, claims: Iterable, *, event: str | No
         if str(getattr(claim, "status", "")).split(".")[-1].upper()
         in set(_POLICY["required_statuses"])
     ]
+    if free_transfer and not any(
+        _FREE_TRANSFER_RE.search(_blob(claim)) for claim in completed_authority
+    ):
+        return "REJECT", "free_transfer_not_grounded"
     if not any(
         _has_subject_bound_completed_route(story, claim)
         for claim in completed_authority

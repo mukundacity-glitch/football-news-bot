@@ -437,7 +437,11 @@ class MasterGraphicRenderer:
         facts = decision.verified_facts
         draw = ImageDraw.Draw(image)
         x1, y1, x2, y2 = panel
-        origin = clean_text(facts.get("club_from_name"))
+        raw_kind = str(facts.get("transfer_kind") or "").strip().casefold()
+        free_transfer = raw_kind in {"free", "free transfer"}
+        origin = clean_text(facts.get("club_from_name")) or (
+            "Free Agent" if free_transfer else ""
+        )
         destination = clean_text(facts.get("club_to_name"))
         from_logo = resolve_club_logo(origin, provider_id=facts.get("provider_from_club_id"), fpl_data=self.fpl_data)
         to_logo = resolve_club_logo(destination, provider_id=facts.get("provider_to_club_id"), fpl_data=self.fpl_data)
