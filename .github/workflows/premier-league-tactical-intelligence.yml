@@ -17,19 +17,33 @@ on:
           - auto
           - watch
           - review
+          - trial
       dry_run:
         description: Render/store without publishing to X
         required: true
         default: false
         type: boolean
+  # Push is only used for an explicitly tagged one-time format trial. Ordinary
+  # pushes never publish because the job condition below requires [tactical trial].
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/premier-league-tactical-intelligence.yml"
+      - "src/tactical_agent_v2.py"
+      - "src/tactical_quality.py"
+      - "src/rendering/tactical_enhanced.py"
   pull_request:
     branches: [main]
     paths:
       - ".github/workflows/premier-league-tactical-intelligence.yml"
       - "config/tactical_intelligence.json"
       - "src/tactical_intelligence.py"
+      - "src/tactical_agent_v2.py"
+      - "src/tactical_quality.py"
       - "src/rendering/tactical.py"
+      - "src/rendering/tactical_enhanced.py"
       - "tests/test_tactical_intelligence.py"
+      - "tests/test_tactical_quality.py"
 
 permissions:
   contents: write
@@ -56,10 +70,13 @@ jobs:
           pip install -r requirements.txt
 
       - name: Tactical unit tests
-        run: python -m pytest -q tests/test_tactical_intelligence.py
+        run: python -m pytest -q tests/test_tactical_intelligence.py tests/test_tactical_quality.py
 
   run-tactical-agent:
-    if: github.event_name != 'pull_request' && vars.TACTICAL_BOT_PAUSED != 'true'
+    if: >-
+      github.event_name != 'pull_request' &&
+      vars.TACTICAL_BOT_PAUSED != 'true' &&
+      (github.event_name != 'push' || contains(github.event.head_commit.message, '[tactical trial]'))
     needs: tactical-tests
     runs-on: ubuntu-latest
     env:
@@ -73,6 +90,7 @@ jobs:
       ENABLE_TACTICAL_AUTOPOST: ${{ vars.ENABLE_TACTICAL_AUTOPOST || 'true' }}
       TACTICAL_MANUAL_REVIEW: ${{ vars.TACTICAL_MANUAL_REVIEW || 'false' }}
       TACTICAL_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      TACTICAL_TRIAL_POST: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[tactical trial]')) || (github.event_name == 'workflow_dispatch' && inputs.mode == 'trial') }}
 
     steps:
       - name: Checkout
@@ -91,7 +109,7 @@ jobs:
       - name: Run tactical intelligence agent
         env:
           TACTICAL_RUN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'auto' }}
-        run: python -m src.tactical_intelligence --mode "$TACTICAL_RUN_MODE"
+        run: python -m src.tactical_agent_v2 --mode "$TACTICAL_RUN_MODE"
 
       - name: Save tactical cards and audit status
         if: always()
