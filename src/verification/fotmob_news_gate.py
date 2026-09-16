@@ -31,7 +31,6 @@ _FOTMOB_TRANSFER_STATUSES = frozenset({
 _FOTMOB_TRANSFER_EVENTS = frozenset({
     EventType.TRANSFER,
     EventType.CONTRACT,
-    EventType.LOAN,
 })
 
 
