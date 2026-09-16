@@ -10,7 +10,7 @@ def test_live_scope_can_reserve_press_conferences_for_deadline_workflow():
         "press_conference",
     }
     assert "press_conference" not in main._parse_live_event_scope(
-        "transfer,loan,loan_option,injury,suspension"
+        "transfer,loan,loan_option,injury,suspension,renewal"
     )
 
 
@@ -28,7 +28,7 @@ def test_deadline_workflow_uses_verified_roundup_not_removed_top_five_bot():
     assert "python -m tools.press_publish" in deadline
     assert "python main.py" not in deadline
     assert "Top-5" not in deadline and "fpl_deadline_news.py" not in deadline
-    assert "LIVE_EVENT_SCOPE: transfer,loan,loan_option,injury,suspension" in general
+    assert "LIVE_EVENT_SCOPE: transfer,loan,loan_option,injury,suspension,renewal" in general
 
 
 def test_combined_roundup_caption_reports_every_included_manager():
