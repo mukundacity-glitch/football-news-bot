@@ -1,4 +1,10 @@
-"""FotMob-only press-conference roundup helpers."""
+"""Official FPL press-conference/news roundup helpers.
+
+The press lane accepts only official FPL provenance. FotMob is reserved for the
+transfer-family lane. If the FPL API does not expose enough explicit press
+conference content for the existing manager-roundup parser, the parser fails
+closed rather than substituting another publisher.
+"""
 from __future__ import annotations
 
 import re
@@ -12,9 +18,10 @@ from src.fpl_deadline import (
     next_fpl_deadline as _shared_next_fpl_deadline,
 )
 
-FOTMOB_SOURCE_ID = "media.fotmob"
-FOTMOB_DOMAIN = "fotmob.com"
-PRESS_FEED_ID = "fotmob.premier_league.topnews"
+FPL_SOURCE_ID = "official.fpl"
+FPL_DOMAIN = "fantasy.premierleague.com"
+FPL_API_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
+PRESS_FEED_ID = "official.fpl.news"
 PRESS_DEADLINE_MARGIN_MINUTES = DEFAULT_MARGIN_MINUTES
 MAX_PREMIER_LEAGUE_ROUNDUP_ENTRIES = 20
 
@@ -40,21 +47,23 @@ def _norm(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
-def is_fotmob_url(value: object) -> bool:
+def is_fpl_url(value: object) -> bool:
     try:
         host = (urlparse(str(value or "")).hostname or "").lower().rstrip(".")
     except Exception:
         return False
-    return host == FOTMOB_DOMAIN or host.endswith("." + FOTMOB_DOMAIN)
+    return host == FPL_DOMAIN or host.endswith("." + FPL_DOMAIN)
 
 
 def is_premier_league_press_item(item: Mapping[str, Any]) -> bool:
-    """Accept only the approved FotMob Premier League news lane."""
-    if str(item.get("feed_id") or "") == PRESS_FEED_ID:
-        return str(item.get("source_id") or FOTMOB_SOURCE_ID) == FOTMOB_SOURCE_ID
-    if str(item.get("source_id") or "") != FOTMOB_SOURCE_ID:
+    """Accept only the official FPL press/news lane."""
+    source_id = str(item.get("source_id") or "")
+    feed_id = str(item.get("feed_id") or "")
+    if source_id != FPL_SOURCE_ID:
         return False
-    return any(is_fotmob_url(item.get(key)) for key in ("source_url", "publisher_url"))
+    if feed_id and feed_id != PRESS_FEED_ID:
+        return False
+    return is_fpl_url(item.get("source_url")) or is_fpl_url(item.get("publisher_url"))
 
 
 def _speaker_entries(text: str) -> list[dict[str, Any]]:
@@ -122,7 +131,8 @@ def project_roundup_story(story: dict[str, Any], source_item: Mapping[str, Any],
     if not is_premier_league_press_item(source_item):
         return False
     text = str(source_item.get("full_text") or source_item.get("text") or source_item.get("summary") or "")
-    primary = parse_premier_league_roundup(text).get("primary")
+    parsed = parse_premier_league_roundup(text)
+    primary = parsed.get("primary")
     if not primary:
         return False
     speaker_name = primary["name"]
@@ -136,10 +146,10 @@ def project_roundup_story(story: dict[str, Any], source_item: Mapping[str, Any],
         "speaker_type": "manager", "to_club": club_name,
         "to_key": resolve_club_key(club_name) if resolve_club_key else None,
         "quote_summary": primary["quote_summary"], "quote_topic": primary["quote_topic"],
-        "latest_news": parse_premier_league_roundup(text).get("latest_news", []),
-        "key_quotes": parse_premier_league_roundup(text).get("key_quotes", []),
-        "manager_notes": parse_premier_league_roundup(text).get("manager_notes", []),
-        "roundup": parse_premier_league_roundup(text).get("roundup", []),
+        "latest_news": parsed.get("latest_news", []),
+        "key_quotes": parsed.get("key_quotes", []),
+        "manager_notes": parsed.get("manager_notes", []),
+        "roundup": parsed.get("roundup", []),
         "_premier_league_press_roundup": True,
     })
     return True
