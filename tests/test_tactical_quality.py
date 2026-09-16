@@ -66,6 +66,13 @@ def test_verified_multi_evidence_watch_passes_quality_gate():
     assert reason == "verified_tactical_pattern"
 
 
+def test_verified_fpl_player_role_passes_quality_gate():
+    candidate = _candidate(mode="review", focus="player_role")
+    allowed, reason = story_quality_gate(candidate)
+    assert allowed is True
+    assert reason == "verified_tactical_pattern"
+
+
 def test_missing_player_image_metadata_falls_back_to_verified_team_jersey():
     candidate = _candidate()
     provider_row = {
@@ -89,6 +96,32 @@ def test_team_logo_urls_are_optional_because_renderer_has_verified_logo_fallback
     assert assets["home_logo"]["url"] == ""
     assert assets["away_logo"]["url"] == ""
     assert assets["hero_player"]["kind"] == "team_shirt"
+
+
+def test_preferred_analysis_player_is_used_for_hero_visual():
+    fixture = _fixture()
+    candidate = Candidate(
+        "watch",
+        fixture,
+        {
+            "thesis": "Watch whether Example Player sustains this recent attacking involvement",
+            "diagram_focus": "player_role",
+            "focus_team": "Home Club",
+            "hero_player_id": 22,
+            "evidence": [{"label": "Recent xGI", "value": "1.20 across three"}, {"label": "Minutes", "value": "80 average"}],
+        },
+        70,
+        [],
+    )
+    bootstrap = {
+        "elements": [
+            {"id": 11, "team": 1, "code": 111, "first_name": "Other", "second_name": "Player", "status": "a", "selected_by_percent": "99"},
+            {"id": 22, "team": 1, "code": 222, "first_name": "Example", "second_name": "Player", "status": "a", "selected_by_percent": "1"},
+        ]
+    }
+    assets = visual_assets(candidate, bootstrap, {"teams": {"home": {}, "away": {}}})
+    assert assets["hero_player"]["name"] == "Example Player"
+    assert assets["hero_player"]["source_id"] == "222"
 
 
 def test_renderer_uses_team_jersey_when_selected_player_image_is_unavailable(monkeypatch, tmp_path):
@@ -137,13 +170,14 @@ def test_renderer_uses_team_jersey_when_selected_player_image_is_unavailable(mon
         assert rendered.size == (3840, 2160)
 
 
-def test_missing_provider_key_records_status_and_exits_cleanly(monkeypatch):
+def test_missing_day1_checkout_records_status_when_no_paid_provider(monkeypatch):
     captured = {}
     fixed_now = datetime(2026, 9, 16, 16, 30, tzinfo=timezone.utc)
     monkeypatch.setattr(tactical_agent_v2.base, "utcnow", lambda: fixed_now)
     monkeypatch.setattr(tactical_agent_v2.base, "save_json", lambda path, value: captured.update(value))
-    result = tactical_agent_v2._missing_provider_key("trial")
+    result = tactical_agent_v2._missing_day1_source("trial")
     assert result == 0
     assert captured["published"] is False
     assert captured["mode"] == "trial"
-    assert captured["reason"] == "missing_structured_provider_key"
+    assert captured["reason"] == "missing_fpl_vortex_day1_source"
+    assert captured["optional_enrichment"] == "API_FOOTBALL_KEY or APIFOOTBALL_KEY"

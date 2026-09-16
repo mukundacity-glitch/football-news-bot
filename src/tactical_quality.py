@@ -1,7 +1,7 @@
 """Editorial quality gates and dynamic visual-asset selection for tactical posts.
 
 Nothing in this module hardcodes a club, player, fixture or story. Visuals are
-selected from the live fixture/provider response and the official FPL snapshot.
+selected from live fixture/provider responses and Official FPL evidence.
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def story_quality_gate(candidate: Any) -> tuple[bool, str]:
         # the tactical mechanism behind it. Keep this out until richer evidence
         # supports the conclusion.
         return False, "generic_single_stat_review"
-    if focus not in {"set_piece", "possession", "pressure"}:
+    if focus not in {"set_piece", "possession", "pressure", "player_role"}:
         return False, "unsupported_tactical_pattern"
     if score_tier(candidate.priority_score) == "REJECT":
         return False, "priority_below_trend_threshold"
@@ -48,6 +48,13 @@ def story_quality_gate(candidate: Any) -> tuple[bool, str]:
 
 
 def _focus_team(candidate: Any) -> tuple[int, str]:
+    explicit = _normalize_name(candidate.post.get("focus_team"))
+    if explicit:
+        if explicit == _normalize_name(candidate.fixture.home):
+            return candidate.fixture.home_id, candidate.fixture.home
+        if explicit == _normalize_name(candidate.fixture.away):
+            return candidate.fixture.away_id, candidate.fixture.away
+
     thesis = _normalize_name(candidate.post.get("thesis"))
     home_key = _normalize_name(candidate.fixture.home)
     away_key = _normalize_name(candidate.fixture.away)
@@ -85,18 +92,39 @@ def _fpl_player_score(row: Mapping[str, Any]) -> float:
     )
 
 
-def _official_fpl_hero(bootstrap: Mapping[str, Any], team_id: int) -> dict[str, Any] | None:
+def _official_fpl_hero(
+    bootstrap: Mapping[str, Any],
+    team_id: int,
+    *,
+    preferred_player_id: int | None = None,
+) -> dict[str, Any] | None:
     players = [
-        row for row in bootstrap.get("elements", [])
-        if int(row.get("team") or 0) == int(team_id) and str(row.get("code") or "").isdigit()
+        row
+        for row in bootstrap.get("elements", [])
+        if int(row.get("team") or 0) == int(team_id)
+        and str(row.get("code") or "").isdigit()
     ]
     if not players:
         return None
-    player = max(players, key=_fpl_player_score)
-    if _fpl_player_score(player) < 0:
-        return None
+
+    player = None
+    if preferred_player_id:
+        player = next(
+            (
+                row
+                for row in players
+                if int(row.get("id") or 0) == int(preferred_player_id)
+            ),
+            None,
+        )
+    if player is None:
+        player = max(players, key=_fpl_player_score)
+        if _fpl_player_score(player) < 0:
+            return None
+
     name = " ".join(
-        part for part in (
+        part
+        for part in (
             str(player.get("first_name") or "").strip(),
             str(player.get("second_name") or "").strip(),
         )
@@ -182,17 +210,28 @@ def visual_assets(
 ) -> dict[str, Any]:
     """Return dynamic team identities and a player visual with jersey fallback.
 
-    A missing portrait never kills the story. The renderer will first try the
-    selected player image and then create the same verified-team generic jersey
-    fallback already used by the main news workflow.
+    A missing portrait never kills the story. The renderer first tries the
+    player specifically referenced by the analysis, then other approved player
+    imagery, and finally the verified-team generic jersey fallback.
     """
     provider_teams = provider_row.get("teams") or {}
     home_provider = provider_teams.get("home") or {}
     away_provider = provider_teams.get("away") or {}
     focus_id, focus_name = _focus_team(candidate)
 
+    try:
+        preferred_player_id = int(candidate.post.get("hero_player_id") or 0) or None
+    except (TypeError, ValueError):
+        preferred_player_id = None
+
     hero = None
-    if candidate.mode == "review":
+    if preferred_player_id:
+        hero = _official_fpl_hero(
+            bootstrap,
+            focus_id,
+            preferred_player_id=preferred_player_id,
+        )
+    if hero is None and candidate.mode == "review":
         hero = _review_provider_hero(provider_row, focus_name, provider_get)
     if hero is None:
         hero = _official_fpl_hero(bootstrap, focus_id)
@@ -213,12 +252,12 @@ def visual_assets(
         "home_logo": {
             "team": candidate.fixture.home,
             "url": str(home_provider.get("logo") or "").strip(),
-            "source": "Licensed structured provider",
+            "source": "Licensed structured provider" if home_provider.get("logo") else "Official FPL logo resolver",
         },
         "away_logo": {
             "team": candidate.fixture.away,
             "url": str(away_provider.get("logo") or "").strip(),
-            "source": "Licensed structured provider",
+            "source": "Licensed structured provider" if away_provider.get("logo") else "Official FPL logo resolver",
         },
         "hero_player": hero,
     }
