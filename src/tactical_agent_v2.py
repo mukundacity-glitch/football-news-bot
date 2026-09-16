@@ -109,6 +109,53 @@ def _posted_today(state: Mapping[str, Any], now, tz, mode: str | None = None) ->
     )
 
 
+def _trim_words(value: object, max_chars: int) -> str:
+    """Trim on a word boundary without adding characters outside the budget."""
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 0:
+        return ""
+    clipped = text[:max_chars].rsplit(" ", 1)[0].strip()
+    return clipped or text[:max_chars].strip()
+
+
+def _x_caption(candidate: Any, *, trial: bool = False) -> str:
+    """Create an intentionally conservative X caption.
+
+    X applies its own weighted-length rules. The graphic already contains the
+    full explanation and evidence, so captions stay well below the nominal
+    280-character ceiling instead of relying on raw Python slicing at 280.
+    """
+    post = candidate.post
+    heading = " ".join(str(post.get("heading") or "TACTICAL WATCH").split())
+    topic = " ".join(str(post.get("topic_line") or "").split())
+    thesis = " ".join(str(post.get("thesis") or "").split())
+    tags = "#PremierLeague #FPL"
+    marker = "Format trial" if trial else ""
+    limit = 220 if trial else 235
+
+    def compose(current_topic: str, current_thesis: str) -> str:
+        parts = [heading, current_topic, "", current_thesis, "", tags]
+        if marker:
+            parts.extend(["", marker])
+        return "\n".join(parts).strip()
+
+    text = compose(topic, thesis)
+    if len(text) > limit:
+        topic = f"{candidate.fixture.home} vs {candidate.fixture.away}"
+        text = compose(topic, thesis)
+
+    if len(text) > limit:
+        without_thesis = compose(topic, "")
+        thesis_budget = max(24, limit - len(without_thesis) - 1)
+        thesis = _trim_words(thesis, thesis_budget)
+        text = compose(topic, thesis)
+
+    # Final defensive cap; normal inputs should already fit on word boundaries.
+    return text[:limit].rstrip()
+
+
 def _install() -> None:
     # Use the same Twikit transaction compatibility behavior as the established
     # news publisher before any media upload is attempted.
@@ -120,6 +167,7 @@ def _install() -> None:
     base.official_snapshot = _official_snapshot
     base.load_config = _load_config
     base.posted_today = _posted_today
+    base.caption = _x_caption
     base.TacticalGraphicRenderer = EnhancedTacticalGraphicRenderer
 
     if base.provider_key():
@@ -203,10 +251,7 @@ def run_trial(*, dry_run: bool = False) -> int:
     published = False
     delivery_url = ""
     if not dry_run and not manual_review and autopost:
-        trial_caption = base.caption(candidate)
-        suffix = "\n\nFormat trial"
-        if len(trial_caption) + len(suffix) <= 280:
-            trial_caption += suffix
+        trial_caption = _x_caption(candidate, trial=True)
         delivery_url = asyncio.run(base.publish_x(str(output), trial_caption))
         published = True
 
