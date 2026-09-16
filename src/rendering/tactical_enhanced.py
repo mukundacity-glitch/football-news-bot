@@ -93,6 +93,15 @@ class EnhancedTacticalGraphicRenderer(TacticalGraphicRenderer):
             self._loaded_assets = {}
             self._hero_is_jersey = False
 
+    def _footer(self, image: Image.Image, post: Mapping[str, object]) -> None:
+        # Preserve the audited source in post/state, but use a compact display
+        # label so the locked footer never ellipsizes the Day 1 source name.
+        display_post = dict(post)
+        source = str(display_post.get("source_label") or "")
+        if source == "Official FPL via FPL Vortex Day 1":
+            display_post["source_label"] = "Official FPL • Vortex D1"
+        super()._footer(image, display_post)
+
     def _body(self, image: Image.Image, post: Mapping[str, object], evidence: Sequence[object]) -> None:
         # Keep the original left-side hierarchy/evidence cards untouched. Then
         # repaint only the right panel where the base renderer placed its pitch.
@@ -123,7 +132,8 @@ class EnhancedTacticalGraphicRenderer(TacticalGraphicRenderer):
         versus = fit_font(draw, "VS", 180, max_size=58, min_size=46, role="condensed")
         draw.text(((x1 + x2) // 2, y1 + 165), "VS", anchor="mm", font=versus, fill=GOLD)
 
-        hero_box = (x1 + 100, y1 + 350, x2 - 100, y2 - 185)
+        # Leave a clear lower buffer for the hero-name card and priority tier.
+        hero_box = (x1 + 100, y1 + 350, x2 - 100, y2 - 220)
         paste_contain(image, hero_img, hero_box)
 
         focus = str(post.get("diagram_label") or "TACTICAL FOCUS").upper()
@@ -135,14 +145,14 @@ class EnhancedTacticalGraphicRenderer(TacticalGraphicRenderer):
             display_name = f"{str(hero.get('club_name') or display_name)} • TEAM JERSEY"
         name_font = fit_font(draw, display_name, x2 - x1 - 160, max_size=52, min_size=36, role="bold")
         draw.rounded_rectangle(
-            (x1 + 55, y2 - 170, x2 - 55, y2 - 55),
+            (x1 + 55, y2 - 190, x2 - 55, y2 - 100),
             radius=24,
             fill=(3, 5, 12),
             outline=CYAN,
             width=4,
         )
         draw.text(
-            ((x1 + x2) // 2, y2 - 112),
+            ((x1 + x2) // 2, y2 - 145),
             truncate(draw, display_name, name_font, x2 - x1 - 180),
             anchor="mm",
             font=name_font,
@@ -152,4 +162,4 @@ class EnhancedTacticalGraphicRenderer(TacticalGraphicRenderer):
         tier = str(post.get("score_label") or "")
         if tier:
             tier_font = fit_font(draw, tier, x2 - x1 - 180, max_size=34, min_size=28, role="bold")
-            draw.text(((x1 + x2) // 2, y2 - 25), tier, anchor="ms", font=tier_font, fill=MUTED)
+            draw.text(((x1 + x2) // 2, y2 - 62), tier, anchor="mm", font=tier_font, fill=MUTED)

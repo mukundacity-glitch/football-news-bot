@@ -16,6 +16,7 @@ from src import fpl_vortex_day1 as day1
 from src import tactical_intelligence as base
 from src.rendering.tactical_enhanced import EnhancedTacticalGraphicRenderer
 from src.tactical_quality import TREND_SCORE, enhance_candidate
+from src.twikit_runtime import apply_twikit_transaction_patch
 
 _ORIGINAL_REQUEST_JSON = base.request_json
 _ORIGINAL_OFFICIAL_SNAPSHOT = base.official_snapshot
@@ -109,6 +110,10 @@ def _posted_today(state: Mapping[str, Any], now, tz, mode: str | None = None) ->
 
 
 def _install() -> None:
+    # Use the same Twikit transaction compatibility behavior as the established
+    # news publisher before any media upload is attempted.
+    apply_twikit_transaction_patch()
+
     # Official FPL requests use the user's Day 1 retry/request layer whenever
     # that checked-out source is available.
     base.request_json = _request_json
