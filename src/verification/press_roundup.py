@@ -1,12 +1,4 @@
-"""Premier League official press-conference roundup helpers.
-
-This module is deliberately limited to the official PremierLeague.com press
-roundup lane. It does not change the player-card renderer or any other news
-category. The source article is treated as one combined roundup so the existing
-approved three-column PRESS CONFERENCE graphic can display all of the article's
-manager updates in one post.
-"""
-
+"""FotMob-only press-conference roundup helpers."""
 from __future__ import annotations
 
 import re
@@ -20,17 +12,12 @@ from src.fpl_deadline import (
     next_fpl_deadline as _shared_next_fpl_deadline,
 )
 
-PREMIER_LEAGUE_SOURCE_ID = "official.premier_league"
-PREMIER_LEAGUE_DOMAIN = "premierleague.com"
-PRESS_FEED_ID = "google.premier_league.press_conference"
+FOTMOB_SOURCE_ID = "media.fotmob"
+FOTMOB_DOMAIN = "fotmob.com"
+PRESS_FEED_ID = "fotmob.premier_league.topnews"
 PRESS_DEADLINE_MARGIN_MINUTES = DEFAULT_MARGIN_MINUTES
 MAX_PREMIER_LEAGUE_ROUNDUP_ENTRIES = 20
 
-# PremierLeague.com roundup pages use headings such as:
-#   Mikel Arteta (Arsenal)
-#   Nuno Espirito Santo (Nottingham Forest)
-# Keep this intentionally shape-based; the closed-world entity registry still
-# decides whether the primary speaker is a real registered manager.
 _NAME_TOKEN = r"[A-ZÀ-ÖØ-Ý][A-Za-zÀ-ÖØ-öø-ÿ'’.-]+"
 _SPEAKER_RE = re.compile(
     rf"(?P<name>{_NAME_TOKEN}(?:\s+{_NAME_TOKEN}){{1,5}})"
@@ -41,45 +28,33 @@ _TOPIC_RE = re.compile(
     r"\b(?:On|Regarding|Asked about|When asked about)\s+(.{3,180}?):\s*$",
     re.IGNORECASE,
 )
-_GENERIC_NAMES = {
-    "tv info",
-    "broadcasters",
-    "highlights available",
-    "news",
-    "close",
-}
+_GENERIC_NAMES = {"tv info", "broadcasters", "highlights available", "news", "close"}
 
 
 def _clean(value: object, limit: int = 260) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip(" .\t\r\n")
-    if len(text) <= limit:
-        return text
-    return text[: max(1, limit - 1)].rstrip(" .;,|") + "…"
+    return text if len(text) <= limit else text[: max(1, limit - 1)].rstrip(" .;,|") + "…"
 
 
 def _norm(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
-def is_premier_league_url(value: object) -> bool:
-    """Return true only for the Premier League's own web domain."""
+def is_fotmob_url(value: object) -> bool:
     try:
         host = (urlparse(str(value or "")).hostname or "").lower().rstrip(".")
     except Exception:
         return False
-    return host == PREMIER_LEAGUE_DOMAIN or host.endswith("." + PREMIER_LEAGUE_DOMAIN)
+    return host == FOTMOB_DOMAIN or host.endswith("." + FOTMOB_DOMAIN)
 
 
 def is_premier_league_press_item(item: Mapping[str, Any]) -> bool:
-    """Identify the dedicated official feed/article lane without trusting text."""
+    """Accept only the approved FotMob Premier League news lane."""
     if str(item.get("feed_id") or "") == PRESS_FEED_ID:
-        return True
-    if str(item.get("source_id") or "") == PREMIER_LEAGUE_SOURCE_ID:
-        return True
-    return any(
-        is_premier_league_url(item.get(key))
-        for key in ("source_url", "publisher_url")
-    )
+        return str(item.get("source_id") or FOTMOB_SOURCE_ID) == FOTMOB_SOURCE_ID
+    if str(item.get("source_id") or "") != FOTMOB_SOURCE_ID:
+        return False
+    return any(is_fotmob_url(item.get(key)) for key in ("source_url", "publisher_url"))
 
 
 def _speaker_entries(text: str) -> list[dict[str, Any]]:
@@ -89,67 +64,41 @@ def _speaker_entries(text: str) -> list[dict[str, Any]]:
     for index, match in enumerate(matches):
         name = _clean(match.group("name"), 90)
         club = _clean(match.group("club"), 70)
-        # The official page places a small "TV Info - Broadcasters" label
-        # immediately before the first manager heading in its article text.
-        # Strip only those known layout words; never guess or rewrite a real
-        # person's name.
-        name_parts = name.split()
-        while (
-            len(name_parts) > 2
-            and name_parts[0].casefold() in {"tv", "info", "broadcasters"}
-        ):
-            name_parts.pop(0)
-        name = " ".join(name_parts)
-        if _norm(name) in _GENERIC_NAMES or len(name.split()) < 2:
-            continue
+        parts = name.split()
+        while len(parts) > 2 and parts[0].casefold() in {"tv", "info", "broadcasters"}:
+            parts.pop(0)
+        name = " ".join(parts)
         identity = (_norm(name), _norm(club))
-        if identity in seen:
+        if _norm(name) in _GENERIC_NAMES or len(parts) < 2 or identity in seen:
             continue
         seen.add(identity)
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         section = text[match.end():end]
-        quotes = [_clean(m.group(1), 330) for m in _QUOTE_RE.finditer(section)]
-        quotes = list(dict.fromkeys(q for q in quotes if q))[:8]
+        quotes = list(dict.fromkeys(_clean(m.group(1), 330) for m in _QUOTE_RE.finditer(section)))[:8]
         topics: list[str] = []
         cursor = 0
         for quote_match in _QUOTE_RE.finditer(section):
-            prefix = section[cursor:quote_match.start()]
-            topic_match = _TOPIC_RE.search(prefix)
+            topic_match = _TOPIC_RE.search(section[cursor:quote_match.start()])
             if topic_match:
                 topic = _clean(topic_match.group(1), 130)
                 if topic and topic not in topics:
                     topics.append(topic)
             cursor = quote_match.end()
-        entries.append({
-            "name": name,
-            "club": club,
-            "quotes": quotes,
-            "topics": topics[:8],
-        })
+        entries.append({"name": name, "club": club, "quotes": quotes, "topics": topics[:8]})
     return entries
 
 
 def parse_premier_league_roundup(text: str) -> dict[str, Any]:
-    """Extract only text present in an official PremierLeague.com article.
-
-    The parser never invents a quote. If a page has no speaker heading and no
-    quoted material, it returns an empty result and the normal verification
-    pipeline remains fail-closed.
-    """
     source_text = re.sub(r"\s+", " ", str(text or "")).strip()
     entries = _speaker_entries(source_text)
     if not entries:
         return {"entries": [], "primary": None}
-
     roundup: list[str] = []
     latest_news: list[str] = []
     key_quotes: list[str] = []
     manager_notes: list[str] = []
     for entry in entries[:MAX_PREMIER_LEAGUE_ROUNDUP_ENTRIES]:
-        name = entry["name"]
-        club = entry["club"]
-        quotes = entry["quotes"]
-        topics = entry["topics"]
+        name, club, quotes, topics = entry["name"], entry["club"], entry["quotes"], entry["topics"]
         if topics:
             latest_news.append(_clean(f"{club}: {topics[0]}", 180))
             manager_notes.append(_clean(f"{club}: {topics[0]}", 180))
@@ -160,105 +109,49 @@ def parse_premier_league_roundup(text: str) -> dict[str, Any]:
             roundup.append(_clean(f"{club} — {name}: “{quotes[0]}”", 245))
         else:
             roundup.append(_clean(f"{club} — {name}: Press conference update", 180))
-
     primary = entries[0]
-    first_quote = (primary["quotes"] or [""])[0]
-    first_topic = (primary["topics"] or [""])[0]
     return {
         "entries": entries[:MAX_PREMIER_LEAGUE_ROUNDUP_ENTRIES],
-        "primary": {
-            "name": primary["name"],
-            "club": primary["club"],
-            "quote_summary": first_quote,
-            "quote_topic": first_topic or "Official press conference update",
-        },
-        # These lists map directly to fields already supported by the approved
-        # renderer. They are facts extracted from the official article body.
-        "latest_news": latest_news[:8],
-        "key_quotes": key_quotes[:8],
-        "manager_notes": manager_notes[:4],
-        "roundup": roundup[:MAX_PREMIER_LEAGUE_ROUNDUP_ENTRIES],
+        "primary": {"name": primary["name"], "club": primary["club"], "quote_summary": (primary["quotes"] or [""])[0], "quote_topic": (primary["topics"] or [""])[0] or "Press conference update"},
+        "latest_news": latest_news[:8], "key_quotes": key_quotes[:8],
+        "manager_notes": manager_notes[:4], "roundup": roundup[:MAX_PREMIER_LEAGUE_ROUNDUP_ENTRIES],
     }
 
 
-def project_roundup_story(
-    story: dict[str, Any],
-    source_item: Mapping[str, Any],
-    *,
-    resolve_staff: Optional[Callable[[str], Any]] = None,
-    resolve_club_key: Optional[Callable[[str], Optional[str]]] = None,
-) -> bool:
-    """Put one combined official roundup into the existing V2 story envelope."""
-    text = str(
-        source_item.get("full_text")
-        or source_item.get("text")
-        or source_item.get("summary")
-        or ""
-    )
-    parsed = parse_premier_league_roundup(text)
-    primary = parsed.get("primary")
+def project_roundup_story(story: dict[str, Any], source_item: Mapping[str, Any], *, resolve_staff: Optional[Callable[[str], Any]] = None, resolve_club_key: Optional[Callable[[str], Optional[str]]] = None) -> bool:
+    if not is_premier_league_press_item(source_item):
+        return False
+    text = str(source_item.get("full_text") or source_item.get("text") or source_item.get("summary") or "")
+    primary = parse_premier_league_roundup(text).get("primary")
     if not primary:
         return False
-
     speaker_name = primary["name"]
     if resolve_staff:
-        # Current managers may already exist in the provider snapshot. If they
-        # do not, keep the exact official heading and let the existing
-        # first-party entity-establishment rule validate it; do not discard a
-        # genuine PremierLeague.com roundup merely because the snapshot lags.
         resolved = resolve_staff(speaker_name)
         if resolved is not None:
             speaker_name = str(getattr(resolved, "name", speaker_name))
-
     club_name = primary["club"]
-    club_key = resolve_club_key(club_name) if resolve_club_key else None
     story.update({
-        "event": "press_conference",
-        "player": speaker_name,
-        "display_name": speaker_name,
-        "speaker_type": "manager",
-        "to_club": club_name,
-        "to_key": club_key,
-        "quote_summary": primary["quote_summary"],
-        "quote_topic": primary["quote_topic"],
-        "latest_news": parsed.get("latest_news", []),
-        "key_quotes": parsed.get("key_quotes", []),
-        "manager_notes": parsed.get("manager_notes", []),
-        "roundup": parsed.get("roundup", []),
+        "event": "press_conference", "player": speaker_name, "display_name": speaker_name,
+        "speaker_type": "manager", "to_club": club_name,
+        "to_key": resolve_club_key(club_name) if resolve_club_key else None,
+        "quote_summary": primary["quote_summary"], "quote_topic": primary["quote_topic"],
+        "latest_news": parse_premier_league_roundup(text).get("latest_news", []),
+        "key_quotes": parse_premier_league_roundup(text).get("key_quotes", []),
+        "manager_notes": parse_premier_league_roundup(text).get("manager_notes", []),
+        "roundup": parse_premier_league_roundup(text).get("roundup", []),
         "_premier_league_press_roundup": True,
     })
     return True
 
 
-def next_fpl_deadline(
-    fpl_data: Mapping[str, Any],
-    *,
-    now=None,
-):
-    """Return the next official FPL deadline from bootstrap-static."""
+def next_fpl_deadline(fpl_data: Mapping[str, Any], *, now=None):
     return _shared_next_fpl_deadline(fpl_data, now=now)
 
 
-def press_deadline_target(
-    fpl_data: Mapping[str, Any],
-    *,
-    now=None,
-    margin_minutes: int = PRESS_DEADLINE_MARGIN_MINUTES,
-):
+def press_deadline_target(fpl_data: Mapping[str, Any], *, now=None, margin_minutes: int = PRESS_DEADLINE_MARGIN_MINUTES):
     return deadline_target(fpl_data, now=now, margin_minutes=margin_minutes)
 
 
-def press_deadline_window_open(
-    fpl_data: Mapping[str, Any],
-    *,
-    now=None,
-    margin_minutes: int = PRESS_DEADLINE_MARGIN_MINUTES,
-    window_minutes: int = 30,
-) -> bool:
-    """Check whether the target pre-deadline posting window is open."""
-    return deadline_window_open(
-        fpl_data,
-        now=now,
-        margin_minutes=margin_minutes,
-        window_minutes=window_minutes,
-    )
+def press_deadline_window_open(fpl_data: Mapping[str, Any], *, now=None, margin_minutes: int = PRESS_DEADLINE_MARGIN_MINUTES, window_minutes: int = 30) -> bool:
+    return deadline_window_open(fpl_data, now=now, margin_minutes=margin_minutes, window_minutes=window_minutes)
