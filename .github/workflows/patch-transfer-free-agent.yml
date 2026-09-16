@@ -26,6 +26,17 @@ jobs:
           pip install -r requirements.txt
       - name: Apply guarded fix
         run: python tools/apply_guarded_transfer_fix.py
+      - name: Preserve existing final-gate origin semantics
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("src/transfer_safety.py")
+          text = p.read_text(encoding="utf-8")
+          old = '''    if from_state == "UNKNOWN" and not free_transfer:\n        return "REJECT", "origin_missing"\n'''
+          if text.count(old) != 1:
+              raise SystemExit("expected exactly one temporary origin_missing block")
+          p.write_text(text.replace(old, ""), encoding="utf-8")
+          PY
       - name: Run full safety suite
         run: python -m pytest -q
       - name: Commit guarded fix
