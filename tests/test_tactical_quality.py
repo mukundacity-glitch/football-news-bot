@@ -30,6 +30,8 @@ def _candidate(*, score: int = 70, mode: str = "watch", focus: str = "set_piece"
         mode,
         _fixture(),
         {
+            "heading": "FPL TACTICAL WATCH",
+            "topic_line": "Home Club vs Away Club • Sat 19 Sep, 10:00",
             "thesis": "Watch whether Home Club create repeated pressure from set pieces",
             "diagram_focus": focus,
             "evidence": [
@@ -50,6 +52,26 @@ def test_priority_tiers_match_editorial_policy():
     assert score_tier(59) == "TREND"
     assert score_tier(45) == "TREND"
     assert score_tier(44) == "REJECT"
+
+
+def test_tactical_x_caption_stays_well_below_platform_limit():
+    candidate = _candidate()
+    text = tactical_agent_v2._x_caption(candidate)
+    assert len(text) <= 235
+    assert "FPL TACTICAL WATCH" in text
+    assert "Home Club vs Away Club" in text
+    assert "#PremierLeague #FPL" in text
+
+
+def test_trial_x_caption_has_extra_safety_margin_and_marker():
+    candidate = _candidate()
+    candidate.post["topic_line"] = "Home Club vs Away Club • " + ("very long fixture context " * 8)
+    candidate.post["thesis"] = "Watch whether " + ("a repeated attacking tactical pattern continues " * 8)
+    text = tactical_agent_v2._x_caption(candidate, trial=True)
+    assert len(text) <= 220
+    assert "Format trial" in text
+    assert "#PremierLeague #FPL" in text
+    assert "Home Club vs Away Club" in text
 
 
 def test_generic_single_stat_review_is_rejected():
