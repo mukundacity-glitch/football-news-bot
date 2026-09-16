@@ -1,8 +1,15 @@
 name: Delete old workflow runs
+
 on:
+  # One-time full cleanup when this cleanup policy is merged to main.
+  # The path filter prevents normal bot/state pushes from retriggering it.
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cleanup-runs.yml'
   schedule:
-    - cron: '0 0 * * 0' # Runs automatically every Sunday at midnight
-  workflow_dispatch: # Allows you to trigger it manually
+    - cron: '0 0 * * 0' # Weekly maintenance after the one-time cleanup.
+  workflow_dispatch: # Allows manual maintenance runs.
 
 jobs:
   del_runs:
@@ -16,5 +23,7 @@ jobs:
         with:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
-          retain_days: 3 # Deletes any runs older than 3 days
-          keep_minimum_runs: 5 # Always keeps the 5 most recent runs, just in case
+          # On the merge push, delete all completed historical runs. Future
+          # scheduled/manual maintenance keeps the previous 3-day / 5-run policy.
+          retain_days: ${{ github.event_name == 'push' && '0' || '3' }}
+          keep_minimum_runs: ${{ github.event_name == 'push' && '0' || '5' }}

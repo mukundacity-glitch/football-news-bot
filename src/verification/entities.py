@@ -236,7 +236,41 @@ class EntityRegistry:
         return self.resolve(name_or_id, EntityType.CLUB)
 
     def resolve_player(self, name_or_id: object) -> Optional[EntityRecord]:
-        return self.resolve(name_or_id, EntityType.PLAYER)
+        """Resolve a player without weakening the closed-world FPL allowlist.
+
+        Exact unique aliases remain the primary path.  The compatibility path
+        only accepts a multi-token media/parser name when every token is present
+        in exactly one active official-FPL player's canonical name and the
+        canonical surname is one of those tokens.  Unknown, single-token and
+        ambiguous names still fail closed.
+        """
+        if exact := self.resolve(name_or_id, EntityType.PLAYER):
+            return exact
+
+        query = normalize_entity_name(name_or_id)
+        tokens = query.split()
+        if len(tokens) < 2:
+            return None
+
+        matches: Dict[str, EntityRecord] = {}
+        for record in self._records.values():
+            if (
+                record.entity_type != EntityType.PLAYER
+                or record.validation_source != "official_fpl"
+                or not record.active_premier_league
+                or record.confidence < 1.0
+            ):
+                continue
+            canonical_tokens = normalize_entity_name(record.name).split()
+            if not canonical_tokens or canonical_tokens[-1] not in tokens:
+                continue
+            canonical_set = set(canonical_tokens)
+            if all(token in canonical_set for token in tokens):
+                matches[record.id] = record
+
+        if len(matches) != 1:
+            return None
+        return next(iter(matches.values()))
 
     def resolve_staff(self, name_or_id: object) -> Optional[EntityRecord]:
         for kind in (EntityType.MANAGER, EntityType.COACH):

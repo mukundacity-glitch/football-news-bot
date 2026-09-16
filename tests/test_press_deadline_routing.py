@@ -20,7 +20,8 @@ def test_deadline_workflow_uses_verified_roundup_not_removed_top_five_bot():
     )
     general = Path(".github/workflows/bot.yml").read_text(encoding="utf-8")
 
-    assert "FPL Deadline Press Conference Round-Up" in deadline
+    assert "name: PRESS CONFERENCE BOT" in deadline
+    assert "name: NEWS BOT" in general
     assert "tools/press_deadline_window.py" in deadline
     assert "LIVE_EVENT_SCOPE: press_conference" in deadline
     assert "python tools/press_collection.py" in deadline
