@@ -1,0 +1,31 @@
+name: Read-only live news diagnostics
+
+on:
+  push:
+    branches: [diag-news-pipeline-20260916]
+    paths:
+      - tools/diagnose_live_news_pipeline.py
+      - .github/workflows/diagnose-live-news.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Read current FPL and FotMob candidates without posting
+        env:
+          DRY_RUN: "true"
+          ENABLE_AUTOPOST: "false"
+        run: python -m tools.diagnose_live_news_pipeline
