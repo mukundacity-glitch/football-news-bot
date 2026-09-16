@@ -5,6 +5,7 @@ on:
     branches: [feat/fotmob-contract-extensions-v2]
     paths:
       - tools/_apply_fotmob_contract_patch.py
+      - tools/_fix_fotmob_patch_helper.py
       - .github/workflows/test-fotmob-contract-patch.yml
 
 permissions:
@@ -26,7 +27,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Apply guarded patch
-        run: python tools/_apply_fotmob_contract_patch.py
+        run: |
+          python tools/_fix_fotmob_patch_helper.py
+          python tools/_apply_fotmob_contract_patch.py
       - name: Run full safety suite
         run: python -m pytest -q
       - name: Commit tested production changes
