@@ -10,8 +10,6 @@ import argparse
 import asyncio
 import json
 import os
-from datetime import timedelta
-from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
@@ -23,7 +21,6 @@ _ORIGINAL_OFFICIAL_SNAPSHOT = base.official_snapshot
 _ORIGINAL_BUILD_WATCH = base.build_watch
 _ORIGINAL_BUILD_REVIEW = base.build_review
 _ORIGINAL_LOAD_CONFIG = base.load_config
-_ORIGINAL_POSTED_TODAY = base.posted_today
 _BOOTSTRAP: dict[str, Any] = {}
 
 
