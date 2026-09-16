@@ -1,0 +1,126 @@
+name: PREMIER LEAGUE TACTICAL INTELLIGENCE
+
+# Polling is intentionally timezone-neutral. Python reads the audience timezone
+# and editorial windows from config/tactical_intelligence.json, so DST or a
+# future timezone change never requires hardcoding another cron expression.
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Tactical run mode
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - watch
+          - review
+      dry_run:
+        description: Render/store without publishing to X
+        required: true
+        default: false
+        type: boolean
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/premier-league-tactical-intelligence.yml"
+      - "config/tactical_intelligence.json"
+      - "src/tactical_intelligence.py"
+      - "src/rendering/tactical.py"
+      - "tests/test_tactical_intelligence.py"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: premier-league-tactical-intelligence
+  cancel-in-progress: false
+
+jobs:
+  tactical-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Tactical unit tests
+        run: python -m pytest -q tests/test_tactical_intelligence.py
+
+  run-tactical-agent:
+    if: github.event_name != 'pull_request' && vars.TACTICAL_BOT_PAUSED != 'true'
+    needs: tactical-tests
+    runs-on: ubuntu-latest
+    env:
+      TACTICAL_CONFIG_PATH: config/tactical_intelligence.json
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+      X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
+      X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
+      X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
+      X_POST_CT0_TOKEN: ${{ secrets.X_POST_CT0_TOKEN }}
+      ENABLE_TACTICAL_AUTOPOST: ${{ vars.ENABLE_TACTICAL_AUTOPOST || 'true' }}
+      TACTICAL_MANUAL_REVIEW: ${{ vars.TACTICAL_MANUAL_REVIEW || 'false' }}
+      TACTICAL_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tactical intelligence agent
+        env:
+          TACTICAL_RUN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'auto' }}
+        run: python -m src.tactical_intelligence --mode "$TACTICAL_RUN_MODE"
+
+      - name: Save tactical cards and audit status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tactical-intelligence-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            queue/tactical/*.png
+            data/tactical_last_run.json
+
+      - name: Persist tactical state
+        if: always()
+        run: |
+          git config user.name "fpl-vortex-tactical-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add data/tactical_posts.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No tactical state changes to persist."
+            exit 0
+          fi
+          git commit -m "update tactical intelligence state [skip ci]"
+          pushed=""
+          for i in 1 2 3 4 5; do
+            if git push; then pushed=1; break; fi
+            echo "push rejected (attempt $i); rebasing on origin/main"
+            git pull --rebase --autostash -X ours origin main || git rebase --abort || true
+            sleep 3
+          done
+          if [ -z "$pushed" ]; then
+            echo "WARNING: tactical state could not be pushed; next run will retry from repository state."
+          fi
