@@ -6,7 +6,8 @@
       "TRANSFER",
       "INJURY",
       "SUSPENSION",
-      "PRESS_CONFERENCE"
+      "PRESS_CONFERENCE",
+      "CONTRACT"
     ],
     "publishable_statuses": [
       "OFFICIAL",
@@ -14,8 +15,16 @@
     ],
     "_transfer_policy_note": "TRANSFER keeps separate fail-closed lanes: first-party OFFICIAL/COMPLETED claims render as CONFIRMED; approved tier-one TALKS/NEGOTIATION/BID reports may render as REPORTED from one source, while AGREEMENT/MEDICAL/HERE_WE_GO requires two independent approved publishers; structured FotMob Premier League table rows may render COMPLETED as REPORTED/LISTED within 48 hours. INTEREST/RUMOUR and unstructured third-party completion claims never publish. Source citation appears on the card only.",
     "allow_reported_transfers": true,
-    "reported_transfer_single_source_statuses": ["TALKS", "NEGOTIATION", "BID"],
-    "reported_transfer_two_source_statuses": ["AGREEMENT", "MEDICAL", "HERE_WE_GO"],
+    "reported_transfer_single_source_statuses": [
+      "TALKS",
+      "NEGOTIATION",
+      "BID"
+    ],
+    "reported_transfer_two_source_statuses": [
+      "AGREEMENT",
+      "MEDICAL",
+      "HERE_WE_GO"
+    ],
     "reported_transfer_approved_sources": [
       "journalist.fabrizio_romano",
       "journalist.david_ornstein",
@@ -40,7 +49,8 @@
       "MEDICAL"
     ],
     "minimum_elite_medical_publishers": 2,
-    "allow_structured_fotmob_completed_transfers": true
+    "allow_structured_fotmob_completed_transfers": true,
+    "allow_structured_fotmob_contract_extensions": true
   },
   "thresholds": {
     "entity_certainty_min": 0.98,
@@ -216,6 +226,35 @@
         "competition_id"
       ],
       "progressive_fields": []
+    },
+    "CONTRACT": {
+      "required_facts": [
+        "subject_id",
+        "subject_name",
+        "club_id",
+        "club_name",
+        "contract_status",
+        "contract_length"
+      ],
+      "allowed_subject_types": [
+        "PLAYER"
+      ],
+      "conflict_fields": [
+        "subject_id",
+        "club_id",
+        "contract_length"
+      ],
+      "material_fields": [
+        "contract_status",
+        "contract_length"
+      ],
+      "official_relation_fields": [
+        "club_id",
+        "competition_id"
+      ],
+      "progressive_fields": [
+        "contract_length"
+      ]
     }
   },
   "status_order": [
@@ -304,18 +343,41 @@
     "corroboration_patterns": {
       "INJURY": [
         "\\binjur(?:y|ed|ies)\\b",
-        "\\bhamstring\\b", "\\bknee\\b", "\\bankle\\b", "\\bacl\\b", "\\bmcl\\b",
-        "\\bcalf\\b", "\\bgroin\\b", "\\bhip\\b", "\\bthigh\\b", "\\bshoulder\\b",
-        "\\bconcussion\\b", "\\bscan\\b", "\\bsurgery\\b", "\\bmedical staff\\b",
-        "\\bphysio\\b", "\\brecover(?:y|ing)\\b", "\\brehab(?:ilitation)?\\b",
-        "\\bsidelined\\b", "\\bfitness (?:test|update|concern)\\b",
-        "\\breturn(?:s|ed)? to training\\b", "\\bstrain\\b", "\\btorn\\b",
-        "\\bsprain(?:ed)?\\b", "\\bfracture[ds]?\\b"
+        "\\bhamstring\\b",
+        "\\bknee\\b",
+        "\\bankle\\b",
+        "\\bacl\\b",
+        "\\bmcl\\b",
+        "\\bcalf\\b",
+        "\\bgroin\\b",
+        "\\bhip\\b",
+        "\\bthigh\\b",
+        "\\bshoulder\\b",
+        "\\bconcussion\\b",
+        "\\bscan\\b",
+        "\\bsurgery\\b",
+        "\\bmedical staff\\b",
+        "\\bphysio\\b",
+        "\\brecover(?:y|ing)\\b",
+        "\\brehab(?:ilitation)?\\b",
+        "\\bsidelined\\b",
+        "\\bfitness (?:test|update|concern)\\b",
+        "\\breturn(?:s|ed)? to training\\b",
+        "\\bstrain\\b",
+        "\\btorn\\b",
+        "\\bsprain(?:ed)?\\b",
+        "\\bfracture[ds]?\\b"
       ],
       "SUSPENSION": [
-        "\\bban(?:ned)?\\b", "\\bsuspen(?:d|ded|sion)\\b", "\\bred card\\b",
-        "\\bsent off\\b", "\\bdisciplinary\\b", "\\bmisconduct\\b",
-        "\\bmatches? (?:ban|suspension)\\b", "\\bcharged? by\\b", "\\bappeal\\b"
+        "\\bban(?:ned)?\\b",
+        "\\bsuspen(?:d|ded|sion)\\b",
+        "\\bred card\\b",
+        "\\bsent off\\b",
+        "\\bdisciplinary\\b",
+        "\\bmisconduct\\b",
+        "\\bmatches? (?:ban|suspension)\\b",
+        "\\bcharged? by\\b",
+        "\\bappeal\\b"
       ]
     },
     "event_patterns": {
