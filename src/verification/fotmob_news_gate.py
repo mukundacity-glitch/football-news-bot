@@ -1,8 +1,9 @@
-"""Isolated trusted-news gate for FotMob Premier League reporting.
+"""Isolated trusted-news gate for FotMob Premier League transfer reporting.
 
-This module is deliberately narrow. It does not change verification rules for
-any other publisher and it never authorizes press conferences, previews,
-opinions, recaps, or generic football news.
+FotMob is used here only for transfer-family news. Official FPL data remains
+the authority for FPL player availability/injury/suspension data and other
+structured FPL information. This module never authorizes press conferences,
+previews, opinions, recaps, or generic football news.
 """
 from __future__ import annotations
 
@@ -26,9 +27,11 @@ _FOTMOB_TRANSFER_STATUSES = frozenset({
     EventStatus.HERE_WE_GO,
     EventStatus.COMPLETED,
 })
-_FOTMOB_AVAILABILITY_STATUSES = frozenset({
-    EventStatus.OFFICIAL,
-    EventStatus.COMPLETED,
+
+_FOTMOB_TRANSFER_EVENTS = frozenset({
+    EventType.TRANSFER,
+    EventType.CONTRACT,
+    EventType.LOAN,
 })
 
 
@@ -49,10 +52,8 @@ def _parse_timestamp(value: object) -> datetime | None:
 
 
 def _allowed_statuses(event: EventType) -> frozenset[EventStatus]:
-    if event == EventType.TRANSFER:
+    if event in _FOTMOB_TRANSFER_EVENTS:
         return _FOTMOB_TRANSFER_STATUSES
-    if event in {EventType.INJURY, EventType.SUSPENSION}:
-        return _FOTMOB_AVAILABILITY_STATUSES
     return frozenset()
 
 
@@ -62,10 +63,12 @@ def select_trusted_fotmob_claim(
     *,
     now: datetime | None = None,
 ) -> Claim | None:
-    """Return one fresh, verified FotMob PL claim or None.
+    """Return one fresh, verified FotMob transfer-family claim or None.
 
     Entity, league, event classification, mandatory facts, conflicts, dedup and
     confidence are still enforced by the normal V2 engine after this selection.
+    Injury/suspension/press-conference events deliberately return no FotMob
+    claim; those lanes must use their approved FPL/structured-data path.
     """
     allowed = _allowed_statuses(event)
     if not allowed:
