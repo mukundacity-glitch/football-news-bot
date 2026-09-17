@@ -1,0 +1,183 @@
+name: FPL Injury News to Discord
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  injury-news:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check FPL injuries and send Discord alerts
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          API_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
+          STATE_FILE = Path("fpl_injury_state.json")
+          WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
+
+          if not WEBHOOK:
+              raise RuntimeError("DISCORD_WEBHOOK_URL secret is missing")
+
+          def get_fpl_data():
+              req = urllib.request.Request(
+                  API_URL,
+                  headers={"User-Agent": "FPL-Vortex-Injury-Bot/1.0"}
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          def send_discord(message):
+              payload = json.dumps({"content": message}).encode("utf-8")
+              req = urllib.request.Request(
+                  WEBHOOK,
+                  data=payload,
+                  headers={
+                      "Content-Type": "application/json",
+                      "User-Agent": "FPL-Vortex-Injury-Bot/1.0"
+                  },
+                  method="POST"
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  if response.status not in (200, 204):
+                      raise RuntimeError(f"Discord returned HTTP {response.status}")
+
+          data = get_fpl_data()
+
+          teams = {
+              team["id"]: team["name"]
+              for team in data.get("teams", [])
+          }
+
+          players = data.get("elements", [])
+
+          previous = {}
+          if STATE_FILE.exists():
+              try:
+                  previous = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+              except Exception:
+                  previous = {}
+
+          current = {}
+          changed_players = []
+
+          for p in players:
+              chance_next = p.get("chance_of_playing_next_round")
+              chance_this = p.get("chance_of_playing_this_round")
+              news = (p.get("news") or "").strip()
+              status = p.get("status", "")
+
+              is_relevant = (
+                  chance_next is not None
+                  or chance_this is not None
+                  or bool(news)
+                  or status not in ("a", "")
+              )
+
+              if not is_relevant:
+                  continue
+
+              player_id = str(p["id"])
+
+              record = {
+                  "name": f'{p.get("first_name", "").strip()} {p.get("second_name", "").strip()}'.strip(),
+                  "team": teams.get(p.get("team"), "Unknown"),
+                  "chance_next": chance_next,
+                  "chance_this": chance_this,
+                  "news": news,
+                  "status": status,
+                  "news_added": p.get("news_added")
+              }
+
+              current[player_id] = record
+
+              if previous.get(player_id) != record:
+                  changed_players.append(record)
+
+          STATE_FILE.write_text(
+              json.dumps(current, indent=2, ensure_ascii=False),
+              encoding="utf-8"
+          )
+
+          if not previous:
+              print("First run: creating injury state file.")
+              print(f"Tracked players: {len(current)}")
+              print("No Discord alert sent on the first run.")
+          elif not changed_players:
+              print("No new injury or availability changes.")
+          else:
+              now = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+
+              for player in changed_players:
+                  chance = player["chance_next"]
+
+                  if chance is None:
+                      chance_text = "Unknown"
+                  else:
+                      chance_text = f"{chance}%"
+
+                  status_map = {
+                      "a": "Available",
+                      "d": "Doubt",
+                      "i": "Injured",
+                      "s": "Suspended",
+                      "u": "Unavailable"
+                  }
+
+                  status_text = status_map.get(
+                      player["status"],
+                      player["status"] or "Unknown"
+                  )
+
+                  news_text = player["news"] or "No additional news provided."
+
+                  message = (
+                      "🚨 **FPL INJURY UPDATE**\n\n"
+                      f"**{player['name']}** ({player['team']})\n"
+                      f"🏥 Status: **{status_text}**\n"
+                      f"⚽ Chance of playing: **{chance_text}**\n"
+                      f"📰 Update: {news_text}\n\n"
+                      f"🕒 {now}\n"
+                      "📊 Source: Official FPL data"
+                  )
+
+                  send_discord(message)
+                  print(f"Sent Discord alert for {player['name']}")
+
+          PY
+
+      - name: Save injury state
+        run: |
+          git config user.name "FPL Vortex Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add fpl_injury_state.json
+
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+          else
+            git commit -m "Update FPL injury state"
+            git push
+          fi
