@@ -204,45 +204,125 @@ def resolve_player_metadata(subject: str, *, fpl_data: Optional[dict] = None) ->
     return {key: value for key, value in result.items() if value not in (None, "")}
 
 
+def _thesportsdb_player_image(
+    subject: str,
+    expected_club: str = "",
+) -> Optional[Image.Image]:
+    """Return an identity-matched footballer image from TheSportsDB."""
+    try:
+        response = requests.get(
+            "https://www.thesportsdb.com/api/v1/json/123/searchplayers.php",
+            params={"p": subject.replace(" ", "_")},
+            headers={"User-Agent": "FPLVortexRenderer/1.0"},
+            timeout=12,
+        )
+        response.raise_for_status()
+        players = response.json().get("player") or []
+        target = _norm(subject)
+
+        for player in players:
+            name = str(player.get("strPlayer") or "")
+            if not name or _norm(name) != target:
+                continue
+            sport = _norm(player.get("strSport"))
+            if sport and sport not in {"soccer", "football"}:
+                continue
+            team = str(player.get("strTeam") or "")
+            if expected_club and team and not _mentions_club(team, expected_club):
+                continue
+
+            for field in ("strCutout", "strThumb", "strFanart1"):
+                url = str(player.get(field) or "").strip()
+                if not url:
+                    continue
+                image = _download_image(
+                    url,
+                    _safe_name("thesportsdb_player", f"{target}|{field}|{url}"),
+                )
+                if image:
+                    return image
+    except Exception:
+        return None
+    return None
+
+
+def _sportsapi_player_image(
+    subject: str,
+    facts: Mapping[str, Any],
+) -> Optional[Image.Image]:
+    """Use SportsAPI Pro only when the card already supplies its athlete ID/version."""
+    athlete_id = facts.get("sportsapi_athlete_id")
+    image_version = facts.get("sportsapi_image_version")
+    if not str(athlete_id or "").isdigit() or not str(image_version or "").isdigit():
+        return None
+
+    try:
+        url = (
+            "https://v1.football.sportsapipro.com/images/athletes/"
+            f"{int(athlete_id)}?imageVersion={int(image_version)}"
+        )
+        image = _download_image(
+            url,
+            _safe_name("sportsapi_player", f"{athlete_id}|{image_version}"),
+        )
+        return image
+    except Exception:
+        return None
+
+
+def _fpl_player_image(
+    subject: str,
+    data: Optional[dict],
+) -> Optional[Image.Image]:
+    if not data:
+        return None
+    player = find_player_in_fpl(subject, data)
+    if not player or not player.get("code"):
+        return None
+    try:
+        code = int(player["code"])
+    except (TypeError, ValueError):
+        return None
+    return _download_image(
+        f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png",
+        _safe_name("fpl_player", code),
+    )
+
+
 def resolve_player_image(
     subject: str,
     facts: Mapping[str, Any],
     *,
     fpl_data: Optional[dict] = None,
 ) -> tuple[Optional[Image.Image], str]:
-    """Resolve a real player image without risking a wrong current-club kit.
+    """Resolve a real player image first; use the shirt only as the final fallback.
 
-    When the verified current club is known, only a Wikimedia image whose page
-    and image metadata both name that club is accepted as a portrait.  If that
-    cannot be established, the renderer uses its verified current-team shirt
-    fallback instead of displaying an old FPL/academy image as if it were current.
+    Image sources are isolated to this resolver.  Existing FPL data, news
+    verification, posting, card layout, and club logic remain unchanged.
     """
     data = _fpl_data(fpl_data)
     current_club, _club_id = _verified_shirt_club(subject, facts, data)
 
-    if current_club:
-        image = _wikipedia_image(subject, current_club)
-        if image:
-            return image, "Wikipedia"
-        shirt = resolve_team_shirt(subject, facts, fpl_data=data)
-        if shirt:
-            return shirt, "Team shirt fallback"
-        return None, ""
+    # Keep the official FPL player portrait first and untouched.
+    image = _fpl_player_image(subject, data)
+    if image:
+        return image, "FPL API"
 
-    # Without a verified club relation, keep the older identity-only fallback
-    # order.  This lane cannot make a claim about a current club kit.
-    if data:
-        player = find_player_in_fpl(subject, data)
-        if player and player.get("code"):
-            code = int(player["code"])
-            image = _download_image(
-                f"https://resources.premierleague.com/premierleague/photos/players/250x250/p{code}.png",
-                _safe_name("fpl_player", code),
-            )
-            if image:
-                return image, "FPL API"
+    # Free player artwork fallback, identity-matched by exact player name and,
+    # when available, current-club name.
+    image = _thesportsdb_player_image(subject, current_club)
+    if image:
+        return image, "TheSportsDB"
 
-    image = _wikipedia_image(subject)
+    # Optional SportsAPI path: it is used only when an upstream card already
+    # provides the SportsAPI athlete ID and image version.
+    image = _sportsapi_player_image(subject, facts)
+    if image:
+        return image, "SportsAPI Pro"
+
+    # Existing identity-safe Wikimedia path remains after the dedicated player
+    # image sources, preserving its current-club safeguards.
+    image = _wikipedia_image(subject, current_club) if current_club else _wikipedia_image(subject)
     if image:
         return image, "Wikipedia"
 
