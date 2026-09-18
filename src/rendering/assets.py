@@ -308,24 +308,8 @@ def resolve_player_image(
     if image:
         return image, "FPL API"
 
-    # Free player artwork fallback, identity-matched by exact player name and,
-    # when available, current-club name.
-    image = _thesportsdb_player_image(subject, current_club)
-    if image:
-        return image, "TheSportsDB"
-
-    # Optional SportsAPI path: it is used only when an upstream card already
-    # provides the SportsAPI athlete ID and image version.
-    image = _sportsapi_player_image(subject, facts)
-    if image:
-        return image, "SportsAPI Pro"
-
-    # Existing identity-safe Wikimedia path remains after the dedicated player
-    # image sources, preserving its current-club safeguards.
-    image = _wikipedia_image(subject, current_club) if current_club else _wikipedia_image(subject)
-    if image:
-        return image, "Wikipedia"
-
+    # FotMob already supplies a player ID with the verified structured data.
+    # Prefer its player headshot before any generic/club imagery.
     provider_id = facts.get("provider_player_id")
     if str(provider_id or "").isdigit():
         image = _download_image(
@@ -334,6 +318,22 @@ def resolve_player_image(
         )
         if image:
             return image, "Reliable provider"
+
+    # Existing identity-safe Wikimedia logic remains after the two primary
+    # player-image providers, preserving its current-club safeguards.
+    image = _wikipedia_image(subject, current_club) if current_club else _wikipedia_image(subject)
+    if image:
+        return image, "Wikipedia"
+
+    # Additional free provider fallbacks remain image-only and do not alter
+    # verification, posting, or card logic.
+    image = _thesportsdb_player_image(subject, current_club)
+    if image:
+        return image, "TheSportsDB"
+
+    image = _sportsapi_player_image(subject, facts)
+    if image:
+        return image, "SportsAPI Pro"
 
     shirt = resolve_team_shirt(subject, facts, fpl_data=data)
     if shirt:
