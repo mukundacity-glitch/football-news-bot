@@ -62,24 +62,26 @@ def test_current_club_fpl_portrait_precedes_wikipedia(monkeypatch):
     assert source == "FPL API"
 
 
-def test_current_club_without_fpl_or_fotmob_falls_back_to_wikipedia_then_shirt(monkeypatch):
+def test_player_image_fallback_uses_official_fpl_kit_only(monkeypatch):
+    expected = Image.new("RGBA", (220, 300), (22, 130, 60, 255))
     calls: list[str] = []
 
     def download(url, _cache):
         calls.append(url)
-        return None
+        return expected if "/shirts/standard/shirt_3-220.png" in url else None
 
     monkeypatch.setattr(assets, "_download_image", download)
-    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: None)
 
     image, source = assets.resolve_player_image(
         "Truth Player", {}, fpl_data=_fpl_data()
     )
 
-    assert source == "Team shirt fallback"
-    assert image is not None and image.mode == "RGBA"
-    assert any("/photos/players/" in url for url in calls)
-
+    assert image is expected
+    assert source == "FPL team kit"
+    assert calls == [
+        "https://resources.premierleague.com/premierleague/photos/players/250x250/p12345.png",
+        "https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_3-220.png",
+    ]
 
 def test_identity_only_lane_can_use_fpl_portrait(monkeypatch):
     data = _fpl_data()
@@ -127,13 +129,17 @@ def test_reliable_provider_precedes_wikipedia_in_identity_only_lane(monkeypatch)
     )
 
     assert image is expected
-    assert source == "Reliable provider"
+    assert source == "FotMob"
     assert any("fotmob.com" in url for url in calls)
 
 
 def test_verified_team_shirt_is_the_final_image_fallback(monkeypatch):
-    monkeypatch.setattr(assets, "_download_image", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: None)
+    expected = Image.new("RGBA", (220, 300), (80, 20, 120, 255))
+
+    def download(url, _cache):
+        return expected if "/shirts/standard/shirt_3-220.png" in url else None
+
+    monkeypatch.setattr(assets, "_download_image", download)
 
     image, source = assets.resolve_player_image(
         "Truth Player",
@@ -141,14 +147,13 @@ def test_verified_team_shirt_is_the_final_image_fallback(monkeypatch):
         fpl_data=_fpl_data(),
     )
 
-    assert source == "Team shirt fallback"
-    assert image is not None and image.mode == "RGBA"
-    assert image.getchannel("A").getbbox() is not None
+    assert source == "FPL team kit"
+    assert image is expected
+    assert image.size == (220, 300)
     # The live FPL team is the identity anchor, not either supplied transfer club.
     assert assets._verified_shirt_club(
         "Truth Player", {"club_to_name": "Chelsea"}, _fpl_data(),
     )[0] == "Arsenal"
-
 
 def test_club_aliases_ground_current_club_metadata():
     assert assets._mentions_club(
