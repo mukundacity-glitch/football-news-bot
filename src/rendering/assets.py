@@ -295,17 +295,15 @@ def resolve_player_image(
     *,
     fpl_data: Optional[dict] = None,
 ) -> tuple[Optional[Image.Image], str]:
-    """Resolve a real player image first; use the shirt only as the final fallback.
+    """Resolve only approved player-card assets in a fixed fallback order.
 
-    Image sources are isolated to this resolver.  Existing FPL data, news
-    verification, posting, card layout, and club logic remain unchanged.
+    Official FPL portrait comes first. FotMob is used only when the verified
+    decision supplies its player ID. The final fallback is the official FPL
+    team kit. The renderer uses contain-fitting, so each native image keeps
+    its aspect ratio with no crop or stretch.
     """
     data = _fpl_data(fpl_data)
-    current_club, _club_id = _verified_shirt_club(subject, facts, data)
 
-    # Preference: try the official FPL player portrait first, then FotMob,
-    # then Wikipedia, then the remaining free providers, then the team shirt
-    # as the final fallback. This applies in both lanes.
     image = _fpl_player_image(subject, data)
     if image:
         return image, "FPL API"
@@ -317,25 +315,12 @@ def resolve_player_image(
             _safe_name("fotmob_player", provider_id),
         )
         if image:
-            return image, "Reliable provider"
-
-    image = _wikipedia_image(subject, current_club) if current_club else _wikipedia_image(subject)
-    if image:
-        return image, "Wikipedia"
-
-    image = _thesportsdb_player_image(subject, current_club)
-    if image:
-        return image, "TheSportsDB"
-
-    image = _sportsapi_player_image(subject, facts)
-    if image:
-        return image, "SportsAPI Pro"
+            return image, "FotMob"
 
     shirt = resolve_team_shirt(subject, facts, fpl_data=data)
     if shirt:
-        return shirt, "Team shirt fallback"
+        return shirt, "FPL team kit"
     return None, ""
-
 
 def identity_safe_portrait(image: Image.Image, source: str) -> Image.Image:
     """Preserve the verified source image without cropping or reshaping it."""
@@ -461,66 +446,27 @@ def resolve_team_shirt(
     *,
     fpl_data: Optional[dict] = None,
 ) -> Optional[Image.Image]:
-    """Create a polished generic shirt for the player's verified team.
+    """Fetch the official FPL kit for the resolved player's current team.
 
-    This is deliberately a team-identity fallback, not a fabricated player
-    portrait or a claim that the illustrated garment is the current official kit.
+    Bootstrap data supplies the current team code and selects the goalkeeper
+    variation where required. If FPL has no usable asset, no generic drawn kit
+    is substituted.
     """
     data = _fpl_data(fpl_data)
-    club_name, provider_id = _verified_shirt_club(subject, facts, data)
-    if not club_name:
+    if not data:
         return None
-
-    primary, secondary = _club_palette(club_name)
-    shirt = Image.new("RGBA", (900, 1120), (0, 0, 0, 0))
-
-    # Soft shadow and neon edge give the fallback the same broadcast presence as
-    # a portrait while retaining a clearly generic T-shirt silhouette.
-    shadow = Image.new("RGBA", shirt.size, (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shadow)
-    sd.ellipse((120, 900, 780, 1090), fill=(0, 0, 0, 105))
-    shirt.alpha_composite(shadow)
-
-    draw = ImageDraw.Draw(shirt)
-    left_sleeve = [(265, 190), (82, 270), (20, 505), (205, 575), (300, 385)]
-    right_sleeve = [(635, 190), (818, 270), (880, 505), (695, 575), (600, 385)]
-    torso = [
-        (265, 185),
-        (365, 145),
-        (535, 145),
-        (635, 185),
-        (705, 1000),
-        (195, 1000),
-    ]
-    for points in (left_sleeve, right_sleeve, torso):
-        draw.polygon(points, fill=(*primary, 255), outline=(*secondary, 255))
-        draw.line(
-            points + [points[0]],
-            fill=(*secondary, 255),
-            width=13,
-            joint="curve",
-        )
-
-    # Collar, cuffs and subtle vertical panels use a contrast color derived from
-    # the verified club palette; no unverified sponsor or exact kit pattern is used.
-    draw.pieslice((355, 115, 545, 300), start=0, end=180, fill=(*secondary, 255))
-    draw.pieslice((388, 142, 512, 260), start=0, end=180, fill=(*primary, 255))
-    draw.line((45, 470, 214, 535), fill=(*secondary, 255), width=28)
-    draw.line((855, 470, 686, 535), fill=(*secondary, 255), width=28)
-    stripe = tuple(
-        round(primary[i] * 0.62 + secondary[i] * 0.38)
-        for i in range(3)
+    player = find_player_in_fpl(subject, data)
+    if not player:
+        return None
+    teams = {team.get("id"): team for team in data.get("teams", [])}
+    team = teams.get(player.get("team")) or {}
+    team_code = team.get("code")
+    if not str(team_code or "").isdigit():
+        return None
+    goalkeeper_suffix = "_1" if player.get("element_type") == 1 else ""
+    kit_key = f"{team_code}{goalkeeper_suffix}"
+    return _download_image(
+        "https://fantasy.premierleague.com/dist/img/shirts/standard/"
+        f"shirt_{kit_key}-220.png",
+        _safe_name("fpl_team_kit", kit_key),
     )
-    draw.polygon(
-        [(255, 235), (330, 205), (370, 985), (285, 985)],
-        fill=(*stripe, 120),
-    )
-    draw.polygon(
-        [(645, 235), (570, 205), (530, 985), (615, 985)],
-        fill=(*stripe, 120),
-    )
-
-    badge = resolve_club_logo(club_name, provider_id=provider_id, fpl_data=data)
-    if badge:
-        _paste_badge(shirt, badge, (505, 305, 680, 500))
-    return shirt
