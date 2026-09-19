@@ -303,13 +303,34 @@ def resolve_player_image(
     data = _fpl_data(fpl_data)
     current_club, _club_id = _verified_shirt_club(subject, facts, data)
 
-    # Keep the official FPL player portrait first and untouched.
-    image = _fpl_player_image(subject, data)
-    if image:
-        return image, "FPL API"
+    if current_club:
+        # Current-club lane: a club-grounded Wikipedia portrait is fresher
+        # than FPL/FotMob imagery, which can lag behind a recent transfer.
+        # Try it first and skip the ungrounded FPL/FotMob portraits entirely.
+        image = _wikipedia_image(subject, current_club)
+        if image:
+            return image, "Wikipedia"
 
-    # FotMob already supplies a player ID with the verified structured data.
-    # Prefer its player headshot before any generic/club imagery.
+        image = _thesportsdb_player_image(subject, current_club)
+        if image:
+            return image, "TheSportsDB"
+
+        image = _sportsapi_player_image(subject, facts)
+        if image:
+            return image, "SportsAPI Pro"
+
+        shirt = resolve_team_shirt(subject, facts, fpl_data=data)
+        if shirt:
+            return shirt, "Team shirt fallback"
+        return None, ""
+
+    # Identity-only lane: no verified current club, so a stale-portrait risk
+    # doesn't apply the same way. Still prefer Wikipedia over FotMob, then
+    # fall back to the FPL portrait, other providers, and the team shirt.
+    image = _wikipedia_image(subject)
+    if image:
+        return image, "Wikipedia"
+
     provider_id = facts.get("provider_player_id")
     if str(provider_id or "").isdigit():
         image = _download_image(
@@ -319,14 +340,10 @@ def resolve_player_image(
         if image:
             return image, "Reliable provider"
 
-    # Existing identity-safe Wikimedia logic remains after the two primary
-    # player-image providers, preserving its current-club safeguards.
-    image = _wikipedia_image(subject, current_club) if current_club else _wikipedia_image(subject)
+    image = _fpl_player_image(subject, data)
     if image:
-        return image, "Wikipedia"
+        return image, "FPL API"
 
-    # Additional free provider fallbacks remain image-only and do not alter
-    # verification, posting, or card logic.
     image = _thesportsdb_player_image(subject, current_club)
     if image:
         return image, "TheSportsDB"
