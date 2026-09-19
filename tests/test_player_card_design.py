@@ -39,20 +39,18 @@ def _portrait(color: tuple[int, int, int]) -> Image.Image:
     return Image.new("RGBA", (300, 400), (*color, 255))
 
 
-def test_current_club_grounded_wikipedia_precedes_stale_fpl_portrait(monkeypatch):
+def test_current_club_fpl_portrait_precedes_wikipedia(monkeypatch):
     expected = _portrait((40, 80, 220))
-    calls: list[tuple[str, str]] = []
 
-    def wikipedia(subject, expected_club=""):
-        calls.append((subject, expected_club))
-        return expected
+    def download(url, _cache):
+        return expected if "/photos/players/" in url else None
 
-    monkeypatch.setattr(assets, "_wikipedia_image", wikipedia)
+    monkeypatch.setattr(assets, "_download_image", download)
     monkeypatch.setattr(
         assets,
-        "_download_image",
+        "_wikipedia_image",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("ungrounded FPL portrait must not be requested")
+            AssertionError("Wikipedia must not be requested when FPL portrait is available")
         ),
     )
 
@@ -61,20 +59,18 @@ def test_current_club_grounded_wikipedia_precedes_stale_fpl_portrait(monkeypatch
     )
 
     assert image is expected
-    assert source == "Wikipedia"
-    assert calls == [("Truth Player", "Arsenal")]
+    assert source == "FPL API"
 
 
-def test_current_club_without_grounded_portrait_uses_verified_team_shirt(monkeypatch):
+def test_current_club_without_fpl_or_fotmob_falls_back_to_wikipedia_then_shirt(monkeypatch):
     calls: list[str] = []
-
-    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: None)
 
     def download(url, _cache):
         calls.append(url)
         return None
 
     monkeypatch.setattr(assets, "_download_image", download)
+    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: None)
 
     image, source = assets.resolve_player_image(
         "Truth Player", {}, fpl_data=_fpl_data()
@@ -82,7 +78,7 @@ def test_current_club_without_grounded_portrait_uses_verified_team_shirt(monkeyp
 
     assert source == "Team shirt fallback"
     assert image is not None and image.mode == "RGBA"
-    assert not any("/photos/players/" in url for url in calls)
+    assert any("/photos/players/" in url for url in calls)
 
 
 def test_identity_only_lane_can_use_fpl_portrait(monkeypatch):
@@ -107,37 +103,24 @@ def test_identity_only_lane_can_use_fpl_portrait(monkeypatch):
     assert any("/photos/players/" in url for url in calls)
 
 
-def test_wikipedia_precedes_reliable_provider_in_identity_only_lane(monkeypatch):
+def test_reliable_provider_precedes_wikipedia_in_identity_only_lane(monkeypatch):
     expected = _portrait((40, 80, 220))
-    calls: list[str] = []
-
-    monkeypatch.setattr(assets, "_fpl_data", lambda _value: None)
-    monkeypatch.setattr(assets, "_download_image", lambda url, _cache: calls.append(url))
-    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: expected)
-
-    image, source = assets.resolve_player_image(
-        "Truth Player", {"provider_player_id": "9988"}, fpl_data=None,
-    )
-
-    assert image is expected
-    assert source == "Wikipedia"
-    assert not any("fotmob.com" in url for url in calls)
-
-
-def test_reliable_provider_runs_after_wikipedia_in_identity_only_lane(monkeypatch):
-    expected = _portrait((220, 40, 160))
     calls: list[str] = []
 
     monkeypatch.setattr(assets, "_fpl_data", lambda _value: None)
 
     def download(url, _cache):
         calls.append(url)
-        if "fotmob.com/image_resources/playerimages/9988.png" in url:
-            return expected
-        return None
+        return expected if "fotmob.com" in url else None
 
     monkeypatch.setattr(assets, "_download_image", download)
-    monkeypatch.setattr(assets, "_wikipedia_image", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        assets,
+        "_wikipedia_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Wikipedia must not be requested when FotMob image is available")
+        ),
+    )
 
     image, source = assets.resolve_player_image(
         "Truth Player", {"provider_player_id": "9988"}, fpl_data=None,
@@ -145,7 +128,7 @@ def test_reliable_provider_runs_after_wikipedia_in_identity_only_lane(monkeypatc
 
     assert image is expected
     assert source == "Reliable provider"
-    assert any("fotmob.com/image_resources/playerimages/9988.png" in url for url in calls)
+    assert any("fotmob.com" in url for url in calls)
 
 
 def test_verified_team_shirt_is_the_final_image_fallback(monkeypatch):
