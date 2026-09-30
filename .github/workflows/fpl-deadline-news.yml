@@ -2,7 +2,8 @@ name: 02 - FPL Deadline Press Conferences
 
 # Press conference only:
 # - collect official PremierLeague.com roundup links throughout the gameweek
-# - publish one verified combined graphic between 60 and 30 minutes before
+# - start processing 90 minutes before the deadline; publish before deadline-60m
+#   (first kickoff-3h start; kickoff-2h30m completion), using
 #   the official FPL deadline
 # The normal transfer/injury/suspension workflow is separate and untouched.
 on:
@@ -21,6 +22,7 @@ jobs:
   press-conference-roundup:
     if: ${{ vars.BOT_PAUSED != 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -38,8 +40,8 @@ jobs:
         id: window
         run: |
           python tools/press_deadline_window.py \
-            --check-window --start-before-minutes 60 --end-before-minutes 30 \
-            >> "$GITHUB_OUTPUT"
+            --check-window \
+            | tee -a "$GITHUB_OUTPUT"
 
       - name: Restore V2 verification database
         if: steps.window.outputs.should_run == 'true'
@@ -66,6 +68,7 @@ jobs:
         id: run
         if: steps.window.outputs.should_run == 'true'
         env:
+          PRESS_FINISH_BY: ${{ steps.window.outputs.window_end }}
           X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
           X_CT0_TOKEN: ${{ secrets.X_CT0_TOKEN }}
           X_POST_AUTH_TOKEN: ${{ secrets.X_POST_AUTH_TOKEN }}
@@ -83,7 +86,14 @@ jobs:
           POST_JITTER_MAX_S: 45
           COOLDOWN_FLAGGED_MIN: 180
           COOLDOWN_RATELIMIT_MIN: 30
-        run: python -m tools.press_publish
+        run: |
+          finish_epoch=$(date -u -d "$PRESS_FINISH_BY" +%s)
+          remaining_seconds=$((finish_epoch - $(date -u +%s)))
+          if [ "$remaining_seconds" -le 0 ]; then
+            echo "::error::Press publication cutoff reached during setup or verification."
+            exit 1
+          fi
+          timeout --signal=TERM "${remaining_seconds}s" python -m tools.press_publish
 
       - name: Save generated roundup for inspection
         if: always() && steps.window.outputs.should_run == 'true'

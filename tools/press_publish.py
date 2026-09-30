@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,7 +20,11 @@ from src.verification.press_roundup import (
     is_premier_league_url,
     project_roundup_story,
 )
-from tools.press_deadline_window import deadline_window_status, fetch_fpl_bootstrap
+from tools.press_deadline_window import (
+    FINISH_BEFORE_DEADLINE_MINUTES,
+    deadline_window_status,
+    fetch_fpl_bootstrap,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 COLLECTION_PATH = ROOT / "data" / "press_conference_collection.json"
@@ -181,8 +185,6 @@ async def run() -> int:
     in_window, reason, _deadline, window_start = deadline_window_status(
         fpl_data,
         now=now,
-        start_before_minutes=60,
-        end_before_minutes=30,
     )
     if not in_window:
         _status(
@@ -316,6 +318,13 @@ async def run() -> int:
         jitter = random.randint(*bot.POST_JITTER_RANGE_S)
         print(f"[PRESS] Verified roundup ready; posting after {jitter}s pacing delay.")
         await asyncio.sleep(jitter)
+
+        # Generation and verification can consume the whole publication window.
+        if utcnow() >= event["deadline"] - timedelta(minutes=FINISH_BEFORE_DEADLINE_MINUTES):
+            _status(run_exit="publication_cutoff_reached", posted_count=0,
+                    event_id=event["event_id"])
+            await client.http.aclose()
+            return 0
 
         try:
             posted = await bot.post_item(client, draft, data)

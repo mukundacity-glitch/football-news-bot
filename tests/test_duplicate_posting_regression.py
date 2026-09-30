@@ -64,7 +64,7 @@ def test_all_sources_compile_on_the_python_the_workflow_runs():
 
 
 def test_workflow_python_version_matches_what_the_code_requires():
-    for workflow in (".github/workflows/bot.yml", ".github/workflows/diff_test.yml"):
+    for workflow in (".github/workflows/bot.yml", ".github/workflows/fpl-deadline-news.yml"):
         text = Path(workflow).read_text()
         versions = re.findall(r'python-version:\s*"([\d.]+)"', text)
         assert versions, f"{workflow} must pin a Python version"

@@ -10,6 +10,7 @@ import pytest
 from tools import press_publish as press
 
 
+@pytest.mark.parametrize("late", [False, True])
 @pytest.mark.parametrize("result,ledger,dry_run,expected,locked", [
     (True, True, False, 0, True),
     (False, True, False, 0, True),  # X duplicate receipt, no new post.
@@ -18,10 +19,10 @@ from tools import press_publish as press
     (KeyError("private-response"), False, False, 1, False),
 ])
 def test_press_delivery_outcome_is_honest_and_retryable(
-    monkeypatch, tmp_path, capsys, result, ledger, dry_run, expected, locked,
+    monkeypatch, tmp_path, capsys, result, ledger, dry_run, expected, locked, late,
 ):
     now = datetime.now(timezone.utc)
-    deadline = now + timedelta(minutes=45)
+    deadline = now + timedelta(minutes=75)
     decision = SimpleNamespace(may_publish=True, fingerprint="press-fingerprint",
                                source_url="https://www.premierleague.com/en/news/test",
                                verified_facts={"roundup": ["A verified manager update"]})
@@ -41,7 +42,8 @@ def test_press_delivery_outcome_is_honest_and_retryable(
     monkeypatch.setattr(press, "COLLECTION_PATH", collection)
     monkeypatch.setattr(press, "RUN_STATUS_PATH", status_path)
     monkeypatch.setattr(press, "LOCK_PATH", lock_path)
-    monkeypatch.setattr(press, "utcnow", lambda: now)
+    clock = iter([now, deadline-timedelta(minutes=60)]) if late else None
+    monkeypatch.setattr(press, "utcnow", lambda: next(clock, deadline-timedelta(minutes=60)) if clock else now)
     monkeypatch.setattr(press, "fetch_fpl_bootstrap", lambda: {
         "events": [{"id": 5, "name": "Gameweek 5", "deadline_time": deadline.isoformat()}],
     })
@@ -65,12 +67,16 @@ def test_press_delivery_outcome_is_honest_and_retryable(
     post = AsyncMock(side_effect=result) if isinstance(result, Exception) else AsyncMock(return_value=result)
     monkeypatch.setattr(press.bot, "post_item", post)
 
-    assert asyncio.run(press.run()) == expected
+    assert asyncio.run(press.run()) == (0 if late else expected)
     status = json.loads(status_path.read_text())
-    assert status["posted_count"] == int(result is True)
-    assert lock_path.exists() is locked
-    assert bool(status.get("posting_failures")) == (expected == 1)
+    assert status["posted_count"] == (0 if late else int(result is True))
+    assert lock_path.exists() is (False if late else locked)
+    assert bool(status.get("posting_failures")) == (not late and expected == 1)
     assert "private-response" not in capsys.readouterr().out
     client.http.aclose.assert_awaited_once()
     runtime.close.assert_called_once()
-    post.assert_awaited_once()
+    if late:
+        assert status["run_exit"] == "publication_cutoff_reached"
+        post.assert_not_awaited()
+    else:
+        post.assert_awaited_once()
